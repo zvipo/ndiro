@@ -73,6 +73,7 @@ import subprocess
 import sys
 r = subprocess.run(
     [sys.executable, '-c',
+     'import dotenv; dotenv.load_dotenv = lambda *a, **k: None; '
      'import os; os.environ.pop("SECRET_KEY", None); import config'],
     capture_output=True, text=True, cwd=REPO,
     env={**os.environ, 'SECRET_KEY': ''})
