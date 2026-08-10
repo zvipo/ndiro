@@ -6,6 +6,7 @@ FROM python:3.12-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
+        pkg-config \
         libheif-dev \
         libde265-dev \
         libjpeg-dev \
