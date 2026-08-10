@@ -5,8 +5,11 @@ config.py (env + constants), db.py (DynamoDB/S3), auth.py (OAuth + guards),
 ai.py (fiber estimators). All routes live at root so the Google redirect URI
 and root-absolute template paths never change.
 """
+import calendar
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from uuid import uuid4
 
 from flask import Flask, g, jsonify, redirect, render_template, request, session
 from flask_limiter import Limiter
@@ -219,6 +222,350 @@ def admin_set_status(user_id, action):
         print(f"Error setting user status: {type(e).__name__}")
         return jsonify({'error': 'Failed to update user'}), 500
     return jsonify({'user_id': user_id, 'status': status})
+
+
+# --- Meal log ----------------------------------------------------------------
+# Tenant discipline: every handler keys on g.user['user_id'] from the session.
+# user_id NEVER comes from the URL, query string, or form.
+
+@app.route('/log')
+@auth.approved_required
+def log_page():
+    return render_template('log.html', user=g.user,
+                           fiber_guide=config.FIBER_GUIDE,
+                           ai_enabled=bool(config.OPENAI_API_KEY))
+
+
+def _valid_date(date_str):
+    """Return the string if it is a valid YYYY-MM-DD date, else None."""
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+        return date_str
+    except (TypeError, ValueError):
+        return None
+
+
+def _valid_month(month_str):
+    """Parse YYYY-MM into (year, month), else None."""
+    try:
+        parsed = datetime.strptime(month_str, '%Y-%m')
+        return parsed.year, parsed.month
+    except (TypeError, ValueError):
+        return None
+
+
+def _nutrients_from_form(form):
+    """Parse nutrient form fields into a DynamoDB-ready map of Decimals.
+
+    Extensible: add new keys here (e.g. 'protein_g') and the totals/JSON
+    plumbing picks them up automatically. Empty string means "unset".
+    """
+    nutrients = {}
+    for field in ('fiber_g',):
+        raw = (form.get(field) or '').strip()
+        if not raw:
+            continue
+        try:
+            value = Decimal(raw)
+        except InvalidOperation:
+            raise ValueError(f'{field} must be a number')
+        if value < 0:
+            raise ValueError(f'{field} must be >= 0')
+        nutrients[field] = value
+    return nutrients
+
+
+def _meal_to_json(item, owner_user_id):
+    """DynamoDB meal item -> JSON-safe dict (Decimals become floats).
+    Photo URLs are re-signed fresh on every response, only ever under the
+    resolved owner's users/{user_id}/ prefix."""
+    photo_key = item.get('photo_key')
+    meal_id = item['meal_id']
+    return {
+        'meal_id': meal_id,
+        'date': item['date'],
+        # Meal time lives in the meal_id's HHMMSS prefix (drives ordering).
+        'time': f'{meal_id[0:2]}:{meal_id[2:4]}' if meal_id[:6].isdigit() else None,
+        'description': item.get('description', ''),
+        'context': item.get('context', ''),
+        'ai_assisted': bool(item.get('ai_assisted')),
+        'nutrients': {k: float(v) for k, v in (item.get('nutrients') or {}).items()},
+        'has_photo': bool(photo_key),
+        'photo_url': db.presign_photo(photo_key, owner_user_id),
+        'created_at': item.get('created_at'),
+        'updated_at': item.get('updated_at'),
+    }
+
+
+def _day_totals(meals_json):
+    """Sum every nutrient key across a day's meals (generic — no per-key code)."""
+    totals = {}
+    for meal in meals_json:
+        for key, value in meal['nutrients'].items():
+            totals[key] = round(totals.get(key, 0) + value, 2)
+    return totals
+
+
+def _meals_payload(user_id, args):
+    """Build the meals payload for one user: a single date (?date=), a month
+    (?month=YYYY-MM), or the last N days (?days=N, default 7, max 31).
+
+    ?anchor=YYYY-MM-DD is the CLIENT's local today — it bounds future-month
+    validation and sets the payload's `today`. The server clock (UTC) is never
+    used for user-local dates; it is only the fallback window end when no
+    anchor is sent. Empty day entries are included for the whole requested
+    range (the review chart needs the full month axis), days newest-first,
+    meals chronological within a day (the sk sorts them).
+
+    Returns (payload_dict, http_status).
+    """
+    anchor = args.get('anchor')
+    if anchor and not _valid_date(anchor):
+        return {'error': 'Invalid anchor format. Use YYYY-MM-DD'}, 400
+    today = date.fromisoformat(anchor) if anchor \
+        else datetime.now(timezone.utc).date()
+
+    single_date = args.get('date')
+    if single_date and not _valid_date(single_date):
+        return {'error': 'Invalid date format. Use YYYY-MM-DD'}, 400
+    month = args.get('month')
+
+    error = None
+    if single_date:
+        dates = [single_date]
+        fetch = lambda: db.query_meals_day(user_id, single_date)
+    elif month:
+        ym = _valid_month(month)
+        if not ym:
+            return {'error': 'Invalid month format. Use YYYY-MM'}, 400
+        year, mon = ym
+        first = date(year, mon, 1)
+        if first > today:
+            return {'error': 'month is in the future'}, 400
+        # Full month, future days within the current month excluded.
+        last = min(date(year, mon, calendar.monthrange(year, mon)[1]), today)
+        dates = [(first + timedelta(days=i)).isoformat()
+                 for i in range((last - first).days, -1, -1)]
+        fetch = lambda: db.query_meals_month(user_id, month)
+    else:
+        try:
+            n_days = min(max(int(args.get('days', 7)), 1), 31)
+        except ValueError:
+            return {'error': 'days must be an integer'}, 400
+        dates = [(today - timedelta(days=i)).isoformat() for i in range(n_days)]
+        fetch = lambda: db.query_meals_range(user_id, dates[-1], dates[0])
+
+    # ONE Query per request (already chronological); group by date server-side.
+    by_date = {d: [] for d in dates}
+    try:
+        for item in fetch():
+            if item.get('date') in by_date:
+                by_date[item['date']].append(item)
+    except Exception as e:
+        # Degrade gracefully (e.g. table not created yet): page still renders.
+        print(f"Error querying meals: {type(e).__name__}")
+        error = 'meals unavailable'
+
+    days = []
+    for d in dates:
+        meals = [_meal_to_json(item, user_id) for item in by_date[d]]
+        days.append({'date': d, 'totals': _day_totals(meals), 'meals': meals})
+
+    payload = {'today': today.isoformat(), 'days': days}
+    if error:
+        payload['error'] = error
+    return payload, 200
+
+
+@app.route('/api/meals')
+@auth.approved_required
+def get_meals():
+    payload, status = _meals_payload(g.user['user_id'], request.args)
+    return jsonify(payload), status
+
+
+@app.route('/api/meals', methods=['POST'])
+@auth.approved_required
+def add_meal():
+    """Create a meal (multipart form: description, date required, optional
+    context/time/fiber_g/photo/ai_assisted)."""
+    user_id = g.user['user_id']
+
+    description = (request.form.get('description') or '').strip()
+    if not description:
+        return jsonify({'error': 'Description is required'}), 400
+    if len(description) > 500:
+        return jsonify({'error': 'Description too long (max 500 characters)'}), 400
+
+    # Optional dietician-driven context (mood, cravings — esp. around sweets).
+    context = (request.form.get('context') or '').strip()
+    if len(context) > 500:
+        return jsonify({'error': 'Context too long (max 500 characters)'}), 400
+
+    # The DATE is user-local and must come from the client — the server clock
+    # is never a fallback for it (a UTC server is up to a day off the user).
+    date_str = request.form.get('date')
+    if not date_str:
+        return jsonify({'error': 'Date is required'}), 400
+    if not _valid_date(date_str):
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    try:
+        nutrients = _nutrients_from_form(request.form)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    # HHMMSS prefix keeps meals chronological within the day; hex suffix for
+    # uniqueness. Client normally sends its local time; UTC now is the
+    # fallback for the TIME only, never the date.
+    time_str = (request.form.get('time') or '').strip()
+    if time_str:
+        try:
+            meal_time = datetime.strptime(time_str, '%H:%M')
+        except ValueError:
+            return jsonify({'error': 'Invalid time format. Use HH:MM'}), 400
+        meal_id = f"{meal_time:%H%M}00-{uuid4().hex[:6]}"
+    else:
+        meal_id = f"{datetime.now(timezone.utc):%H%M%S}-{uuid4().hex[:6]}"
+
+    photo = request.files.get('photo')
+    photo_key = None
+    if photo and photo.filename:
+        if not config.S3_BUCKET:
+            return jsonify({'error': 'Photo storage not configured (set S3_BUCKET)'}), 400
+        # Key built server-side only: resolved user + validated date + fresh id.
+        photo_key = db.photo_key(user_id, date_str, meal_id)
+        try:
+            db.put_photo(photo, photo_key)
+        except Exception as e:
+            print(f"Error uploading photo for user {user_id}: {type(e).__name__}")
+            return jsonify({'error': 'Photo upload failed'}), 502
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    item = {
+        'user_id': user_id,
+        'sk': db.meal_sk(date_str, meal_id),
+        'date': date_str,
+        'meal_id': meal_id,
+        'description': description,
+        'nutrients': nutrients,
+        'created_at': now_iso,
+        'updated_at': now_iso,
+    }
+    if context:
+        item['context'] = context
+    if request.form.get('ai_assisted') == '1':
+        item['ai_assisted'] = True
+    if photo_key:
+        item['photo_key'] = photo_key
+
+    try:
+        db.put_meal(item)
+    except Exception as e:
+        print(f"Error saving meal for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to save meal'}), 500
+
+    return jsonify(_meal_to_json(item, user_id)), 201
+
+
+@app.route('/api/meals/<date_str>/<meal_id>', methods=['PUT'])
+@auth.approved_required
+def update_meal(date_str, meal_id):
+    """Edit a meal: description/context/nutrients, replace photo, or
+    remove_photo=1. Key = (session user, date#meal_id) — date/time can't move."""
+    user_id = g.user['user_id']
+    if not _valid_date(date_str):
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    try:
+        existing = db.get_meal(user_id, date_str, meal_id)
+    except Exception as e:
+        print(f"Error fetching meal for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to fetch meal'}), 500
+    if not existing:
+        return jsonify({'error': 'Meal not found'}), 404
+
+    description = (request.form.get('description') or '').strip()
+    if not description:
+        return jsonify({'error': 'Description is required'}), 400
+    if len(description) > 500:
+        return jsonify({'error': 'Description too long (max 500 characters)'}), 400
+
+    context = (request.form.get('context') or '').strip()
+    if len(context) > 500:
+        return jsonify({'error': 'Context too long (max 500 characters)'}), 400
+
+    try:
+        nutrients = _nutrients_from_form(request.form)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    photo_key = existing.get('photo_key')
+
+    if request.form.get('remove_photo') and photo_key:
+        db.delete_photo(photo_key)  # best-effort
+        photo_key = None
+
+    photo = request.files.get('photo')
+    if photo and photo.filename:
+        if not config.S3_BUCKET:
+            return jsonify({'error': 'Photo storage not configured (set S3_BUCKET)'}), 400
+        # Reuse the meal's canonical key so a replacement never orphans an object.
+        photo_key = db.photo_key(user_id, date_str, meal_id)
+        try:
+            db.put_photo(photo, photo_key)
+        except Exception as e:
+            print(f"Error uploading photo for user {user_id}: {type(e).__name__}")
+            return jsonify({'error': 'Photo upload failed'}), 502
+
+    item = {
+        'user_id': user_id,
+        'sk': db.meal_sk(date_str, meal_id),
+        'date': date_str,
+        'meal_id': meal_id,
+        'description': description,
+        'nutrients': nutrients,
+        'created_at': existing.get('created_at'),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    if context:
+        item['context'] = context
+    if request.form.get('ai_assisted') == '1':
+        item['ai_assisted'] = True
+    if photo_key:
+        item['photo_key'] = photo_key
+
+    try:
+        db.put_meal(item)
+    except Exception as e:
+        print(f"Error updating meal for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to update meal'}), 500
+
+    return jsonify(_meal_to_json(item, user_id))
+
+
+@app.route('/api/meals/<date_str>/<meal_id>', methods=['DELETE'])
+@auth.approved_required
+def delete_meal(date_str, meal_id):
+    """Delete a meal and (best-effort) its photo."""
+    user_id = g.user['user_id']
+    try:
+        existing = db.get_meal(user_id, date_str, meal_id)
+    except Exception as e:
+        print(f"Error fetching meal for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to fetch meal'}), 500
+    if not existing:
+        return jsonify({'error': 'Meal not found'}), 404
+
+    db.delete_photo(existing.get('photo_key'))  # best-effort
+
+    try:
+        db.delete_meal_item(user_id, date_str, meal_id)
+    except Exception as e:
+        print(f"Error deleting meal for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to delete meal'}), 500
+
+    return jsonify({'deleted': True, 'date': date_str, 'meal_id': meal_id})
 
 
 if __name__ == '__main__':
