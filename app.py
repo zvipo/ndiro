@@ -8,6 +8,7 @@ and root-absolute template paths never change.
 import calendar
 import secrets
 import time
+import os
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -24,15 +25,18 @@ import db
 
 app = Flask(__name__)
 
-# Behind one reverse proxy (Caddy / Render). Trust X-Forwarded-Proto/Host so
-# Flask builds https URLs and marks the session cookie Secure correctly.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+# Behind EXACTLY ONE trusted reverse proxy (Caddy on the Pi / Render's LB).
+# x_for=1 makes request.remote_addr the real client so the rate limiter
+# isolates clients instead of collapsing everyone into the proxy's IP.
+# Do NOT keep x_for=1 if the container is ever exposed without a proxy —
+# clients could then spoof X-Forwarded-For to dodge rate limits.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 app.secret_key = config.SECRET_KEY  # config hard-fails at import when unset
 app.config.update(
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SAMESITE='Lax',  # the load-bearing CSRF control: blocks cross-site cookie attachment on writes
     PERMANENT_SESSION_LIFETIME=timedelta(days=30),
     MAX_CONTENT_LENGTH=config.MAX_CONTENT_LENGTH,
 )
@@ -805,4 +809,6 @@ def delete_account():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Debug only when explicitly asked: the Werkzeug debugger allows code
+    # execution and must never run on anything reachable from the network.
+    app.run(debug=os.getenv('FLASK_DEBUG') == '1', port=5000)

@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#282828">
+    {# strict-origin: outbound requests never carry the URL path — keeps /s/<token> out of referrers #}
+    <meta name="referrer" content="strict-origin">
     <title>{% block title %}Ndiro{% endblock %}</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>{% block favicon %}🥦{% endblock %}</text></svg>">
 
