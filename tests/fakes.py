@@ -44,11 +44,13 @@ def eval_condition(cond, item):
 
 def _eval_str_condition(cond, item, values, resolve_name):
     """Evaluate the small string-expression grammar db.py actually uses:
-    attribute_not_exists(x), a = :v, a <> :v, a < :v, joined by AND / OR."""
+    attribute_[not_]exists(x), a = :v, a <> :v, a < :v, joined by AND / OR."""
     def term(t):
         t = t.strip()
         if t.startswith('attribute_not_exists(') and t.endswith(')'):
             return resolve_name(t[len('attribute_not_exists('):-1].strip()) not in item
+        if t.startswith('attribute_exists(') and t.endswith(')'):
+            return resolve_name(t[len('attribute_exists('):-1].strip()) in item
         for op in ('<>', '<=', '>=', '=', '<', '>'):
             marker = f' {op} '
             if marker in t:
@@ -135,8 +137,13 @@ class FakeTable:
         def resolve_name(n):
             return names.get(n, n)
 
+        # Real DynamoDB evaluates the condition against the EXISTING item
+        # (absent item -> attribute_exists fails, comparisons fail) — never
+        # against the incoming Key, which would make attribute_exists(pk)
+        # pass for a missing row. The write still targets `target`.
+        cond_item = existing if existing is not None else {}
         if ConditionExpression is not None and \
-                not _eval_str_condition(ConditionExpression, target, values, resolve_name):
+                not _eval_str_condition(ConditionExpression, cond_item, values, resolve_name):
             raise _ccf_error()
 
         expr = UpdateExpression.strip()
@@ -190,10 +197,13 @@ def install(db_module):
     users = FakeTable(('user_id',))
     meals = FakeTable(('user_id', 'sk'))
     shares = FakeTable(('share_token',))
+    invites = FakeTable(('invite_token',))
     s3 = FakeS3()
     db_module.users_table = lambda: users
     db_module.meals_table = lambda: meals
     db_module.shares_table = lambda: shares
+    db_module.invites_table = lambda: invites
     db_module.ensure_tables = lambda: None
     db_module._s3_client = lambda: s3
-    return SimpleNamespace(users=users, meals=meals, shares=shares, s3=s3)
+    return SimpleNamespace(users=users, meals=meals, shares=shares,
+                           invites=invites, s3=s3)

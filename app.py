@@ -28,6 +28,7 @@ import db
 
 _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
+_INVITE_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')  # token_urlsafe shape
 _NUTRIENT_MAX = Decimal('100000')  # grams; anything larger is nonsense / a DynamoDB overflow
 
 app = Flask(__name__)
@@ -125,9 +126,64 @@ def login():
     # Remember where to land after the OAuth round-trip. Kept in the session
     # (not the state param) so state stays a pure CSRF token.
     session['login_next'] = auth._safe_next(request.args.get('next'), default='/log')
+    # An invite token rides the session the same way (shape-checked only here;
+    # real validation happens server-side in /callback). No/invalid param
+    # clears any stale token from an earlier aborted flow.
+    invite = request.args.get('invite')
+    if invite and _INVITE_RE.match(invite):
+        session['invite_token'] = invite
+    else:
+        session.pop('invite_token', None)
     state = secrets.token_urlsafe(16)
     session['oauth_state'] = state
     return redirect(auth.build_auth_url(state))
+
+
+def _valid_invite_for_redemption(token, claimant=None):
+    """(invite_row, inviter_row) when the token is redeemable, else None.
+
+    ALL of: row exists, unrevoked, unused, unexpired, AND the inviter's row
+    freshly re-read and still approved/admin — a rejected or deleted inviter
+    must not keep minting approved accounts from links made earlier.
+
+    claimant: a token already claimed BY THE SAME user stays redeemable —
+    that's the retry of a signup that claimed but crashed before its account
+    write (see db.claim_invite), not a second use."""
+    if not token:
+        return None
+    invite = db.get_invite(token)
+    if not invite:
+        return None
+    used_by = invite.get('used_by')
+    if used_by is not None:
+        if claimant is None or used_by != claimant:
+            return None
+    elif not db.invite_is_active(invite):
+        return None
+    inviter = db.get_user(invite['user_id'])
+    if not inviter or inviter.get('status') not in auth.APPROVED_STATUSES:
+        return None
+    return invite, inviter
+
+
+def _redeem_invite(token, new_user_id):
+    """Validate + atomically claim an invite for new_user_id.
+
+    Returns the inviter user_id on success, None otherwise (race losers and
+    any error fall back to the normal pending flow — never an error page in
+    the middle of the OAuth flow). Logs never include the token: pre-claim it
+    is a live capability (invariant #8)."""
+    try:
+        valid = _valid_invite_for_redemption(token, claimant=new_user_id)
+        if valid is None:
+            return None
+        invite, _ = valid
+        if not db.claim_invite(token, new_user_id):
+            return None  # lost the single-use race (or revoked/expired since)
+        return invite['user_id']
+    except Exception as e:
+        print(f"Invite redemption failed for user {new_user_id}: {type(e).__name__}")
+        return None
 
 
 @app.route('/callback')
@@ -137,6 +193,10 @@ def callback():
     if not request.args.get('state') or \
             request.args.get('state') != session.pop('oauth_state', None):
         return 'Invalid OAuth state', 400
+
+    # Pop the invite token unconditionally so it can never survive into the
+    # post-login session (session.clear() below is the backstop).
+    invite_token = session.pop('invite_token', None)
 
     code = request.args.get('code')
     if not code:
@@ -151,16 +211,38 @@ def callback():
     try:
         user = db.get_user(user_id)
         if user is None:
-            # First sign-in. MAX_USERS is enforced HERE, server-side.
+            # First sign-in. MAX_USERS is enforced HERE, server-side — BEFORE
+            # any invite logic, so a full instance never consumes an invite
+            # (the row stays usable once space frees up).
             if db.count_users() >= config.MAX_USERS:
                 return render_template('full.html'), 403
-            status = 'admin' if email in config.ADMIN_EMAILS else 'pending'
-            user = db.create_user(user_id, email, name, status, picture)
-        elif (user.get('email') != email or user.get('name') != name
-              or user.get('picture', '') != picture):
-            # sub is the stable key; keep email/name/picture current.
-            db.update_user_profile(user_id, email, name, picture)
-            user = {**user, 'email': email, 'name': name, 'picture': picture}
+            if email in config.ADMIN_EMAILS:
+                # Admin bootstrap wins without consuming an invite.
+                user = db.create_user(user_id, email, name, 'admin', picture)
+            else:
+                # An invite that validates AND is atomically claimed approves
+                # the signup; any failure falls back to the normal pending
+                # queue (the /i/ page filtered dead tokens before sign-in).
+                inviter_id = _redeem_invite(invite_token, user_id)
+                if inviter_id:
+                    user = db.create_user(user_id, email, name, 'approved',
+                                          picture, invited_by=inviter_id)
+                else:
+                    user = db.create_user(user_id, email, name, 'pending', picture)
+        else:
+            if (user.get('email') != email or user.get('name') != name
+                    or user.get('picture', '') != picture):
+                # sub is the stable key; keep email/name/picture current.
+                db.update_user_profile(user_id, email, name, picture)
+                user = {**user, 'email': email, 'name': name, 'picture': picture}
+            if user.get('status') == 'pending':
+                # A pending user redeeming an invite gets approved (friend
+                # signed up first, then received the invite). The approval is
+                # CONDITIONAL on still-pending so it can never overwrite a
+                # concurrent admin rejection — rejection is a ban.
+                inviter_id = _redeem_invite(invite_token, user_id)
+                if inviter_id and db.approve_pending_user(user_id, inviter_id):
+                    user = {**user, 'status': 'approved'}
     except Exception as e:
         print(f"Sign-in failed for user {user_id}: {type(e).__name__}")
         return 'Sign-in failed — please try again later.', 500
@@ -190,7 +272,9 @@ def logout():
 
 # --- Admin API (account metadata ONLY — never another user's meals/photos) ---
 
-def _user_to_json(u):
+def _user_to_json(u, email_by_id=None):
+    """email_by_id: user_id -> email lookup so 'invited by' shows something
+    readable; a deleted inviter resolves to null (UI shows a fallback)."""
     return {
         'user_id': u.get('user_id'),
         'email': u.get('email'),
@@ -198,6 +282,8 @@ def _user_to_json(u):
         'status': u.get('status'),
         'created_at': u.get('created_at'),
         'approved_at': u.get('approved_at'),
+        'invited_by': u.get('invited_by'),
+        'invited_by_email': (email_by_id or {}).get(u.get('invited_by')),
         'ai_uses_date': u.get('ai_uses_date'),
         'ai_uses_today': int(u.get('ai_uses_today', 0)),
     }
@@ -212,7 +298,9 @@ def admin_list_users():
         print(f"Error listing users: {type(e).__name__}")
         return jsonify({'error': 'Failed to list users'}), 500
     users.sort(key=lambda u: u.get('created_at') or '')
-    return jsonify({'users': [_user_to_json(u) for u in users],
+    # Resolve "invited by" from the rows already in hand — no extra queries.
+    email_by_id = {u.get('user_id'): u.get('email') for u in users}
+    return jsonify({'users': [_user_to_json(u, email_by_id) for u in users],
                     'max_users': config.MAX_USERS})
 
 
@@ -727,6 +815,33 @@ def review_page():
                            meals_url='/api/meals')
 
 
+# --- Invite links ------------------------------------------------------------
+# /i/<token> is public, token-gated, rate-limited. Redemption itself happens
+# ONLY server-side in /callback — nothing from a URL can set account status.
+# The four dead states (missing/revoked/expired/used) render byte-identical
+# 404s: no enumeration oracle, and the token never lands in the page body.
+
+@app.route('/i/<token>')
+@limiter.limit('30 per minute')
+def invite_view(token):
+    try:
+        valid = _valid_invite_for_redemption(token)
+    except Exception as e:
+        print(f"Error resolving invite: {type(e).__name__}")
+        valid = None
+    if valid is None:
+        return render_template('invite_404.html', user=auth.current_user(),
+                               login_next='/'), 404
+    _, inviter = valid
+    # Attribution: inviter NAME only — never the email. login_url routes the
+    # corner-menu sign-in through the invite too — without it, that link
+    # would silently drop the invite and strand the friend in the queue.
+    return render_template('invite_view.html', user=auth.current_user(),
+                           inviter_name=inviter.get('name') or 'A Ndiro user',
+                           token=token,
+                           login_url=f'/login?invite={token}&next=/log')
+
+
 # --- Share links -------------------------------------------------------------
 # /s/<token> is public, token-gated, rate-limited, read-only, and fully
 # session-independent: everything is scoped to the token row's user_id.
@@ -864,6 +979,86 @@ def revoke_share(token):
     return jsonify({'revoked': True})
 
 
+# --- Invite management -------------------------------------------------------
+
+def _invite_to_json(row):
+    """Inviter-facing view. Deliberately NO used_by: the invitee's identity is
+    not the inviter's to see — the label is the inviter's own note."""
+    return {
+        'token': row['invite_token'],
+        'url': f"/i/{row['invite_token']}",
+        'label': row.get('label', ''),
+        'created_at': row.get('created_at'),
+        'expires_at': int(row['expires_at']) if row.get('expires_at') is not None else None,
+        'revoked': bool(row.get('revoked')),
+        'used': 'used_by' in row,
+        'used_at': row.get('used_at'),
+        'active': db.invite_is_active(row),
+    }
+
+
+@app.route('/invites')
+@auth.approved_required
+def invites_page():
+    return render_template('invites.html', user=g.user)
+
+
+@app.route('/api/invites')
+@auth.approved_required
+def list_invites():
+    try:
+        rows = db.list_user_invites(g.user['user_id'])
+    except Exception as e:
+        print(f"Error listing invites: {type(e).__name__}")
+        return jsonify({'error': 'Failed to list invite links'}), 500
+    rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+    return jsonify({'invites': [_invite_to_json(r) for r in rows],
+                    'max_active': config.MAX_ACTIVE_INVITES})
+
+
+@app.route('/api/invites', methods=['POST'])
+@limiter.limit('10 per minute')
+@auth.approved_required
+def create_invite():
+    # NOTE the active-cap below is read-then-write: concurrent creates can
+    # overshoot MAX_ACTIVE_INVITES by up to the thread count. The rate limit
+    # keeps that bounded; a conditional counter is overkill at PoC scale.
+    data = request.get_json(silent=True) or {}
+    label = (data.get('label') or '').strip()
+    if len(label) > 100:
+        return jsonify({'error': 'Label too long (max 100 characters)'}), 400
+    expires = str(data.get('expires') or '7')
+    if expires not in ('1', '7', '30'):
+        return jsonify({'error': 'expires must be 1, 7 or 30 (days)'}), 400
+    expires_at = int(time.time()) + int(expires) * 86400
+
+    user_id = g.user['user_id']
+    try:
+        active = [r for r in db.list_user_invites(user_id) if db.invite_is_active(r)]
+        if len(active) >= config.MAX_ACTIVE_INVITES:
+            return jsonify({'error': f'Limit of {config.MAX_ACTIVE_INVITES} active '
+                                     'invites reached — revoke one first'}), 400
+        row = db.create_invite(user_id, expires_at, label or None)
+    except Exception as e:
+        print(f"Error creating invite for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to create invite link'}), 500
+    return jsonify(_invite_to_json(row)), 201
+
+
+@app.route('/api/invites/<token>', methods=['DELETE'])
+@auth.approved_required
+def revoke_invite(token):
+    """Revoke = flip the flag, conditioned on ownership; the row is kept."""
+    try:
+        ok = db.revoke_invite(token, g.user['user_id'])
+    except Exception as e:
+        print(f"Error revoking invite: {type(e).__name__}")
+        return jsonify({'error': 'Failed to revoke invite link'}), 500
+    if not ok:
+        return jsonify({'error': 'Invite link not found'}), 404
+    return jsonify({'revoked': True})
+
+
 # --- Settings / account deletion ---------------------------------------------
 
 @app.route('/settings')
@@ -951,6 +1146,7 @@ def delete_account():
         db.delete_user_photos(user_id)
         db.delete_all_meals(user_id)
         db.delete_user_shares(user_id)
+        db.delete_user_invites(user_id)
         db.delete_user(user_id)  # row deleted LAST so a partial failure is retryable
     except Exception as e:
         print(f"Error deleting account {user_id}: {type(e).__name__}")

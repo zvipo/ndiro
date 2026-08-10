@@ -11,6 +11,7 @@ AWS_SECRET_ACCESS_KEY=your-secret-access-key
 USERS_TABLE=ndiro-users
 MEALS_TABLE=ndiro-meals
 SHARES_TABLE=ndiro-shares
+INVITES_TABLE=ndiro-invites
 
 # Private S3 bucket for meal photos. Optional: unset = photo upload disabled
 # with a clear message; text-only meals still work.

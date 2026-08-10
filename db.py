@@ -66,6 +66,10 @@ def shares_table():
     return _dynamo().Table(config.SHARES_TABLE)
 
 
+def invites_table():
+    return _dynamo().Table(config.INVITES_TABLE)
+
+
 def _utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -84,6 +88,9 @@ _TABLE_SPECS = [
     (lambda: config.SHARES_TABLE,
      [{'AttributeName': 'share_token', 'KeyType': 'HASH'}],
      [{'AttributeName': 'share_token', 'AttributeType': 'S'}]),
+    (lambda: config.INVITES_TABLE,
+     [{'AttributeName': 'invite_token', 'KeyType': 'HASH'}],
+     [{'AttributeName': 'invite_token', 'AttributeType': 'S'}]),
 ]
 
 
@@ -134,8 +141,9 @@ def count_users():
         kwargs['ExclusiveStartKey'] = lek
 
 
-def create_user(user_id, email, name, status, picture=''):
-    """Create a user row (first sign-in). Returns the item."""
+def create_user(user_id, email, name, status, picture='', invited_by=None):
+    """Create a user row (first sign-in). Returns the item.
+    invited_by = inviter user_id when an invite auto-approved this signup."""
     item = {
         'user_id': user_id,
         'email': email,
@@ -144,8 +152,10 @@ def create_user(user_id, email, name, status, picture=''):
         'status': status,
         'created_at': _utc_now_iso(),
     }
-    if status == 'admin':
+    if status in ('admin', 'approved'):
         item['approved_at'] = item['created_at']
+    if invited_by:
+        item['invited_by'] = invited_by
     users_table().put_item(Item=item)
     return item
 
@@ -189,6 +199,26 @@ def list_users():
         if not lek:
             return items
         kwargs['ExclusiveStartKey'] = lek
+
+
+def approve_pending_user(user_id, invited_by):
+    """Approve a user ONLY if they are still pending (conditional write):
+    an invite redemption must never overwrite a concurrent admin rejection —
+    rejection is a ban and must stick. True on success, False on the race."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET #s = :s, approved_at = :t, invited_by = :i',
+            ConditionExpression='#s = :p',
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues={':s': 'approved', ':p': 'pending',
+                                       ':t': _utc_now_iso(), ':i': invited_by},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
 
 
 def set_user_status(user_id, status):
@@ -394,6 +424,111 @@ def delete_user_shares(user_id):
     with shares_table().batch_writer() as batch:
         for row in rows:
             batch.delete_item(Key={'share_token': row['share_token']})
+    return len(rows)
+
+
+# --- Invites -----------------------------------------------------------------
+# Single-use, expiring, auto-approving signup links. Mirrors the shares
+# machinery, but FAIL-CLOSED: invites grant privilege, so a row with no
+# expires_at counts as inactive (shares treat that as "never expires").
+
+def invite_is_active(row, now=None):
+    """True when an invite is unrevoked, unused, and unexpired."""
+    if not row or row.get('revoked') or 'used_by' in row:
+        return False
+    expires_at = row.get('expires_at')
+    return expires_at is not None and int(expires_at) > (now or time.time())
+
+
+def get_invite(token):
+    resp = invites_table().get_item(Key={'invite_token': token})
+    return resp.get('Item')
+
+
+def list_user_invites(user_id):
+    """One user's invite rows via filtered scan — deliberate at PoC scale
+    (<=100 users x <=10 links); do not add a GSI for this."""
+    items = []
+    kwargs = {'FilterExpression': Attr('user_id').eq(user_id)}
+    while True:
+        resp = invites_table().scan(**kwargs)
+        items.extend(resp.get('Items', []))
+        lek = resp.get('LastEvaluatedKey')
+        if not lek:
+            return items
+        kwargs['ExclusiveStartKey'] = lek
+
+
+def create_invite(user_id, expires_at, label=None):
+    """Create an invite row. Token is 192 bits — unguessable; expiry required."""
+    item = {
+        'invite_token': secrets.token_urlsafe(24),
+        'user_id': user_id,
+        'created_at': _utc_now_iso(),
+        'expires_at': int(expires_at),
+        'revoked': False,
+    }
+    if label:
+        item['label'] = label
+    invites_table().put_item(Item=item)
+    return item
+
+
+def claim_invite(token, new_user_id):
+    """Atomically consume a single-use invite for new_user_id.
+
+    Condition (DynamoDB precedence: AND binds tighter than OR):
+      (exists AND unused AND unrevoked AND unexpired) OR used_by = :u
+    The first arm makes the claim race-safe AND fully in-condition — a revoke
+    or expiry landing after the caller's validation read still loses. The OR
+    arm makes the claim IDEMPOTENT for the same claimant: a signup that
+    claimed but crashed before its account write retries through the same
+    link instead of burning it. Different claimants race only on the first
+    arm — exactly one ever wins."""
+    try:
+        invites_table().update_item(
+            Key={'invite_token': token},
+            UpdateExpression='SET used_by = :u, used_at = :t',
+            ConditionExpression=(
+                'attribute_exists(invite_token) AND attribute_not_exists(used_by) '
+                'AND revoked = :f AND expires_at > :now OR used_by = :u'),
+            ExpressionAttributeValues={
+                ':u': new_user_id, ':t': _utc_now_iso(),
+                ':f': False, ':now': int(time.time()),
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def revoke_invite(token, user_id):
+    """Revoke an invite only if it belongs to user_id AND is still unused
+    (atomic): "revoking" an already-redeemed invite would tell the inviter
+    they stopped something that already admitted someone. Returns True on
+    success, False if missing, not owned, or used. Rows are kept."""
+    try:
+        invites_table().update_item(
+            Key={'invite_token': token},
+            UpdateExpression='SET revoked = :r',
+            ConditionExpression='user_id = :uid AND attribute_not_exists(used_by)',
+            ExpressionAttributeValues={':r': True, ':uid': user_id},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def delete_user_invites(user_id):
+    """Delete all of a user's invite rows (account deletion)."""
+    rows = list_user_invites(user_id)
+    with invites_table().batch_writer() as batch:
+        for row in rows:
+            batch.delete_item(Key={'invite_token': row['invite_token']})
     return len(rows)
 
 

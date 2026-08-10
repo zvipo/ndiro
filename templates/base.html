@@ -321,6 +321,7 @@
                 <a href="/log">🥦 Log</a>
                 <a href="/review">📊 Review</a>
                 <a href="/shares">🔗 Share links</a>
+                <a href="/invites">✉️ Invite friends</a>
                 <a href="/settings">⚙️ Settings</a>
                 {% if user.status == 'admin' %}<a href="/admin">👤 Admin</a>{% endif %}
                 <div class="menu-sep"></div>
@@ -330,7 +331,10 @@
                     <span id="themeIcon">☀️</span> <span id="themeLabel">Light mode</span>
                 </button>
                 <div class="menu-sep"></div>
-                {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="/login?next={{ login_next|default(request.path) }}">→ Sign in / Sign up</a>{% endif %}
+                {# login_url override: pages where sign-in must carry extra
+                   params (the invite landing) — otherwise the menu link would
+                   silently drop them. #}
+                {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="{{ login_url|default('/login?next=' ~ (login_next|default(request.path))) }}">→ Sign in / Sign up</a>{% endif %}
             </nav>
         </div>
     </div>

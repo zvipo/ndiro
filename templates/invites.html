@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Ndiro — Share links{% endblock %}
-{% block favicon %}🔗{% endblock %}
+{% block title %}Ndiro — Invite friends{% endblock %}
+{% block favicon %}✉️{% endblock %}
 
 {% block styles %}
         .create-row {
@@ -19,28 +19,28 @@
             min-width: 200px;
         }
 
-        .share-row {
+        .invite-row {
             display: flex;
             align-items: center;
             gap: 12px;
             flex-wrap: wrap;
         }
 
-        .share-row .who {
+        .invite-row .who {
             min-width: 0;
         }
 
-        .share-row .who .label-line {
+        .invite-row .who .label-line {
             font-size: 0.92rem;
         }
 
-        .share-row .who .meta-line {
+        .invite-row .who .meta-line {
             font-size: 0.78rem;
             color: var(--muted);
             margin-top: 2px;
         }
 
-        .share-row .row-actions {
+        .invite-row .row-actions {
             margin-left: auto;
             display: flex;
             gap: 6px;
@@ -57,6 +57,7 @@
         }
 
         .badge.active { color: var(--green); border-color: var(--green); }
+        .badge.used { color: var(--gold); border-color: var(--gold); }
         .badge.revoked { color: var(--red); border-color: var(--red); }
         .badge.expired { color: var(--dim); }
 
@@ -70,56 +71,56 @@
 
 {% block content %}
         <div class="page-header">
-            <h1>🔗 Share links</h1>
-            <span class="subtitle">Read-only views of your review page</span>
+            <h1>✉️ Invite friends</h1>
+            <span class="subtitle">Links that approve a friend's signup instantly</span>
         </div>
 
         <div class="card">
             <p class="muted" style="font-size:0.85rem; margin-bottom:12px;">
-                Anyone with a link sees a read-only copy of your monthly review —
-                meals, notes, photos, chart. No sign-in needed. Revoke a link any
-                time and it stops working immediately.</p>
+                Each link admits <strong>one</strong> friend: they sign in with
+                Google through it and their account is approved right away — no
+                waiting queue. Links expire on their own and can be revoked any
+                time before they're used.</p>
             <div class="create-row">
                 <div>
                     <label class="form-label" for="labelInput">Label (for you)</label>
-                    <input type="text" id="labelInput" placeholder="e.g. Dr. Moyo" maxlength="100">
+                    <input type="text" id="labelInput" placeholder="e.g. Tino" maxlength="100">
                 </div>
                 <div>
                     <label class="form-label" for="expiresInput">Expires</label>
                     <select id="expiresInput">
-                        <option value="30">In 30 days</option>
                         <option value="7">In 7 days</option>
-                        <option value="90">In 90 days</option>
-                        <option value="never">Never</option>
+                        <option value="1">In 1 day</option>
+                        <option value="30">In 30 days</option>
                     </select>
                 </div>
-                <button type="button" class="btn primary" id="createBtn">Create link</button>
+                <button type="button" class="btn primary" id="createBtn">Create invite</button>
             </div>
             <div class="form-error" id="createError"></div>
         </div>
 
-        <div id="sharesContainer"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
+        <div id="invitesContainer"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
         <div class="page-note" id="pageNote" style="display:none"></div>
 {% endblock %}
 
 {% block scripts %}
     <script>
-        async function loadShares() {
+        async function loadInvites() {
             let data;
-            const container = document.getElementById('sharesContainer');
+            const container = document.getElementById('invitesContainer');
             try {
-                const resp = await fetch('/api/shares');
+                const resp = await fetch('/api/invites');
                 if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
-                if (!resp.ok) { container.innerHTML = ''; showNote('Could not load share links.'); return; }
+                if (!resp.ok) { container.innerHTML = ''; showNote('Could not load invite links.'); return; }
                 data = await resp.json();
             } catch (e) {
                 // Clear the seeded spinner (and any stale list) so the error
                 // note isn't contradicted by what's on screen.
                 container.innerHTML = '';
-                showNote('Could not load share links.');
+                showNote('Could not load invite links.');
                 return;
             }
-            renderShares(data);
+            renderInvites(data);
         }
 
         function showNote(msg) {
@@ -139,21 +140,22 @@
             return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
         }
 
-        function renderShares(data) {
-            const container = document.getElementById('sharesContainer');
+        function renderInvites(data) {
+            const container = document.getElementById('invitesContainer');
             container.innerHTML = '';
-            showNote(data.shares.length === 0 ? 'No share links yet.' : null);
-            for (const s of data.shares) {
-                container.appendChild(shareCard(s));
+            showNote(data.invites.length === 0 ? 'No invites yet.' : null);
+            for (const inv of data.invites) {
+                container.appendChild(inviteCard(inv));
             }
         }
 
-        function shareCard(s) {
+        function inviteCard(inv) {
             const card = document.createElement('div');
-            card.className = 'card share-row';
+            card.className = 'card invite-row';
 
             const badge = document.createElement('span');
-            const state = s.active ? 'active' : (s.revoked ? 'revoked' : 'expired');
+            // Precedence: a used invite reads "used" even if since expired.
+            const state = inv.used ? 'used' : (inv.revoked ? 'revoked' : (inv.active ? 'active' : 'expired'));
             badge.className = 'badge ' + state;
             badge.textContent = state;
             card.appendChild(badge);
@@ -162,15 +164,15 @@
             who.className = 'who';
             const label = document.createElement('div');
             label.className = 'label-line';
-            label.textContent = s.label || 'Unlabelled link';
+            label.textContent = inv.label || 'Unlabelled invite';
             who.appendChild(label);
             const meta = document.createElement('div');
             meta.className = 'meta-line';
-            const bits = ['created ' + fmtDate(s.created_at)];
-            if (s.expires_at) {
-                bits.push((s.expires_at * 1000 > Date.now() ? 'expires ' : 'expired ') + fmtDate(s.expires_at));
-            } else {
-                bits.push('never expires');
+            const bits = ['created ' + fmtDate(inv.created_at)];
+            if (inv.used) {
+                bits.push('used ' + fmtDate(inv.used_at));
+            } else if (inv.expires_at) {
+                bits.push((inv.expires_at * 1000 > Date.now() ? 'expires ' : 'expired ') + fmtDate(inv.expires_at));
             }
             meta.textContent = bits.join(' · ');
             who.appendChild(meta);
@@ -178,38 +180,30 @@
 
             const actions = document.createElement('div');
             actions.className = 'row-actions';
-            if (s.active) {
+            if (inv.active) {
                 const copyBtn = document.createElement('button');
                 copyBtn.className = 'btn';
                 copyBtn.textContent = 'Copy link';
                 copyBtn.addEventListener('click', async () => {
                     try {
-                        await navigator.clipboard.writeText(location.origin + s.url);
+                        await navigator.clipboard.writeText(location.origin + inv.url);
                         copyBtn.textContent = 'Copied ✓';
                         setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1500);
                     } catch (e) {
-                        prompt('Copy this link:', location.origin + s.url);
+                        prompt('Copy this link:', location.origin + inv.url);
                     }
                 });
                 actions.appendChild(copyBtn);
-
-                const openLink = document.createElement('a');
-                openLink.className = 'btn subtle';
-                openLink.href = s.url;
-                openLink.target = '_blank';
-                openLink.rel = 'noopener';
-                openLink.textContent = 'Open';
-                actions.appendChild(openLink);
 
                 const revokeBtn = document.createElement('button');
                 revokeBtn.className = 'btn danger';
                 revokeBtn.textContent = 'Revoke';
                 revokeBtn.addEventListener('click', async () => {
-                    if (!confirm('Revoke this link? Anyone using it loses access immediately.')) return;
+                    if (!confirm('Revoke this invite? The link stops working immediately.')) return;
                     revokeBtn.disabled = true;
                     revokeBtn.innerHTML = '<span class="spin">🥦</span>';
                     try {
-                        const resp = await fetch('/api/shares/' + encodeURIComponent(s.token), { method: 'DELETE' });
+                        const resp = await fetch('/api/invites/' + encodeURIComponent(inv.token), { method: 'DELETE' });
                         if (!resp.ok) {
                             const err = await resp.json().catch(() => ({}));
                             alert(err.error || 'Failed to revoke.');
@@ -217,7 +211,7 @@
                     } catch (e) {
                         alert('Network error.');
                     }
-                    loadShares();
+                    loadInvites();
                 });
                 actions.appendChild(revokeBtn);
             }
@@ -231,7 +225,7 @@
             btn.disabled = true;
             btn.innerHTML = '<span class="spin">🥦</span> Creating…';
             try {
-                const resp = await fetch('/api/shares', {
+                const resp = await fetch('/api/invites', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -242,19 +236,19 @@
                 if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
                 const result = await resp.json().catch(() => ({}));
                 if (!resp.ok) {
-                    showCreateError(result.error || 'Failed to create link.');
+                    showCreateError(result.error || 'Failed to create invite.');
                     return;
                 }
                 document.getElementById('labelInput').value = '';
-                await loadShares();
+                await loadInvites();
             } catch (e) {
-                showCreateError('Network error — link not created.');
+                showCreateError('Network error — invite not created.');
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Create link';
+                btn.textContent = 'Create invite';
             }
         });
 
-        loadShares();
+        loadInvites();
     </script>
 {% endblock %}

@@ -31,6 +31,7 @@ AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 USERS_TABLE = os.getenv('USERS_TABLE', 'ndiro-users')
 MEALS_TABLE = os.getenv('MEALS_TABLE', 'ndiro-meals')
 SHARES_TABLE = os.getenv('SHARES_TABLE', 'ndiro-shares')
+INVITES_TABLE = os.getenv('INVITES_TABLE', 'ndiro-invites')
 
 # Private bucket for meal photos. Optional: unset => photo endpoints 400 with a
 # clear message and text-only meals still work.
@@ -55,6 +56,10 @@ MAX_USERS = int(os.getenv('MAX_USERS', '100'))
 
 # Active share links allowed per user (revoked/expired links don't count).
 MAX_ACTIVE_SHARES = 20
+
+# Active (unused, unexpired, unrevoked) invite links per user. Bounds how much
+# auto-approval any single user can delegate; MAX_USERS is the global backstop.
+MAX_ACTIVE_INVITES = 10
 
 # --- AI estimator (optional) -------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')

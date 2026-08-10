@@ -34,9 +34,11 @@ python app.py                   # http://localhost:5000
 - `SECRET_KEY` — required; the app refuses to boot without it. Generate:
   `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
 - AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`)
-  for an IAM user allowed to use the three DynamoDB tables and the S3 bucket.
-  The tables (`ndiro-users`, `ndiro-meals`, `ndiro-shares`) are **created
-  automatically on first boot** (on-demand billing, no GSIs).
+  for an IAM user allowed to use the four DynamoDB tables and the S3 bucket.
+  The tables (`ndiro-users`, `ndiro-meals`, `ndiro-shares`, `ndiro-invites`)
+  are **created automatically on first boot** (on-demand billing, no GSIs) —
+  scope the IAM policy to an `ndiro-*` table wildcard so new tables keep
+  working.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` — an
   OAuth 2.0 *Web application* client from Google Cloud Console. The redirect
   URI must exactly match (`http://localhost:5000/callback` for dev).

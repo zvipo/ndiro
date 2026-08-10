@@ -21,6 +21,7 @@ os.environ['S3_BUCKET'] = 'fake-test-bucket'
 os.environ['USERS_TABLE'] = 'test-users'
 os.environ['MEALS_TABLE'] = 'test-meals'
 os.environ['SHARES_TABLE'] = 'test-shares'
+os.environ['INVITES_TABLE'] = 'test-invites'
 os.environ.pop('OPENAI_API_KEY', None)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,10 +71,11 @@ def session(c):
     return c.session_transaction(base_url=BASE_URL)
 
 
-def sign_in(c, sub, email, name='Test User'):
-    """Drive the real /login -> /callback flow with a stubbed Google exchange."""
+def sign_in(c, sub, email, name='Test User', login_url='/login?next=/log'):
+    """Drive the real /login -> /callback flow with a stubbed Google exchange.
+    login_url override lets invite tests enter via /login?invite=..."""
     auth.fetch_userinfo = lambda code: ({'sub': sub, 'email': email, 'name': name}, None)
-    resp = get(c, '/login?next=/log')
+    resp = get(c, login_url)
     assert resp.status_code == 302, f'/login gave {resp.status_code}'
     with session(c) as sess:
         state = sess['oauth_state']
