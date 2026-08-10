@@ -27,20 +27,6 @@
             flex: 1 1 130px;
         }
 
-        .preset-row {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 10px;
-        }
-
-        .preset-row label {
-            font-size: 0.9rem;
-            display: flex;
-            gap: 8px;
-            align-items: baseline;
-        }
-
         .nutrient-note {
             font-size: 0.8rem;
             color: var(--muted);
@@ -93,43 +79,26 @@
                 <strong>{{ nutrient.label }}</strong> —
                 {% if nutrient.direction == 'at_most' %}daily limit{% else %}daily goal{% endif %}
                 {{ nutrient.goal }} {{ nutrient.unit }}.</p>
-            <div class="preset-row">
-                <label><input type="radio" name="nutrientPreset" value="fiber"
-                    {% if nutrient.is_default %}checked{% endif %}>
-                    Viscous soluble fiber — {{ default_goal }} g daily goal (default,
-                    with the dietician food guide)</label>
-                <label><input type="radio" name="nutrientPreset" value="custom"
-                    {% if not nutrient.is_default %}checked{% endif %}>
-                    Custom micro</label>
-            </div>
-            <div id="customFields" {% if nutrient.is_default %}style="display:none"{% endif %}>
-                <div class="field-row">
-                    <div>
-                        <label class="form-label" for="nutrientLabel">Name</label>
-                        <input type="text" id="nutrientLabel" maxlength="40" placeholder="e.g. Iron"
-                            value="{% if not nutrient.is_default %}{{ nutrient.label }}{% endif %}">
-                    </div>
-                    <div>
-                        <label class="form-label" for="nutrientUnit">Unit</label>
-                        <input type="text" id="nutrientUnit" maxlength="10" placeholder="e.g. mg"
-                            value="{% if not nutrient.is_default %}{{ nutrient.unit }}{% endif %}">
-                    </div>
+            <div class="field-row">
+                <div>
+                    <label class="form-label" for="nutrientSelect">Micro</label>
+                    <select id="nutrientSelect">
+                        {% for entry in catalog %}
+                        <option value="{{ entry.key }}"
+                            data-goal="{{ entry.goal }}" data-unit="{{ entry.unit }}"
+                            data-direction="{{ entry.direction }}"
+                            {% if entry.key == nutrient.key %}selected{% endif %}>
+                            {{ entry.label|capitalize }} ({{ entry.unit }}){% if loop.first %} — default, with the food guide{% endif %}</option>
+                        {% endfor %}
+                    </select>
                 </div>
-                <div class="field-row">
-                    <div>
-                        <label class="form-label" for="nutrientGoal">Daily amount</label>
-                        <input type="number" id="nutrientGoal" min="0" step="any"
-                            value="{% if not nutrient.is_default %}{{ nutrient.goal }}{% endif %}">
-                    </div>
-                    <div>
-                        <label class="form-label" for="nutrientDirection">Aim</label>
-                        <select id="nutrientDirection">
-                            <option value="at_least" {% if nutrient.direction != 'at_most' %}selected{% endif %}>Reach at least (daily goal)</option>
-                            <option value="at_most" {% if nutrient.direction == 'at_most' %}selected{% endif %}>Stay under (daily limit)</option>
-                        </select>
-                    </div>
+                <div>
+                    <label class="form-label" for="nutrientGoal"><span id="goalWord">Daily goal</span> (<span id="goalUnit">{{ nutrient.unit }}</span>)</label>
+                    <input type="number" id="nutrientGoal" min="0" step="any"
+                        value="{{ nutrient.goal }}">
                 </div>
             </div>
+            <p class="nutrient-note" id="directionHint"></p>
             <p class="nutrient-note">Switching doesn't convert past meals — days logged
                 under a different micro will show 0 in Review (their values are kept,
                 and come back if you switch back).</p>
@@ -154,6 +123,9 @@
     <script>
         // ------- Tracked micro -------
         const saveNutrientBtn = document.getElementById('nutrientSaveBtn');
+        const nutrientSelect = document.getElementById('nutrientSelect');
+        const goalInput = document.getElementById('nutrientGoal');
+        const CURRENT_KEY = {{ nutrient.key|tojson }};
 
         function showNutrientError(msg) {
             const el = document.getElementById('nutrientError');
@@ -161,21 +133,27 @@
             el.textContent = msg || '';
         }
 
-        for (const radio of document.querySelectorAll('input[name="nutrientPreset"]')) {
-            radio.addEventListener('change', () => {
-                document.getElementById('customFields').style.display =
-                    radio.value === 'custom' && radio.checked ? 'block' : 'none';
-            });
+        function syncNutrientFields(prefillGoal) {
+            const opt = nutrientSelect.selectedOptions[0];
+            if (!opt) return;
+            const atMost = opt.dataset.direction === 'at_most';
+            document.getElementById('goalWord').textContent = atMost ? 'Daily limit' : 'Daily goal';
+            document.getElementById('goalUnit').textContent = opt.dataset.unit;
+            document.getElementById('directionHint').textContent = atMost
+                ? 'Stay under this amount — days over it show red in Review.'
+                : 'Aim to reach at least this amount each day.';
+            if (prefillGoal) goalInput.value = opt.dataset.goal;
         }
 
+        nutrientSelect.addEventListener('change', () => syncNutrientFields(true));
+        // On load: keep the user's saved goal, unless their stored micro is no
+        // longer offered (legacy) and the select fell back to the first entry.
+        syncNutrientFields(nutrientSelect.value !== CURRENT_KEY);
+
         saveNutrientBtn.addEventListener('click', async () => {
-            const preset = document.querySelector('input[name="nutrientPreset"]:checked').value;
-            const payload = preset === 'fiber' ? { preset: 'fiber' } : {
-                preset: 'custom',
-                label: document.getElementById('nutrientLabel').value.trim(),
-                unit: document.getElementById('nutrientUnit').value.trim(),
-                goal: document.getElementById('nutrientGoal').value.trim(),
-                direction: document.getElementById('nutrientDirection').value,
+            const payload = {
+                key: nutrientSelect.value,
+                goal: goalInput.value.trim(),
             };
             saveNutrientBtn.disabled = true;
             saveNutrientBtn.innerHTML = '<span class="spin">🥦</span> Saving…';

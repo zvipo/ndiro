@@ -134,8 +134,7 @@ tk.check('negative fiber rejected',
 # The endpoint takes no user_id anywhere; forged identity fields are ignored
 # and only the session user's row changes.
 resp = tk.post(bob, '/api/settings/nutrient', json={
-    'preset': 'custom', 'label': 'Iron', 'unit': 'mg', 'goal': 18,
-    'direction': 'at_most', 'user_id': 'sub-alice'})  # forged field ignored
+    'key': 'iron_mg', 'goal': 18, 'user_id': 'sub-alice'})  # forged field ignored
 tk.check("bob's nutrient config lands on bob only",
          resp.status_code == 200 and
          db.get_user('sub-bob').get('nutrient_key') == 'iron_mg' and

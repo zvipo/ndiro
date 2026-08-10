@@ -127,9 +127,11 @@ FIBER_GUIDE = [
 ]
 
 # --- Per-user tracked nutrient -----------------------------------------------
-# Each user tracks ONE micro-nutrient. Default (and the only preset) is the
-# viscous-fiber experience above; a custom micro is free-form label/unit/goal/
-# direction stored on the users row (nutrient_* attrs, validated in app.py).
+# Each user tracks ONE micro-nutrient, chosen from the curated catalog below
+# (stored on the users row as nutrient_* attrs; only the goal is user-editable,
+# prefilled from the catalog default). A closed set keeps the keys safe (they
+# double as form field names, map keys, and AI schema properties) and the AI
+# estimates grounded. Default = the viscous-fiber experience above.
 
 NUTRIENT_DIRECTIONS = ('at_least', 'at_most')  # maximize toward goal / stay under limit
 
@@ -141,6 +143,51 @@ DEFAULT_NUTRIENT = {
     'direction': 'at_least',
     'is_default': True,
 }
+
+# Order = display order in the settings dropdown; the fiber default first.
+# Default goals are common adult reference values (RDA/AI or WHO/AHA limits) —
+# starting points the user can personalize, not medical advice.
+NUTRIENT_CATALOG = [
+    {'key': 'fiber_g', 'label': 'viscous fiber', 'unit': 'g',
+     'goal': VISCOUS_FIBER_GOAL_G, 'direction': 'at_least'},
+    {'key': 'total_fiber_g', 'label': 'total fiber', 'unit': 'g',
+     'goal': 30, 'direction': 'at_least'},
+    {'key': 'protein_g', 'label': 'protein', 'unit': 'g',
+     'goal': 90, 'direction': 'at_least'},
+    {'key': 'added_sugar_g', 'label': 'added sugar', 'unit': 'g',
+     'goal': 25, 'direction': 'at_most'},
+    {'key': 'sodium_mg', 'label': 'sodium', 'unit': 'mg',
+     'goal': 2300, 'direction': 'at_most'},
+    {'key': 'sat_fat_g', 'label': 'saturated fat', 'unit': 'g',
+     'goal': 20, 'direction': 'at_most'},
+    {'key': 'potassium_mg', 'label': 'potassium', 'unit': 'mg',
+     'goal': 3400, 'direction': 'at_least'},
+    {'key': 'calcium_mg', 'label': 'calcium', 'unit': 'mg',
+     'goal': 1000, 'direction': 'at_least'},
+    {'key': 'iron_mg', 'label': 'iron', 'unit': 'mg',
+     'goal': 18, 'direction': 'at_least'},
+    {'key': 'cholesterol_mg', 'label': 'cholesterol', 'unit': 'mg',
+     'goal': 300, 'direction': 'at_most'},
+]
+
+
+def catalog_entry(key):
+    """The catalog row for a key, or None (unknown/legacy free-form keys)."""
+    for entry in NUTRIENT_CATALOG:
+        if entry['key'] == key:
+            return entry
+    return None
+
+
+def _safe_goal(raw):
+    """A positive finite goal (int when integral) or None."""
+    try:
+        goal = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(goal) or goal <= 0:
+        return None
+    return int(goal) if goal.is_integer() else goal
 
 
 def resolve_nutrient(user_row):
@@ -155,18 +202,20 @@ def resolve_nutrient(user_row):
     """
     key = (user_row or {}).get('nutrient_key')
     if not key or key == 'fiber_g':
-        return dict(DEFAULT_NUTRIENT)
-    try:
-        goal = float(user_row.get('nutrient_goal', 0))
-    except (TypeError, ValueError):
-        goal = 0.0
-    if not math.isfinite(goal) or goal <= 0:
+        cfg = dict(DEFAULT_NUTRIENT)
+        if key == 'fiber_g':
+            # The goal is user-editable even for the fiber default; rows
+            # without the attr (legacy) keep the Portfolio Diet 20.
+            goal = _safe_goal(user_row.get('nutrient_goal'))
+            if goal is not None:
+                cfg['goal'] = goal
+        return cfg
+    goal = _safe_goal(user_row.get('nutrient_goal'))
+    if goal is None:
         # Corrupt row (today's writer sets all five attrs atomically, but a
         # manual edit could break this): a 0/NaN goal would NaN the chart
         # axis math, so degrade to the safe default instead.
         return dict(DEFAULT_NUTRIENT)
-    if goal.is_integer():
-        goal = int(goal)
     direction = user_row.get('nutrient_direction')
     if direction not in NUTRIENT_DIRECTIONS:
         direction = 'at_least'

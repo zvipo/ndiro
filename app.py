@@ -871,94 +871,43 @@ def revoke_share(token):
 def settings_page():
     return render_template('settings.html', user=g.user,
                            nutrient=config.resolve_nutrient(g.user),
-                           default_goal=config.VISCOUS_FIBER_GOAL_G)
-
-
-_NUTRIENT_SLUG_RE = re.compile(r'[^a-z0-9]+')
-
-
-# The derived key wears three hats — meal-form field name, nutrients map key,
-# and AI json_schema property — so it must never collide with any name those
-# namespaces already use. 'constructor' is the one all-lowercase JS
-# Object.prototype property a slug can produce ('__proto__' can't survive the
-# single-underscore slugging).
-_RESERVED_NUTRIENT_KEYS = frozenset((
-    'date', 'time', 'description', 'context', 'photo', 'ai_assisted',
-    'remove_photo', 'nutrient_key',            # meal-form fields
-    'note', 'items', 'amount', 'model',        # AI schema/wire properties
-    'constructor',                             # JS prototype pollution
-))
-
-
-def _derive_nutrient_key(label, unit):
-    """Stable storage key from label+unit, e.g. ('Iron','mg') -> 'iron_mg'.
-
-    The key doubles as the form field name, the DynamoDB map key, and the AI
-    schema property, so it must be a plain [a-z0-9_] identifier outside
-    _RESERVED_NUTRIENT_KEYS. None when nothing survives (e.g. a fully
-    non-Latin label — PoC limitation, clear 400)."""
-    slug = _NUTRIENT_SLUG_RE.sub('_', f'{label} {unit}'.lower()).strip('_')
-    if not slug:
-        return None
-    if slug[0].isdigit():
-        slug = 'n_' + slug
-    return slug[:48]
+                           catalog=config.NUTRIENT_CATALOG)
 
 
 @app.route('/api/settings/nutrient', methods=['POST'])
 @auth.approved_required
 def set_nutrient():
-    """Set the user's tracked micro: the fiber preset or a free-form custom
-    one (label/unit/goal/direction). Writes only the session user's row."""
+    """Set the user's tracked micro: a NUTRIENT_CATALOG key plus an optional
+    goal override (prefilled from the catalog default in the UI). The closed
+    catalog keeps keys safe — they double as form field names, nutrients map
+    keys, and AI schema properties. Writes only the session user's row."""
     data = request.get_json(silent=True) or {}
     user_id = g.user['user_id']
-    preset = data.get('preset')
 
-    if preset == 'fiber':
-        d = config.DEFAULT_NUTRIENT
-        args = (d['key'], d['label'], d['unit'], d['goal'], d['direction'])
-    elif preset == 'custom':
-        label = str(data.get('label') or '').strip()
-        unit = str(data.get('unit') or '').strip()
-        if not label or len(label) > 40:
-            return jsonify({'error': 'Label must be 1-40 characters'}), 400
-        if not unit or len(unit) > 10:
-            return jsonify({'error': 'Unit must be 1-10 characters'}), 400
-        if any(ord(c) < 32 for c in label + unit):
-            return jsonify({'error': 'Label and unit must be plain text'}), 400
-        direction = data.get('direction')
-        if direction not in config.NUTRIENT_DIRECTIONS:
-            return jsonify({'error': "direction must be 'at_least' or 'at_most'"}), 400
+    entry = config.catalog_entry(data.get('key'))
+    if entry is None:
+        return jsonify({'error': 'Pick a micro from the list'}), 400
+    raw_goal = data.get('goal')
+    if raw_goal in (None, ''):
+        goal = Decimal(str(entry['goal']))
+    else:
         try:
-            goal = Decimal(str(data.get('goal')))
+            goal = Decimal(str(raw_goal))
         except InvalidOperation:
             return jsonify({'error': 'Goal must be a number'}), 400
         if not goal.is_finite() or goal <= 0 or goal > _NUTRIENT_MAX:
             return jsonify({'error': 'Goal must be greater than 0 and sane'}), 400
-        key = _derive_nutrient_key(label, unit)
-        if not key:
-            return jsonify({'error': 'Label must contain letters or digits (a-z, 0-9)'}), 400
-        if key == 'fiber_g':
-            # Letting this through would silently discard the custom goal and
-            # direction (the resolver treats fiber_g as the preset).
-            return jsonify({'error': 'That matches the built-in viscous fiber '
-                                     'preset — select it instead'}), 400
-        if key in _RESERVED_NUTRIENT_KEYS:
-            return jsonify({'error': 'That name is reserved — pick a different '
-                                     'label or unit'}), 400
-        args = (key, label, unit, goal, direction)
-    else:
-        return jsonify({'error': "preset must be 'fiber' or 'custom'"}), 400
 
     try:
-        db.set_user_nutrient(user_id, *args)
+        db.set_user_nutrient(user_id, entry['key'], entry['label'],
+                             entry['unit'], goal, entry['direction'])
     except Exception as e:
         print(f"Error saving nutrient config for user {user_id}: {type(e).__name__}")
         return jsonify({'error': 'Failed to save — please try again'}), 500
-    key, label, unit, goal, direction = args
     return jsonify({'nutrient': config.resolve_nutrient({
-        'nutrient_key': key, 'nutrient_label': label, 'nutrient_unit': unit,
-        'nutrient_goal': goal, 'nutrient_direction': direction})})
+        'nutrient_key': entry['key'], 'nutrient_label': entry['label'],
+        'nutrient_unit': entry['unit'], 'nutrient_goal': goal,
+        'nutrient_direction': entry['direction']})})
 
 
 @app.route('/api/account/delete', methods=['POST'])
