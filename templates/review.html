@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Review{% endblock %}
+{% block favicon %}📊{% endblock %}
+{% block container_class %}wide{% endblock %}
+
+{% block styles %}
+{% include "_review_styles.html" %}
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>📊 Review</h1>
+            <span class="subtitle">meals &amp; viscous soluble fiber</span>
+            <a class="header-link" href="/log">← log</a>
+        </div>
+
+{% include "_review_core.html" %}
+{% endblock %}

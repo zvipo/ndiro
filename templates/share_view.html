@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Shared meal log{% endblock %}
+{% block favicon %}📊{% endblock %}
+{% block container_class %}wide{% endblock %}
+
+{% block styles %}
+{% include "_review_styles.html" %}
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🥦 Ndiro</h1>
+            <span class="subtitle">shared read-only meal log · viscous soluble fiber</span>
+        </div>
+
+{% include "_review_core.html" %}
+{% endblock %}
+
+{# No account chrome on shared views: theme toggle only — no home link, no
+   sign-in control, and (by construction of _review_core) no edit or AI UI. #}
+{% block chrome %}
+    <div class="theme-control">
+        <button type="button" id="themeToggle" aria-label="Switch theme">☀️</button>
+    </div>
+{% endblock %}

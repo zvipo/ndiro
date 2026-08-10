@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Ndiro{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🥦 Ndiro</h1>
+        </div>
+
+        <div class="card">
+            <p>This link has expired or is no longer available.</p>
+            <p class="muted" style="margin-top:10px; font-size:0.85rem;">If someone
+            shared their meal log with you, ask them for a fresh link.</p>
+        </div>
+{% endblock %}
+
+{# Same minimal chrome as the share view: this page must be identical for
+   missing, revoked, and expired tokens alike. #}
+{% block chrome %}
+    <div class="theme-control">
+        <button type="button" id="themeToggle" aria-label="Switch theme">☀️</button>
+    </div>
+{% endblock %}

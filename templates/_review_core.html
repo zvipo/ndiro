@@ -1,0 +1,383 @@
+{# Shared review chart + feed. Context (from the parent render): meals_url —
+   the data endpoint ('/api/meals' or '/s/<token>/meals'); goal_g — daily goal.
+   The share view differs ONLY in its data URL and page chrome: this core has
+   no edit affordances and no AI branches by construction. #}
+        <div class="card month-nav">
+            <button type="button" class="btn" id="prevMonth" title="Previous month">‹</button>
+            <span id="monthLabel">&nbsp;</span>
+            <button type="button" class="btn" id="nextMonth" title="Next month">›</button>
+        </div>
+
+        <div class="card">
+            <div class="chart-caption">
+                <span class="label">Daily viscous fiber (g)</span>
+                <span class="hint"><span class="goal">―</span> {{ goal_g }} g goal · <span class="dot">●</span> context note</span>
+            </div>
+            <div id="fiberChart"></div>
+        </div>
+
+        <div id="daysContainer"></div>
+        <div class="page-note" id="pageNote" style="display:none"></div>
+
+    <script>
+        // Read-only monthly review. Note: photo URLs are presigned (1h) — a tab
+        // left open past that shows broken thumbnails until refresh.
+        const MEALS_URL = {{ meals_url|tojson }};
+        // Portfolio Diet daily goal; mirrors VISCOUS_FIBER_GOAL_G in config.py.
+        const GOAL_G = {{ goal_g|tojson }};
+        let shownMonth = getMonthParam();
+        let serverToday = null;
+        let lastChartDays = null;
+
+        function getMonthParam() {
+            const m = new URLSearchParams(location.search).get('month');
+            return /^\d{4}-\d{2}$/.test(m || '') ? m : currentMonthLocal();
+        }
+
+        function currentDateLocal() {
+            // Client's local today — sent as ?anchor so a lagging server clock
+            // never hides today's meals.
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') +
+                   '-' + String(now.getDate()).padStart(2, '0');
+        }
+
+        function currentMonthLocal() {
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+        }
+
+        async function loadMonth(retrying) {
+            document.getElementById('daysContainer').innerHTML =
+                '<div class="page-note"><span class="spin">🥦</span> loading…</div>';
+            let data;
+            try {
+                const resp = await fetch(MEALS_URL + '?month=' + shownMonth + '&anchor=' + currentDateLocal());
+                if (resp.status === 401 || resp.status === 403) {
+                    window.location.href = '/';
+                    return;
+                }
+                if (resp.status === 404) {
+                    // Share link no longer valid.
+                    document.getElementById('daysContainer').innerHTML = '';
+                    showNote('This link has expired or is no longer available.');
+                    return;
+                }
+                if (!resp.ok) {
+                    // Bad/future month (e.g. stale URL) — snap back to the current month once.
+                    if (!retrying) {
+                        shownMonth = currentMonthLocal();
+                        return loadMonth(true);
+                    }
+                    document.getElementById('daysContainer').innerHTML = '';
+                    showNote('Could not load that month.');
+                    return;
+                }
+                data = await resp.json();
+            } catch (e) {
+                document.getElementById('daysContainer').innerHTML = '';
+                showNote('Could not load meals.');
+                return;
+            }
+            serverToday = data.today;
+            renderAll(data);
+        }
+
+        function showNote(msg) {
+            const note = document.getElementById('pageNote');
+            note.style.display = msg ? 'block' : 'none';
+            note.textContent = msg || '';
+        }
+
+        function monthTitle(monthStr) {
+            const d = new Date(monthStr + '-01T00:00:00');
+            return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+        }
+
+        function formatTime(t) {
+            // "14:30" -> locale short time, e.g. "2:30 PM"
+            const d = new Date('1970-01-01T' + t + ':00');
+            return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+
+        function formatDay(dateStr) {
+            const d = new Date(dateStr + 'T00:00:00');
+            const label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+            if (dateStr === serverToday) return 'Today — ' + label;
+            return label;
+        }
+
+        function renderAll(data) {
+            document.getElementById('monthLabel').textContent = monthTitle(shownMonth);
+            document.getElementById('nextMonth').disabled =
+                serverToday && shownMonth >= serverToday.slice(0, 7);
+
+            lastChartDays = [...data.days].reverse();
+            renderChart(lastChartDays);
+            renderFeed(data.days);
+
+            if (data.error) {
+                showNote('Meals unavailable — try again later.');
+            } else if (data.days.every(d => d.meals.length === 0)) {
+                showNote('No meals logged in ' + monthTitle(shownMonth) + '.');
+            } else {
+                showNote(null);
+            }
+        }
+
+        // ------- Chart: one gold bar per day, purple dot = context note -------
+        function renderChart(days) {
+            // Draw at 1 SVG unit ≈ 1 CSS px of the card's current width, so the
+            // chart fills the container at any browser size (redrawn on resize).
+            const holder = document.getElementById('fiberChart');
+            const GUTTER = 30, H = 150, BASE = 112, PLOT_H = 92;
+            const W = Math.max(320, holder.clientWidth || 320);
+            const SLOT = (W - GUTTER) / days.length;
+            const BAR_W = Math.min(Math.max(6, SLOT * 0.65), 36);
+            const maxFiber = Math.max(10, ...days.map(d => d.totals.fiber_g || 0));
+            // Axis always includes the goal so distance-to-goal reads honestly.
+            const axisTop = Math.max(maxFiber, GOAL_G);
+            // Tick step in clean 5s, at most ~3 gridlines; top tick = niceMax.
+            const step = Math.max(5, Math.ceil(axisTop / 15) * 5);
+            const niceMax = Math.ceil(axisTop / step) * step;
+
+            // Palette from the CSS tokens at draw time, so the theme toggle
+            // re-renders the chart in the right colors.
+            const css = getComputedStyle(document.documentElement);
+            const PAL = {
+                bar: css.getPropertyValue('--gold').trim(),
+                grid: css.getPropertyValue('--border').trim(),
+                text: css.getPropertyValue('--muted').trim(),
+                goal: css.getPropertyValue('--green').trim(),
+                dot: css.getPropertyValue('--purple').trim(),
+            };
+
+            const svgns = 'http://www.w3.org/2000/svg';
+            const svg = document.createElementNS(svgns, 'svg');
+            svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+            function el(name, attrs, parent) {
+                const node = document.createElementNS(svgns, name);
+                for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+                (parent || svg).appendChild(node);
+                return node;
+            }
+
+            function text(str, x, y, anchor) {
+                const t = el('text', {
+                    x: x, y: y, fill: PAL.text, 'font-size': '9',
+                    'text-anchor': anchor || 'middle', 'font-family': 'inherit'
+                });
+                t.textContent = str;
+                return t;
+            }
+
+            // Recessive gridlines at each y tick; unit only on the top label.
+            for (let v = step; v <= niceMax; v += step) {
+                const y = BASE - (v / niceMax) * PLOT_H;
+                el('line', { x1: GUTTER, y1: y, x2: W, y2: y, stroke: PAL.grid, 'stroke-width': 1 });
+                text(v === niceMax ? v + ' g' : String(v), GUTTER - 4, y + 3, 'end');
+            }
+            el('line', { x1: GUTTER, y1: BASE, x2: W, y2: BASE, stroke: PAL.grid, 'stroke-width': 1 });
+            text('0', GUTTER - 4, BASE + 3, 'end');
+
+            // Dashed goal line (recessive vs the solid gold bars).
+            const goalY = BASE - (GOAL_G / niceMax) * PLOT_H;
+            el('line', { x1: GUTTER, y1: goalY, x2: W, y2: goalY, stroke: PAL.goal,
+                         'stroke-width': 1, 'stroke-dasharray': '4 3', opacity: 0.75 });
+            const goalLabel = text('goal', W - 2, goalY - 3, 'end');
+            goalLabel.setAttribute('fill', PAL.goal);
+            // X-axis title, centered under the day numbers.
+            text('day of month', GUTTER + (W - GUTTER) / 2, H - 4);
+
+            // Bar with rounded top only (square at the baseline).
+            function barPath(x, h) {
+                const r = Math.min(3, h / 2);
+                const top = BASE - h;
+                return `M${x},${BASE} L${x},${top + r} Q${x},${top} ${x + r},${top} ` +
+                       `L${x + BAR_W - r},${top} Q${x + BAR_W},${top} ${x + BAR_W},${top + r} ` +
+                       `L${x + BAR_W},${BASE} Z`;
+            }
+
+            days.forEach((day, i) => {
+                const x = GUTTER + i * SLOT + (SLOT - BAR_W) / 2;
+                const dayNum = parseInt(day.date.slice(8), 10);
+                const fiber = day.totals.fiber_g || 0;
+                const hasContext = day.meals.some(m => m.context);
+                const hasMeals = day.meals.length > 0;
+                const g = el('g', { cursor: hasMeals ? 'pointer' : 'default' });
+
+                if (fiber > 0) {
+                    const h = Math.max(3, (fiber / niceMax) * PLOT_H);
+                    el('path', { d: barPath(x, h), fill: PAL.bar }, g);
+                } else {
+                    // Stub so every day visibly exists (zero fiber or nothing logged).
+                    el('rect', { x: x, y: BASE - 2, width: BAR_W, height: 2, fill: PAL.grid }, g);
+                }
+
+                if (hasContext) {
+                    const barH = fiber > 0 ? Math.max(3, (fiber / niceMax) * PLOT_H) : 2;
+                    el('circle', { cx: x + BAR_W / 2, cy: BASE - barH - 6, r: 2.5, fill: PAL.dot }, g);
+                }
+
+                if ([1, 5, 10, 15, 20, 25, 30].includes(dayNum)) {
+                    text(String(dayNum), x + BAR_W / 2, BASE + 14);
+                }
+
+                // Invisible full-height hit target with a native tooltip.
+                const hit = el('rect', { x: GUTTER + i * SLOT, y: BASE - PLOT_H - 10, width: SLOT, height: PLOT_H + 12, fill: 'transparent' }, g);
+                const label = formatDay(day.date).replace('Today — ', '') + ' — ' +
+                    (hasMeals ? fiber + ' g viscous fiber' + (hasContext ? ' · context note' : '') : 'nothing logged');
+                el('title', {}, hit).textContent = label;
+                if (hasMeals) {
+                    g.addEventListener('click', () => {
+                        const section = document.getElementById('day-' + day.date);
+                        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                }
+                svg.appendChild(g);
+            });
+
+            holder.innerHTML = '';
+            holder.appendChild(svg);
+        }
+
+
+        function openLightbox(url) {
+            const overlay = document.createElement('div');
+            overlay.className = 'lightbox';
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = 'meal photo';
+            overlay.appendChild(img);
+            const close = document.createElement('span');
+            close.className = 'lightbox-close';
+            close.textContent = '✕';
+            overlay.appendChild(close);
+            function dismiss() {
+                overlay.remove();
+                document.removeEventListener('keydown', onKey);
+            }
+            function onKey(e) {
+                if (e.key === 'Escape') dismiss();
+            }
+            overlay.addEventListener('click', dismiss);
+            document.addEventListener('keydown', onKey);
+            document.body.appendChild(overlay);
+        }
+
+        // ------- Feed: newest-first day sections, empty days skipped -------
+        function renderFeed(days) {
+            const container = document.getElementById('daysContainer');
+            container.innerHTML = '';
+            for (const day of days) {
+                if (day.meals.length === 0) continue;
+                const section = document.createElement('div');
+                section.id = 'day-' + day.date;
+
+                const heading = document.createElement('div');
+                heading.className = 'day-heading';
+                const h2 = document.createElement('h2');
+                h2.textContent = formatDay(day.date);
+                heading.appendChild(h2);
+                if (day.totals.fiber_g != null) {
+                    const fiber = document.createElement('span');
+                    fiber.className = 'day-fiber';
+                    fiber.textContent = day.totals.fiber_g + ' g viscous fiber';
+                    heading.appendChild(fiber);
+                }
+                section.appendChild(heading);
+
+                for (const meal of day.meals) {
+                    section.appendChild(mealCard(meal));
+                }
+                container.appendChild(section);
+            }
+        }
+
+        function mealCard(meal) {
+            const card = document.createElement('div');
+            card.className = 'card meal-card' + (meal.context ? ' has-context' : '');
+
+            if (meal.photo_url) {
+                const img = document.createElement('img');
+                img.className = 'meal-photo';
+                img.src = meal.photo_url;
+                img.alt = 'meal photo';
+                img.loading = 'lazy';
+                img.addEventListener('click', () => openLightbox(meal.photo_url));
+                card.appendChild(img);
+            }
+
+            const body = document.createElement('div');
+            body.className = 'meal-body';
+            const desc = document.createElement('div');
+            desc.className = 'meal-desc';
+            desc.textContent = meal.description;
+            body.appendChild(desc);
+
+            if (meal.context) {
+                const ctx = document.createElement('div');
+                ctx.className = 'meal-context';
+                ctx.textContent = meal.context;
+                body.appendChild(ctx);
+            }
+
+            if (meal.time || meal.nutrients.fiber_g != null || meal.ai_assisted) {
+                const meta = document.createElement('div');
+                meta.className = 'meal-meta';
+                if (meal.time) {
+                    meta.appendChild(document.createTextNode(formatTime(meal.time)));
+                }
+                if (meal.nutrients.fiber_g != null) {
+                    if (meal.time) meta.appendChild(document.createTextNode(' · '));
+                    const fiber = document.createElement('span');
+                    fiber.className = 'fiber';
+                    fiber.textContent = meal.nutrients.fiber_g + ' g viscous fiber';
+                    meta.appendChild(fiber);
+                }
+                if (meal.ai_assisted) {
+                    meta.appendChild(document.createTextNode(' · '));
+                    const mark = document.createElement('span');
+                    mark.className = 'ai-mark';
+                    mark.title = 'AI-assisted entry';
+                    mark.textContent = '✦';
+                    meta.appendChild(mark);
+                }
+                body.appendChild(meta);
+            }
+
+            card.appendChild(body);
+            return card;
+        }
+
+        // ------- Month navigation (URL-addressable, back-button friendly) -------
+        function shiftMonth(delta) {
+            const [y, m] = shownMonth.split('-').map(Number);
+            const d = new Date(y, m - 1 + delta, 1);
+            shownMonth = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+            const url = shownMonth === currentMonthLocal() ? location.pathname : '?month=' + shownMonth;
+            history.pushState(null, '', url);
+            loadMonth();
+        }
+
+        document.getElementById('prevMonth').addEventListener('click', () => shiftMonth(-1));
+        document.getElementById('nextMonth').addEventListener('click', () => shiftMonth(1));
+        window.addEventListener('popstate', () => {
+            shownMonth = getMonthParam();
+            loadMonth();
+        });
+
+        let resizeTimer = null;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => { if (lastChartDays) renderChart(lastChartDays); }, 150);
+        });
+
+        // Theme toggle re-renders the chart with the new token palette.
+        document.addEventListener('ndiro-theme-change', () => {
+            if (lastChartDays) renderChart(lastChartDays);
+        });
+
+        loadMonth();
+    </script>

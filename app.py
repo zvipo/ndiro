@@ -7,6 +7,7 @@ and root-absolute template paths never change.
 """
 import calendar
 import secrets
+import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -566,6 +567,164 @@ def delete_meal(date_str, meal_id):
         return jsonify({'error': 'Failed to delete meal'}), 500
 
     return jsonify({'deleted': True, 'date': date_str, 'meal_id': meal_id})
+
+
+# --- Review ------------------------------------------------------------------
+
+@app.route('/review')
+@auth.approved_required
+def review_page():
+    return render_template('review.html', user=g.user,
+                           goal_g=config.VISCOUS_FIBER_GOAL_G,
+                           meals_url='/api/meals')
+
+
+# --- Share links -------------------------------------------------------------
+# /s/<token> is public, token-gated, rate-limited, read-only, and fully
+# session-independent: everything is scoped to the token row's user_id.
+# Missing, revoked, and expired tokens are INDISTINGUISHABLE (same 404 body).
+
+def _resolve_share(token):
+    """Share row if the token is valid AND active, else None (no reason given)."""
+    try:
+        row = db.get_share(token)
+    except Exception as e:
+        print(f"Error resolving share token: {type(e).__name__}")
+        return None
+    return row if db.share_is_active(row) else None
+
+
+@app.route('/s/<token>')
+@limiter.limit('30 per minute')
+def share_view(token):
+    share = _resolve_share(token)
+    if share is None:
+        # Byte-identical for missing/revoked/expired — no enumeration oracle.
+        return render_template('share_404.html'), 404
+    return render_template('share_view.html',
+                           goal_g=config.VISCOUS_FIBER_GOAL_G,
+                           meals_url=f'/s/{token}/meals')
+
+
+@app.route('/s/<token>/meals')
+@limiter.limit('30 per minute')
+def share_meals(token):
+    share = _resolve_share(token)
+    if share is None:
+        return jsonify({'error': 'This link has expired or is no longer available'}), 404
+    # Month reads only — the minimal surface the share page needs.
+    args = {'anchor': request.args.get('anchor')}
+    month = request.args.get('month')
+    if month:
+        args['month'] = month
+    else:
+        anchor = args['anchor']
+        args['month'] = anchor[:7] if anchor and _valid_date(anchor) \
+            else datetime.now(timezone.utc).strftime('%Y-%m')
+    payload, status = _meals_payload(share['user_id'], args)
+    return jsonify(payload), status
+
+
+def _share_to_json(row):
+    expires_at = row.get('expires_at')
+    return {
+        'token': row['share_token'],
+        'url': f"/s/{row['share_token']}",
+        'label': row.get('label', ''),
+        'created_at': row.get('created_at'),
+        'expires_at': int(expires_at) if expires_at is not None else None,
+        'revoked': bool(row.get('revoked')),
+        'active': db.share_is_active(row),
+    }
+
+
+@app.route('/shares')
+@auth.approved_required
+def shares_page():
+    return render_template('shares.html', user=g.user)
+
+
+@app.route('/api/shares')
+@auth.approved_required
+def list_shares():
+    try:
+        rows = db.list_user_shares(g.user['user_id'])
+    except Exception as e:
+        print(f"Error listing shares: {type(e).__name__}")
+        return jsonify({'error': 'Failed to list share links'}), 500
+    rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+    return jsonify({'shares': [_share_to_json(r) for r in rows],
+                    'max_active': config.MAX_ACTIVE_SHARES})
+
+
+@app.route('/api/shares', methods=['POST'])
+@auth.approved_required
+def create_share():
+    data = request.get_json(silent=True) or {}
+    label = (data.get('label') or '').strip()
+    if len(label) > 100:
+        return jsonify({'error': 'Label too long (max 100 characters)'}), 400
+    expires = str(data.get('expires') or 'never')
+    if expires not in ('7', '30', '90', 'never'):
+        return jsonify({'error': 'expires must be 7, 30, 90 or never'}), 400
+    expires_at = None if expires == 'never' else int(time.time()) + int(expires) * 86400
+
+    user_id = g.user['user_id']
+    try:
+        active = [r for r in db.list_user_shares(user_id) if db.share_is_active(r)]
+        if len(active) >= config.MAX_ACTIVE_SHARES:
+            return jsonify({'error': f'Limit of {config.MAX_ACTIVE_SHARES} active '
+                                     'share links reached — revoke one first'}), 400
+        row = db.create_share(user_id, label or None, expires_at)
+    except Exception as e:
+        print(f"Error creating share for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to create share link'}), 500
+    return jsonify(_share_to_json(row)), 201
+
+
+@app.route('/api/shares/<token>', methods=['DELETE'])
+@auth.approved_required
+def revoke_share(token):
+    """Revoke = flip the flag, conditioned on ownership; the row is kept."""
+    try:
+        ok = db.revoke_share(token, g.user['user_id'])
+    except Exception as e:
+        print(f"Error revoking share: {type(e).__name__}")
+        return jsonify({'error': 'Failed to revoke share link'}), 500
+    if not ok:
+        return jsonify({'error': 'Share link not found'}), 404
+    return jsonify({'revoked': True})
+
+
+# --- Settings / account deletion ---------------------------------------------
+
+@app.route('/settings')
+@auth.approved_required
+def settings_page():
+    return render_template('settings.html', user=g.user)
+
+
+@app.route('/api/account/delete', methods=['POST'])
+@auth.approved_required
+def delete_account():
+    """Self-service deletion: wipes the user's meals, their whole
+    users/{user_id}/ S3 prefix, their share links, and their user row."""
+    data = request.get_json(silent=True) or {}
+    if data.get('confirm') != 'delete':
+        return jsonify({'error': 'Confirmation required'}), 400
+    user_id = g.user['user_id']
+    db.delete_user_photos(user_id)  # best-effort inside
+    try:
+        db.delete_all_meals(user_id)
+        db.delete_user_shares(user_id)
+        db.delete_user(user_id)
+    except Exception as e:
+        # User row is deleted LAST so a partial failure stays retryable.
+        print(f"Error deleting account {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Account deletion failed — please try again'}), 500
+    session.clear()
+    print(f"Account deleted: user {user_id}")
+    return jsonify({'deleted': True})
 
 
 if __name__ == '__main__':
