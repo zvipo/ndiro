@@ -3,6 +3,7 @@
 Everything configurable comes from the environment (.env via python-dotenv).
 No secrets, bucket names, hostnames, or emails are ever hardcoded here.
 """
+import math
 import os
 
 from dotenv import load_dotenv
@@ -159,6 +160,11 @@ def resolve_nutrient(user_row):
         goal = float(user_row.get('nutrient_goal', 0))
     except (TypeError, ValueError):
         goal = 0.0
+    if not math.isfinite(goal) or goal <= 0:
+        # Corrupt row (today's writer sets all five attrs atomically, but a
+        # manual edit could break this): a 0/NaN goal would NaN the chart
+        # axis math, so degrade to the safe default instead.
+        return dict(DEFAULT_NUTRIENT)
     if goal.is_integer():
         goal = int(goal)
     direction = user_row.get('nutrient_direction')

@@ -309,6 +309,18 @@ def _nutrients_from_form(form, nutrient_key):
     return nutrients
 
 
+def _stale_nutrient_form(form, nutrient_key):
+    """400 response when the page that posted this form was rendered under a
+    different tracked micro (its hidden nutrient_key disagrees) — otherwise a
+    stale tab's typed amount would be dropped silently. Absent field = older
+    client; accept."""
+    sent = form.get('nutrient_key')
+    if sent and sent != nutrient_key:
+        return jsonify({'error': 'Your tracked micro changed — reload this '
+                                 'page and try again'}), 400
+    return None
+
+
 def _read_meal_form(form, nutrient_key):
     """Validate the fields shared by add/edit. Returns (description, context,
     nutrients); raises ValueError(message) on any invalid field."""
@@ -476,9 +488,12 @@ def add_meal():
     if date.fromisoformat(date_str) > datetime.now(timezone.utc).date() + timedelta(days=1):
         return jsonify({'error': "Date can't be in the future"}), 400
 
+    nutrient_key = config.resolve_nutrient(g.user)['key']
+    stale = _stale_nutrient_form(request.form, nutrient_key)
+    if stale:
+        return stale
     try:
-        description, context, nutrients = _read_meal_form(
-            request.form, config.resolve_nutrient(g.user)['key'])
+        description, context, nutrients = _read_meal_form(request.form, nutrient_key)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
@@ -541,11 +556,21 @@ def update_meal(date_str, meal_id):
     if not existing:
         return jsonify({'error': 'Meal not found'}), 404
 
+    nutrient_key = config.resolve_nutrient(g.user)['key']
+    stale = _stale_nutrient_form(request.form, nutrient_key)
+    if stale:
+        return stale
     try:
-        description, context, nutrients = _read_meal_form(
-            request.form, config.resolve_nutrient(g.user)['key'])
+        description, context, nutrients = _read_meal_form(request.form, nutrient_key)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
+
+    # Preserve values stored under OTHER nutrient keys (meals logged before a
+    # micro switch): the form only carries the active key, and a plain replace
+    # would erase the old value the settings page promises to keep.
+    for k, v in (existing.get('nutrients') or {}).items():
+        if k != nutrient_key:
+            nutrients[k] = v
 
     photo_key = existing.get('photo_key')
     # Defer the S3 removal until the row is safely written, so a failed update
@@ -852,12 +877,26 @@ def settings_page():
 _NUTRIENT_SLUG_RE = re.compile(r'[^a-z0-9]+')
 
 
+# The derived key wears three hats — meal-form field name, nutrients map key,
+# and AI json_schema property — so it must never collide with any name those
+# namespaces already use. 'constructor' is the one all-lowercase JS
+# Object.prototype property a slug can produce ('__proto__' can't survive the
+# single-underscore slugging).
+_RESERVED_NUTRIENT_KEYS = frozenset((
+    'date', 'time', 'description', 'context', 'photo', 'ai_assisted',
+    'remove_photo', 'nutrient_key',            # meal-form fields
+    'note', 'items', 'amount', 'model',        # AI schema/wire properties
+    'constructor',                             # JS prototype pollution
+))
+
+
 def _derive_nutrient_key(label, unit):
     """Stable storage key from label+unit, e.g. ('Iron','mg') -> 'iron_mg'.
 
-    The key doubles as the form field name and the DynamoDB map key, so it
-    must be a plain [a-z0-9_] identifier. None when nothing survives (e.g. a
-    fully non-Latin label — PoC limitation, clear 400)."""
+    The key doubles as the form field name, the DynamoDB map key, and the AI
+    schema property, so it must be a plain [a-z0-9_] identifier outside
+    _RESERVED_NUTRIENT_KEYS. None when nothing survives (e.g. a fully
+    non-Latin label — PoC limitation, clear 400)."""
     slug = _NUTRIENT_SLUG_RE.sub('_', f'{label} {unit}'.lower()).strip('_')
     if not slug:
         return None
@@ -904,6 +943,9 @@ def set_nutrient():
             # direction (the resolver treats fiber_g as the preset).
             return jsonify({'error': 'That matches the built-in viscous fiber '
                                      'preset — select it instead'}), 400
+        if key in _RESERVED_NUTRIENT_KEYS:
+            return jsonify({'error': 'That name is reserved — pick a different '
+                                     'label or unit'}), 400
         args = (key, label, unit, goal, direction)
     else:
         return jsonify({'error': "preset must be 'fiber' or 'custom'"}), 400

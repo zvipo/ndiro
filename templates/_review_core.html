@@ -151,10 +151,13 @@
             const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
             const norm = rawStep / mag;
             const stepBase = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
-            // At most ~3 gridlines; top tick = niceMax.
-            const step = Math.max(stepBase, Math.ceil(axisTop / 15) * stepBase);
+            // At most ~3 gridlines (the divisor scales with the step — the
+            // historical /15 was 3×the fiber step of 5); top tick = niceMax.
+            const step = Math.max(stepBase, Math.ceil(axisTop / (3 * stepBase)) * stepBase);
             const niceMax = Math.ceil(axisTop / step) * step;
-            const tickLabel = v => String(Math.round(v * 100) / 100);
+            // toFixed kills float noise (0.30000000000000004 → "0.3");
+            // parseFloat strips the trailing zeros again.
+            const tickLabel = v => String(parseFloat(v.toFixed(6)));
             // Gutter fits the widest label ("1000 mg" needs more than "20 g").
             const GUTTER = Math.max(30, 8 + (tickLabel(niceMax) + ' ' + NUTRIENT.unit).length * 5);
             const W = Math.max(320, holder.clientWidth || 320);
@@ -195,10 +198,14 @@
             }
 
             // Recessive gridlines at each y tick; unit only on the top label.
-            for (let v = step; v <= niceMax; v += step) {
+            // Integer tick indices: accumulating `v += step` drifts for
+            // fractional steps and can skip the top gridline/unit label.
+            const nTicks = Math.round(niceMax / step);
+            for (let i = 1; i <= nTicks; i++) {
+                const v = i * step;
                 const y = BASE - (v / niceMax) * PLOT_H;
                 el('line', { x1: GUTTER, y1: y, x2: W, y2: y, stroke: PAL.grid, 'stroke-width': 1 });
-                text(v === niceMax ? tickLabel(v) + ' ' + NUTRIENT.unit : tickLabel(v), GUTTER - 4, y + 3, 'end');
+                text(i === nTicks ? tickLabel(v) + ' ' + NUTRIENT.unit : tickLabel(v), GUTTER - 4, y + 3, 'end');
             }
             el('line', { x1: GUTTER, y1: BASE, x2: W, y2: BASE, stroke: PAL.grid, 'stroke-width': 1 });
             text('0', GUTTER - 4, BASE + 3, 'end');

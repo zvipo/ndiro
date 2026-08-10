@@ -65,6 +65,20 @@ bad = [
     ('custom colliding with fiber preset', {'preset': 'custom', 'label': 'Fiber',
                                             'unit': 'g', 'goal': 30,
                                             'direction': 'at_least'}),
+    # Reserved keys: the derived key is also a form field name, an AI schema
+    # property, and a JS object key — collisions must be rejected.
+    ('key colliding with the date form field', {'preset': 'custom', 'label': 'Date',
+                                                'unit': '½', 'goal': 5,
+                                                'direction': 'at_least'}),
+    ('key colliding with the AI note property', {'preset': 'custom', 'label': 'Note',
+                                                 'unit': '㎎', 'goal': 5,
+                                                 'direction': 'at_least'}),
+    ('key colliding with remove_photo', {'preset': 'custom', 'label': 'Remove',
+                                         'unit': 'photo', 'goal': 5,
+                                         'direction': 'at_least'}),
+    ('key colliding with JS constructor', {'preset': 'custom', 'label': 'Constructor',
+                                           'unit': '%', 'goal': 5,
+                                           'direction': 'at_least'}),
 ]
 for name, payload in bad:
     tk.check(f'rejected: {name}',
@@ -109,6 +123,48 @@ resp = tk.post(alice, '/api/meals', data={
     content_type='multipart/form-data')
 tk.check('custom amount validated like fiber was',
          resp.status_code == 400 and 'iron_mg' in resp.get_json()['error'])
+
+# A form posted from a page rendered under a DIFFERENT micro (stale tab) is
+# rejected instead of silently dropping the typed amount.
+resp = tk.post(alice, '/api/meals', data={
+    'description': 'stale tab', 'date': DAY, 'time': '09:00',
+    'fiber_g': '3.5', 'nutrient_key': 'fiber_g'},
+    content_type='multipart/form-data')
+tk.check('stale-tab meal post rejected with a clear error',
+         resp.status_code == 400 and 'reload' in resp.get_json()['error'])
+
+# Editing a meal logged under a previous micro keeps that meal's old-key value.
+resp = tk.post(alice, '/api/settings/nutrient', json={'preset': 'fiber'})
+assert resp.status_code == 200
+resp = tk.post(alice, '/api/meals', data={
+    'description': 'old fiber meal', 'date': DAY, 'time': '07:00',
+    'fiber_g': '5.5'}, content_type='multipart/form-data')
+assert resp.status_code == 201, resp.get_json()
+old_meal_id = resp.get_json()['meal_id']
+resp = tk.post(alice, '/api/settings/nutrient', json={
+    'preset': 'custom', 'label': 'Iron', 'unit': 'mg',
+    'goal': 18, 'direction': 'at_most'})
+assert resp.status_code == 200
+resp = tk.put(alice, f'/api/meals/{DAY}/{old_meal_id}', data={
+    'description': 'old fiber meal, typo fixed', 'iron_mg': ''})
+tk.check('editing an old-micro meal preserves its stored value',
+         resp.status_code == 200 and
+         resp.get_json()['nutrients'] == {'fiber_g': 5.5})
+resp = tk.put(alice, f'/api/meals/{DAY}/{old_meal_id}', data={
+    'description': 'old fiber meal', 'iron_mg': '2.0'})
+tk.check('edit under the new micro adds its key alongside the old value',
+         resp.status_code == 200 and
+         resp.get_json()['nutrients'] == {'fiber_g': 5.5, 'iron_mg': 2.0})
+
+# Corrupt row (goal 0/NaN) degrades to the safe default instead of NaN charts.
+row = db.get_user('sub-alice')
+row['nutrient_goal'] = 0
+tk.check('corrupt zero goal resolves to the fiber default',
+         config.resolve_nutrient(row)['is_default'] is True)
+row['nutrient_goal'] = float('nan')
+tk.check('corrupt NaN goal resolves to the fiber default',
+         config.resolve_nutrient(row)['is_default'] is True)
+row['nutrient_goal'] = 18
 
 # --- Template gating ---------------------------------------------------------
 resp = tk.get(alice, '/log')

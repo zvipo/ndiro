@@ -62,6 +62,14 @@ def _estimator_system_prompt(cfg):
     )
 
 
+def _prop_names(cfg):
+    """(total_property, item_amount_property) for the model-facing schema —
+    the one contract _estimate_schema and the response parser must agree on."""
+    if cfg['is_default']:
+        return 'viscous_fiber_g', 'grams'
+    return cfg['key'], 'amount'
+
+
 def _estimate_schema(cfg, with_description=False):
     """Strict json_schema for the estimator response (optionally + description).
 
@@ -70,8 +78,7 @@ def _estimate_schema(cfg, with_description=False):
     property after its derived key (a property called viscous_fiber_g would
     actively mislead a model estimating e.g. iron) with per-item 'amount'.
     """
-    value_prop = 'viscous_fiber_g' if cfg['is_default'] else cfg['key']
-    item_amount = 'grams' if cfg['is_default'] else 'amount'
+    value_prop, item_amount = _prop_names(cfg)
     properties = {
         value_prop: {'type': 'number'},
         'items': {
@@ -140,8 +147,7 @@ def _openai_estimate(messages, cfg, with_description=False, timeout=(5, 20)):
         print(f"OpenAI error {resp.status_code}")
         return None, ('AI estimate failed (upstream error)', 502, True)
 
-    value_prop = 'viscous_fiber_g' if cfg['is_default'] else cfg['key']
-    item_amount = 'grams' if cfg['is_default'] else 'amount'
+    value_prop, item_amount = _prop_names(cfg)
     try:
         content = resp.json()['choices'][0]['message']['content']
         raw = json.loads(content)

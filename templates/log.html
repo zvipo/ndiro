@@ -915,6 +915,9 @@
             fd.append('ai_assisted', aiUsed ? '1' : '');
             fd.append('context', document.getElementById('contextInput').value.trim());
             fd.append(NUTRIENT.key, document.getElementById('fiberInput').value.trim());
+            // Lets the server reject a stale tab rendered under a different
+            // tracked micro instead of silently dropping the typed amount.
+            fd.append('nutrient_key', NUTRIENT.key);
             if (!editing) {
                 fd.append('date', document.getElementById('dateInput').value);
                 fd.append('time', document.getElementById('timeInput').value);
