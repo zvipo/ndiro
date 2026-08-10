@@ -16,7 +16,7 @@
 {# Same minimal chrome as the share view: this page must be identical for
    missing, revoked, and expired tokens alike. #}
 {% block chrome %}
-    <div class="theme-control">
-        <button type="button" id="themeToggle" aria-label="Switch theme">☀️</button>
+    <div class="menu">
+        <button type="button" class="menu-toggle" id="themeToggle" aria-label="Switch theme"><span id="themeIcon">☀️</span></button>
     </div>
 {% endblock %}

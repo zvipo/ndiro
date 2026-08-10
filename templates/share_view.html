@@ -19,7 +19,7 @@
 {# No account chrome on shared views: theme toggle only — no home link, no
    sign-in control, and (by construction of _review_core) no edit or AI UI. #}
 {% block chrome %}
-    <div class="theme-control">
-        <button type="button" id="themeToggle" aria-label="Switch theme">☀️</button>
+    <div class="menu">
+        <button type="button" class="menu-toggle" id="themeToggle" aria-label="Switch theme"><span id="themeIcon">☀️</span></button>
     </div>
 {% endblock %}

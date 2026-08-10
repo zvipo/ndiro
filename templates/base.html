@@ -202,82 +202,88 @@
             to { transform: rotate(360deg); }
         }
 
-        /* Subtle login/logout control, tucked in the corner */
-        .auth-control {
+        /* Corner menu: a hamburger that opens a nav + settings panel */
+        .menu {
             position: fixed;
-            bottom: 10px;
+            top: 12px;
             right: 12px;
-            z-index: 100;
-            font-size: 12px;
+            z-index: 200;
         }
 
-        .auth-control a {
-            color: color-mix(in srgb, var(--text) 30%, transparent);
-            text-decoration: none;
-            transition: color 0.3s ease;
-        }
-
-        .auth-control a:hover {
-            color: color-mix(in srgb, var(--text) 85%, transparent);
-        }
-
-        /* Floating home button, bottom-left (mirrors the auth corner) */
-        .home-control {
-            position: fixed;
-            bottom: 14px;
-            left: 14px;
-            z-index: 100;
-        }
-
-        .home-control a {
+        .menu-toggle {
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 40px;
-            height: 40px;
+            width: 42px;
+            height: 42px;
             background: var(--card);
             border: 1px solid var(--dim);
             border-radius: 50%;
             color: var(--text);
-            font-size: 20px;
-            line-height: 1;
-            text-decoration: none;
-            box-shadow: 0 4px 12px var(--shadow);
-            transition: border-color 0.2s ease, transform 0.2s ease;
-        }
-
-        .home-control a:hover {
-            border-color: var(--gold);
-            transform: translateY(-1px);
-        }
-
-        /* Theme toggle: floating circle, mirrors the home control */
-        .theme-control {
-            position: fixed;
-            bottom: 62px;
-            left: 14px;
-            z-index: 100;
-        }
-
-        .theme-control button {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 40px;
-            height: 40px;
-            background: var(--card);
-            border: 1px solid var(--dim);
-            border-radius: 50%;
-            font-size: 18px;
+            font-size: 19px;
             line-height: 1;
             cursor: pointer;
             box-shadow: 0 4px 12px var(--shadow);
             transition: border-color 0.2s ease, transform 0.2s ease;
         }
 
-        .theme-control button:hover {
+        .menu-toggle:hover {
             border-color: var(--gold);
             transform: translateY(-1px);
+        }
+
+        .menu-panel {
+            position: absolute;
+            top: 50px;
+            right: 0;
+            min-width: 210px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px var(--shadow);
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .menu-panel[hidden] {
+            display: none;
+        }
+
+        .menu-email {
+            font-size: 0.72rem;
+            color: var(--muted);
+            padding: 8px 12px 6px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .menu-panel a,
+        .menu-item-btn {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 10px 12px;
+            border: none;
+            background: transparent;
+            border-radius: 8px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.9rem;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .menu-panel a:hover,
+        .menu-item-btn:hover {
+            background: var(--bg-soft);
+        }
+
+        .menu-sep {
+            height: 1px;
+            background: var(--border);
+            margin: 4px 6px;
         }
 
         {% block styles %}{% endblock %}
@@ -289,16 +295,26 @@
     </div>
 
     {% block chrome %}
-    <div class="home-control">
-        <a href="/" title="Home">🏠</a>
-    </div>
-
-    <div class="theme-control">
-        <button type="button" id="themeToggle" aria-label="Switch theme">☀️</button>
-    </div>
-
-    <div class="auth-control">
-        {% if user %}<a href="/logout?next=/" title="Sign out ({{ user.email }})">✓</a>{% else %}<a href="/login?next={{ request.path }}" title="Sign in">🔒</a>{% endif %}
+    <div class="menu" id="appMenu">
+        <button type="button" class="menu-toggle" id="menuToggle" aria-label="Menu" aria-expanded="false">☰</button>
+        <nav class="menu-panel" id="menuPanel" hidden>
+            {% if user %}<div class="menu-email">{{ user.email }}</div>{% endif %}
+            {% if user and user.status in ('approved', 'admin') %}
+            <a href="/log">🥦 Log</a>
+            <a href="/review">📊 Review</a>
+            <a href="/shares">🔗 Share links</a>
+            <a href="/settings">⚙️ Settings</a>
+            {% if user.status == 'admin' %}<a href="/admin">👤 Admin</a>{% endif %}
+            <div class="menu-sep"></div>
+            {% endif %}
+            <a href="/">🏠 Home</a>
+            <a href="/privacy">📄 Privacy</a>
+            <button type="button" class="menu-item-btn" id="themeToggle">
+                <span id="themeIcon">☀️</span> <span id="themeLabel">Light mode</span>
+            </button>
+            <div class="menu-sep"></div>
+            {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="/login?next={{ request.path }}">→ Sign in</a>{% endif %}
+        </nav>
     </div>
     {% endblock %}
 
@@ -307,8 +323,11 @@
         function applyTheme(theme) {
             if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
             else document.documentElement.removeAttribute('data-theme');
-            var toggle = document.getElementById('themeToggle');
-            if (toggle) toggle.textContent = theme === 'light' ? '🌙' : '☀️';
+            var icon = document.getElementById('themeIcon');
+            var label = document.getElementById('themeLabel');
+            // In light mode the control offers a switch back to dark, and vice versa.
+            if (icon) icon.textContent = theme === 'light' ? '🌙' : '☀️';
+            if (label) label.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
             document.querySelector('meta[name="theme-color"]').setAttribute('content',
                 getComputedStyle(document.documentElement).getPropertyValue('--bg-0').trim());
             // Pages with token-palette drawings (the review chart) listen and re-render.
@@ -324,6 +343,30 @@
                 });
             }
             applyTheme(document.documentElement.hasAttribute('data-theme') ? 'light' : 'dark');
+
+            // ------- Corner menu open/close -------
+            var menu = document.getElementById('appMenu');
+            var menuToggle = document.getElementById('menuToggle');
+            var panel = document.getElementById('menuPanel');
+            if (menu && menuToggle && panel) {
+                function setOpen(open) {
+                    panel.hidden = !open;
+                    menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                }
+                menuToggle.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    setOpen(panel.hidden);
+                });
+                document.addEventListener('click', function (e) {
+                    if (!panel.hidden && !menu.contains(e.target)) setOpen(false);
+                });
+                document.addEventListener('keydown', function (e) {
+                    if (e.key === 'Escape') setOpen(false);
+                });
+                // Keep the menu open when only toggling the theme from inside it.
+                var t = document.getElementById('themeToggle');
+                if (t) t.addEventListener('click', function (e) { e.stopPropagation(); });
+            }
         })();
     </script>
     {% block scripts %}{% endblock %}
