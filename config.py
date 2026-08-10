@@ -5,6 +5,7 @@ No secrets, bucket names, hostnames, or emails are ever hardcoded here.
 """
 import math
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -127,46 +128,112 @@ FIBER_GUIDE = [
 ]
 
 # --- Per-user tracked nutrient -----------------------------------------------
-# Each user tracks ONE micro-nutrient. Default (and the only preset) is the
-# viscous-fiber experience above; a custom micro is free-form label/unit/goal/
-# direction stored on the users row (nutrient_* attrs, validated in app.py).
+# Each user tracks ONE micro-nutrient, chosen from the curated catalog below
+# (stored on the users row as nutrient_* attrs; only the goal is user-editable,
+# prefilled from the catalog default). A closed set keeps the keys safe (they
+# double as form field names, map keys, and AI schema properties) and the AI
+# estimates grounded. Default = the viscous-fiber experience above.
 
 NUTRIENT_DIRECTIONS = ('at_least', 'at_most')  # maximize toward goal / stay under limit
 
-DEFAULT_NUTRIENT = {
-    'key': 'fiber_g',
-    'label': 'viscous fiber',
-    'unit': 'g',
-    'goal': VISCOUS_FIBER_GOAL_G,
-    'direction': 'at_least',
-    'is_default': True,
-}
+NUTRIENT_GOAL_MAX = 100000  # write- AND read-side ceiling; mirrors app.py's _NUTRIENT_MAX
+
+# Order = display order in the settings dropdown; the fiber default first.
+# Default goals are common adult reference values (RDA/AI or WHO/AHA limits) —
+# starting points the user can personalize, not medical advice.
+NUTRIENT_CATALOG = [
+    {'key': 'fiber_g', 'label': 'viscous fiber', 'unit': 'g',
+     'goal': VISCOUS_FIBER_GOAL_G, 'direction': 'at_least'},
+    {'key': 'total_fiber_g', 'label': 'total fiber', 'unit': 'g',
+     'goal': 30, 'direction': 'at_least'},
+    {'key': 'protein_g', 'label': 'protein', 'unit': 'g',
+     'goal': 90, 'direction': 'at_least'},
+    {'key': 'added_sugar_g', 'label': 'added sugar', 'unit': 'g',
+     'goal': 25, 'direction': 'at_most'},
+    {'key': 'sodium_mg', 'label': 'sodium', 'unit': 'mg',
+     'goal': 2300, 'direction': 'at_most'},
+    {'key': 'sat_fat_g', 'label': 'saturated fat', 'unit': 'g',
+     'goal': 20, 'direction': 'at_most'},
+    {'key': 'potassium_mg', 'label': 'potassium', 'unit': 'mg',
+     'goal': 3400, 'direction': 'at_least'},
+    {'key': 'calcium_mg', 'label': 'calcium', 'unit': 'mg',
+     'goal': 1000, 'direction': 'at_least'},
+    {'key': 'iron_mg', 'label': 'iron', 'unit': 'mg',
+     'goal': 18, 'direction': 'at_least'},
+    {'key': 'cholesterol_mg', 'label': 'cholesterol', 'unit': 'mg',
+     'goal': 300, 'direction': 'at_most'},
+]
+
+# The fiber default IS the first catalog entry — one definition, no drift.
+DEFAULT_NUTRIENT = {**NUTRIENT_CATALOG[0], 'is_default': True}
+
+# Catalog keys double as meal-form field names, nutrients map keys, and AI
+# json_schema properties. This import-time check makes a colliding or
+# malformed future entry fail at boot instead of corrupting meal writes or
+# AI schemas at runtime. 'constructor' would collide with Object.prototype
+# in the templates' JS lookups.
+_RESERVED_NUTRIENT_KEYS = frozenset((
+    'date', 'time', 'description', 'context', 'photo', 'ai_assisted',
+    'remove_photo', 'nutrient_key',            # meal-form fields
+    'note', 'items', 'amount', 'model',        # AI schema/wire properties
+    'constructor',                             # JS prototype pollution
+))
+assert len({e['key'] for e in NUTRIENT_CATALOG}) == len(NUTRIENT_CATALOG), \
+    'NUTRIENT_CATALOG keys must be unique'
+for _e in NUTRIENT_CATALOG:
+    assert re.fullmatch(r'[a-z][a-z0-9_]*', _e['key']), \
+        f"catalog key {_e['key']!r} must be a [a-z0-9_] identifier"
+    assert _e['key'] not in _RESERVED_NUTRIENT_KEYS, \
+        f"catalog key {_e['key']!r} collides with a reserved name"
+    assert _e['direction'] in NUTRIENT_DIRECTIONS and _e['goal'] > 0
+
+
+def catalog_entry(key):
+    """The catalog row for a key, or None (unknown/legacy free-form keys)."""
+    for entry in NUTRIENT_CATALOG:
+        if entry['key'] == key:
+            return entry
+    return None
+
+
+def _safe_goal(raw):
+    """A positive finite in-range goal (int when integral) or None."""
+    try:
+        goal = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(goal) or goal <= 0 or goal > NUTRIENT_GOAL_MAX:
+        return None
+    return int(goal) if goal.is_integer() else goal
 
 
 def resolve_nutrient(user_row):
     """The user's tracked-nutrient config: {key,label,unit,goal,direction,is_default}.
 
     Single source of truth for every consumer (routes, templates, AI prompts).
-    Falls back to the viscous-fiber default when the row has no nutrient_key
-    (existing users — no migration) or keys 'fiber_g' (choosing the preset
-    writes the defaults back). Goal comes out JSON-safe: int when integral,
+    No nutrient_key (existing users — no migration) = the fiber default.
+    Catalog keys resolve from the CATALOG (label/unit/direction edits reach
+    every user immediately); the row contributes only a personalized goal —
+    absent or 0 (the follow-the-default sentinel) means the catalog goal.
+    Legacy free-form keys (pre-catalog rows) resolve from the row snapshot;
+    a corrupt goal there degrades to the safe default (a 0/NaN goal would
+    NaN the chart axis math). Goal comes out JSON-safe: int when integral,
     else float — a raw Decimal would blow up in |tojson / jsonify, and a
     blanket float() would render "20.0 g goal".
     """
     key = (user_row or {}).get('nutrient_key')
-    if not key or key == 'fiber_g':
+    if not key:
         return dict(DEFAULT_NUTRIENT)
-    try:
-        goal = float(user_row.get('nutrient_goal', 0))
-    except (TypeError, ValueError):
-        goal = 0.0
-    if not math.isfinite(goal) or goal <= 0:
-        # Corrupt row (today's writer sets all five attrs atomically, but a
-        # manual edit could break this): a 0/NaN goal would NaN the chart
-        # axis math, so degrade to the safe default instead.
+    entry = catalog_entry(key)
+    if entry is not None:
+        cfg = {**entry, 'is_default': key == 'fiber_g'}
+        goal = _safe_goal(user_row.get('nutrient_goal'))
+        if goal is not None:
+            cfg['goal'] = goal
+        return cfg
+    goal = _safe_goal(user_row.get('nutrient_goal'))
+    if goal is None:
         return dict(DEFAULT_NUTRIENT)
-    if goal.is_integer():
-        goal = int(goal)
     direction = user_row.get('nutrient_direction')
     if direction not in NUTRIENT_DIRECTIONS:
         direction = 'at_least'

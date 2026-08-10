@@ -81,21 +81,19 @@ tk.check('share meals endpoint rejects POST (read-only)',
          tk.post(anon, f'/s/{token}/meals').status_code == 405)
 
 # --- Share page uses the OWNER's nutrient config, never the viewer's ---------
-tk.post(bob, '/api/settings/nutrient', json={
-    'preset': 'custom', 'label': 'Iron', 'unit': 'mg', 'goal': 18,
-    'direction': 'at_most'})
+tk.post(bob, '/api/settings/nutrient', json={'key': 'added_sugar_g'})
 bob_token = tk.post(bob, '/api/shares', json={'expires': 'never'}).get_json()['token']
 page = tk.get(anon, f'/s/{bob_token}')
-tk.check("share page shows the owner's custom micro to anonymous viewers",
-         page.status_code == 200 and b'Iron' in page.data and b'at_most' in page.data)
+tk.check("share page shows the owner's micro to anonymous viewers",
+         page.status_code == 200 and b'added sugar' in page.data and b'at_most' in page.data)
 page = tk.get(alice, f'/s/{bob_token}')
 tk.check("share page shows the owner's micro to a signed-in fiber-default viewer",
-         b'Iron' in page.data and b'viscous soluble fiber' not in page.data)
+         b'added sugar' in page.data and b'viscous soluble fiber' not in page.data)
 page = tk.get(bob, f'/s/{token}')
 tk.check("alice's share still reads as fiber to custom-micro bob",
-         b'viscous soluble fiber' in page.data and b'Iron' not in page.data)
+         b'viscous soluble fiber' in page.data and b'added sugar' not in page.data)
 tk.delete(bob, f'/api/shares/{bob_token}')
-tk.post(bob, '/api/settings/nutrient', json={'preset': 'fiber'})
+tk.post(bob, '/api/settings/nutrient', json={'key': 'fiber_g'})
 
 # --- Ownership: bob cannot revoke alice's link -------------------------------
 tk.check("bob revoking alice's share is 404",

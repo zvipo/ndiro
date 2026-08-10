@@ -6,9 +6,10 @@ Guidance for Claude Code when working in this repository.
 
 **Ndiro** — a multi-user Flask web app for logging meals and tracking **one
 micro-nutrient per user**: **viscous soluble fiber** by default (dietician-
-driven, cholesterol-lowering), or a free-form custom micro (label/unit/goal/
-direction) chosen in settings. Backed by DynamoDB + S3 with Google sign-in
-and optional OpenAI estimators. PoC scale: ~100 users,
+driven, cholesterol-lowering), or another micro from the curated
+`NUTRIENT_CATALOG` (closed set; goal editable, direction fixed) chosen in
+settings. Backed by DynamoDB + S3 with Google sign-in and optional OpenAI
+estimators. PoC scale: ~100 users,
 one Docker container, single gunicorn worker. **This repo is public: never
 commit secrets, bucket names, hostnames, IPs, or emails.** All config is env
 vars (`env_template.txt` has placeholders; `.env` is git- and docker-ignored).
@@ -37,10 +38,15 @@ raises without it (tests set their own).
   root so the Google redirect URI and root-absolute template paths never move.
 - **`config.py`** — env loading, SECRET_KEY hard-fail, `FIBER_GUIDE` (the
   dietician's food table — single source of truth for the tap-to-add UI **and**
-  the AI prompt), `VISCOUS_FIBER_GOAL_G` (20, Portfolio Diet), and
-  `resolve_nutrient(user_row)` — the single source of truth for the user's
-  tracked micro `{key,label,unit,goal,direction,is_default}`; absent attrs or
-  `nutrient_key='fiber_g'` fall back to the fiber default (no migration).
+  the AI prompt), `VISCOUS_FIBER_GOAL_G` (20, Portfolio Diet),
+  `NUTRIENT_CATALOG` (the closed set of selectable micros — key/label/unit/
+  default goal/direction; keys are hand-chosen because they double as form
+  field names, nutrients map keys, and AI schema properties, so NEVER let
+  user input become a key), and `resolve_nutrient(user_row)` — the single
+  source of truth for the user's tracked micro
+  `{key,label,unit,goal,direction,is_default}`; absent attrs or
+  `nutrient_key='fiber_g'` fall back to the fiber default (no migration;
+  fiber honors a stored personalized goal).
 - **`db.py`** — boto3 setup, auto-create of the three tables on boot,
   users/meals/shares accessors, S3 photo helpers, the AI daily-use counter.
   Table handles are functions (`users_table()` etc.) so tests swap in fakes.
@@ -68,10 +74,12 @@ raises without it (tests set their own).
   `nutrient_key/nutrient_label/nutrient_unit/nutrient_goal/nutrient_direction`
   (the tracked micro; absent on legacy rows = fiber default, resolved at read
   time by `config.resolve_nutrient` — never migrate). The meal form field name
-  and the `nutrients` map key ARE `nutrient_key` (slug of label+unit, validated
-  in `app.py:_derive_nutrient_key`; a custom slug equal to `fiber_g` is
-  rejected). Switching micros does NOT convert old meals — old days read 0 for
-  the new key (disclosed in settings; values are kept under their old key).
+  and the `nutrients` map key ARE `nutrient_key`, always one of the
+  `NUTRIENT_CATALOG` keys (rows written by the retired free-form settings UI
+  may carry other keys; the resolver still honors them). Switching micros does
+  NOT convert old meals — old days read 0 for the new key (disclosed in
+  settings; values are kept under their old key, and meal edits merge
+  non-active keys from the existing item so they survive).
   User counting/listing use scans — fine at ≤100 users, don't "fix" it.
 - **meals** — PK `user_id`, SK `sk` = `{YYYY-MM-DD}#{meal_id}`;
   `meal_id` = `HHMMSS-{hex6}` where HHMMSS is the **client-provided** time (it
