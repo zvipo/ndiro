@@ -10,7 +10,7 @@
 {% block content %}
         <div class="page-header">
             <h1>📊 Review</h1>
-            <span class="subtitle">Meals &amp; viscous soluble fiber</span>
+            <span class="subtitle">Meals &amp; {% if nutrient.is_default %}viscous soluble fiber{% else %}{{ nutrient.label }}{% endif %}</span>
         </div>
 
 {% include "_review_core.html" %}

@@ -324,7 +324,7 @@
         <div class="card today-summary">
             <div>
                 <span class="stat-value" id="todayFiber">–</span>
-                <span class="stat-name">g viscous fiber today</span>
+                <span class="stat-name">{{ nutrient.unit }} {{ nutrient.label }} today</span>
             </div>
             <div>
                 <span class="stat-value" id="todayMeals">–</span>
@@ -337,8 +337,8 @@
             <textarea id="contextInput" class="context-input" placeholder="Context — mood, cravings, occasion (esp. for sweets)" maxlength="500"></textarea>
             <div class="form-row">
                 <div>
-                    <label class="form-label" for="fiberInput">Viscous fiber (g)</label>
-                    <input type="number" id="fiberInput" min="0" step="0.1" placeholder="optional">
+                    <label class="form-label" for="fiberInput">{{ nutrient.label|capitalize }} ({{ nutrient.unit }})</label>
+                    <input type="number" id="fiberInput" min="0" step="{% if nutrient.is_default %}0.1{% else %}any{% endif %}" placeholder="optional">
                 </div>
                 <div>
                     <label class="form-label" for="dateInput">Date</label>
@@ -349,10 +349,14 @@
                     <input type="time" id="timeInput">
                 </div>
             </div>
+            {% if nutrient.is_default %}
+            {# The tap-to-add guide is the dietician's fiber table — only
+               meaningful for the default micro; custom micros are manual + AI. #}
             <div class="guide-lookup">
                 <input type="search" id="guideSearch" placeholder="Search fiber guide — tap a food to add its grams" autocomplete="off">
                 <div class="guide-results" id="guideResults" style="display:none"></div>
             </div>
+            {% endif %}
             {% if ai_enabled %}
             <div class="ai-row">
                 <button type="button" class="btn subtle" id="estimateBtn"><span class="ai-glyph">✦</span> Estimate from description</button>
@@ -384,6 +388,9 @@
 {% block scripts %}
     <script>
         const FIBER_GUIDE = {{ fiber_guide|tojson }};
+        // The user's tracked micro: {key, label, unit, goal, direction, is_default}.
+        // NUTRIENT.key doubles as the form field name and the nutrients map key.
+        const NUTRIENT = {{ nutrient|tojson }};
         let daysShown = 7;
         let serverToday = null;
         // When set, the form is editing this meal instead of adding a new one.
@@ -450,7 +457,7 @@
 
             const todayEntry = data.days.find(d => d.date === serverToday);
             document.getElementById('todayFiber').textContent =
-                todayEntry && todayEntry.totals.fiber_g != null ? todayEntry.totals.fiber_g : '0';
+                todayEntry && todayEntry.totals[NUTRIENT.key] != null ? todayEntry.totals[NUTRIENT.key] : '0';
             document.getElementById('todayMeals').textContent =
                 todayEntry ? todayEntry.meals.length : '0';
 
@@ -462,10 +469,10 @@
                 const h2 = document.createElement('h2');
                 h2.textContent = formatDay(day.date);
                 heading.appendChild(h2);
-                if (day.totals.fiber_g != null) {
+                if (day.totals[NUTRIENT.key] != null) {
                     const fiber = document.createElement('span');
                     fiber.className = 'day-fiber';
-                    fiber.textContent = day.totals.fiber_g + ' g viscous fiber';
+                    fiber.textContent = day.totals[NUTRIENT.key] + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label;
                     heading.appendChild(fiber);
                 }
                 section.appendChild(heading);
@@ -520,11 +527,11 @@
             if (meal.time) {
                 meta.appendChild(document.createTextNode(formatTime(meal.time)));
             }
-            if (meal.nutrients.fiber_g != null) {
+            if (meal.nutrients[NUTRIENT.key] != null) {
                 if (meta.childNodes.length) meta.appendChild(document.createTextNode(' · '));
                 const fiber = document.createElement('span');
                 fiber.className = 'fiber';
-                fiber.textContent = meal.nutrients.fiber_g + ' g viscous fiber';
+                fiber.textContent = meal.nutrients[NUTRIENT.key] + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label;
                 meta.appendChild(fiber);
             }
             if (meal.ai_assisted) {
@@ -800,7 +807,7 @@
                 line.textContent = item.food + ' · ' + item.serving + ' · ';
                 const grams = document.createElement('span');
                 grams.className = 'grams';
-                grams.textContent = item.grams + ' g';
+                grams.textContent = item.amount + ' ' + NUTRIENT.unit;
                 line.appendChild(grams);
                 panel.appendChild(line);
             }
@@ -813,9 +820,9 @@
             const useBtn = document.createElement('button');
             useBtn.type = 'button';
             useBtn.className = 'btn';
-            useBtn.textContent = 'Use ' + result.viscous_fiber_g + ' g';
+            useBtn.textContent = 'Use ' + result.amount + ' ' + NUTRIENT.unit;
             useBtn.addEventListener('click', () => {
-                document.getElementById('fiberInput').value = result.viscous_fiber_g;
+                document.getElementById('fiberInput').value = result.amount;
                 aiUsed = true;
             });
             panel.appendChild(useBtn);
@@ -829,7 +836,7 @@
             document.getElementById('descInput').value = meal.description;
             document.getElementById('contextInput').value = meal.context || '';
             document.getElementById('fiberInput').value =
-                meal.nutrients.fiber_g != null ? meal.nutrients.fiber_g : '';
+                meal.nutrients[NUTRIENT.key] != null ? meal.nutrients[NUTRIENT.key] : '';
             document.getElementById('dateInput').value = meal.date;
             document.getElementById('dateInput').disabled = true; // date+id are the key; move = delete+re-add
             document.getElementById('timeInput').value = meal.time || '';
@@ -907,7 +914,10 @@
             fd.append('description', desc);
             fd.append('ai_assisted', aiUsed ? '1' : '');
             fd.append('context', document.getElementById('contextInput').value.trim());
-            fd.append('fiber_g', document.getElementById('fiberInput').value.trim());
+            fd.append(NUTRIENT.key, document.getElementById('fiberInput').value.trim());
+            // Lets the server reject a stale tab rendered under a different
+            // tracked micro instead of silently dropping the typed amount.
+            fd.append('nutrient_key', NUTRIENT.key);
             if (!editing) {
                 fd.append('date', document.getElementById('dateInput').value);
                 fd.append('time', document.getElementById('timeInput').value);

@@ -13,6 +13,7 @@ users; the scans below are commented where they'd be wrong at larger scale):
 import secrets
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -156,6 +157,22 @@ def update_user_profile(user_id, email, name, picture=''):
         UpdateExpression='SET email = :e, #n = :n, picture = :p',
         ExpressionAttributeNames={'#n': 'name'},
         ExpressionAttributeValues={':e': email, ':n': name, ':p': picture},
+    )
+
+
+def set_user_nutrient(user_id, key, label, unit, goal, direction):
+    """Persist the user's tracked-nutrient config (already validated by the
+    route). Choosing the fiber preset writes the default values back — a plain
+    SET, equivalent to absent attrs through config.resolve_nutrient."""
+    users_table().update_item(
+        Key={'user_id': user_id},
+        UpdateExpression=('SET nutrient_key = :k, nutrient_label = :l, '
+                          'nutrient_unit = :u, nutrient_goal = :g, '
+                          'nutrient_direction = :d'),
+        ExpressionAttributeValues={
+            ':k': key, ':l': label, ':u': unit,
+            ':g': Decimal(str(goal)), ':d': direction,
+        },
     )
 
 

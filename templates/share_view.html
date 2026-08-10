@@ -40,7 +40,7 @@
 {% block content %}
         <div class="page-header">
             <h1>🥦 Ndiro</h1>
-            <span class="subtitle">Shared read-only meal log · viscous soluble fiber</span>
+            <span class="subtitle">Shared read-only meal log · {% if nutrient.is_default %}viscous soluble fiber{% else %}{{ nutrient.label }}{% endif %}</span>
             {% if owner and owner.name %}
             <span class="share-owner">
                 {% if owner.picture %}<img class="share-owner-pic" src="{{ owner.picture }}" alt="" referrerpolicy="no-referrer">{% endif %}

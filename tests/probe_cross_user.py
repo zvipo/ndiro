@@ -130,6 +130,28 @@ tk.check('negative fiber rejected',
          tk.post(alice, '/api/meals', data={
              'description': 'x', 'date': DAY, 'fiber_g': '-1'}).status_code == 400)
 
+# --- Nutrient settings are tenant-isolated too -------------------------------
+# The endpoint takes no user_id anywhere; forged identity fields are ignored
+# and only the session user's row changes.
+resp = tk.post(bob, '/api/settings/nutrient', json={
+    'preset': 'custom', 'label': 'Iron', 'unit': 'mg', 'goal': 18,
+    'direction': 'at_most', 'user_id': 'sub-alice'})  # forged field ignored
+tk.check("bob's nutrient config lands on bob only",
+         resp.status_code == 200 and
+         db.get_user('sub-bob').get('nutrient_key') == 'iron_mg' and
+         'nutrient_key' not in db.get_user('sub-alice'))
+
+# Each user's meal writes use their OWN resolved key: bob logging 'iron_mg'
+# while alice (default) posts the same field name stores nothing for alice.
+resp = tk.post(bob, '/api/meals', data={
+    'description': 'bob iron meal', 'date': DAY, 'time': '14:00', 'iron_mg': '6'})
+tk.check("bob's meal stored under his own key",
+         resp.status_code == 201 and resp.get_json()['nutrients'] == {'iron_mg': 6.0})
+resp = tk.post(alice, '/api/meals', data={
+    'description': 'alice probe meal', 'date': DAY, 'time': '15:00', 'iron_mg': '6'})
+tk.check("alice (fiber default) posting iron_mg stores no nutrients",
+         resp.status_code == 201 and resp.get_json()['nutrients'] == {})
+
 # Pending users cannot touch the meal APIs.
 carol = tk.client()
 tk.sign_in(carol, sub='sub-carol', email='carol@example.test', name='Carol')

@@ -1,9 +1,10 @@
-"""Ndiro — a multi-user meal log for viscous soluble fiber tracking.
+"""Ndiro — a multi-user meal log tracking one micro-nutrient per user
+(viscous soluble fiber by default; a custom micro is configurable in settings).
 
 Flask app + all routes (the table of contents). Support modules:
-config.py (env + constants), db.py (DynamoDB/S3), auth.py (OAuth + guards),
-ai.py (fiber estimators). All routes live at root so the Google redirect URI
-and root-absolute template paths never change.
+config.py (env + constants + nutrient resolver), db.py (DynamoDB/S3),
+auth.py (OAuth + guards), ai.py (nutrient estimators). All routes live at
+root so the Google redirect URI and root-absolute template paths never change.
 """
 import calendar
 import re
@@ -246,6 +247,7 @@ def admin_set_status(user_id, action):
 @auth.approved_required
 def log_page():
     return render_template('log.html', user=g.user,
+                           nutrient=config.resolve_nutrient(g.user),
                            fiber_guide=config.FIBER_GUIDE,
                            ai_enabled=bool(config.OPENAI_API_KEY))
 
@@ -277,14 +279,15 @@ def _valid_month(month_str):
         return None
 
 
-def _nutrients_from_form(form):
+def _nutrients_from_form(form, nutrient_key):
     """Parse nutrient form fields into a DynamoDB-ready map of Decimals.
 
-    Extensible: add new keys here (e.g. 'protein_g') and the totals/JSON
-    plumbing picks them up automatically. Empty string means "unset".
+    The single field name IS the user's resolved nutrient key ('fiber_g' by
+    default) — form field and storage key are the same string. Empty string
+    means "unset"; the totals/JSON plumbing is key-generic already.
     """
     nutrients = {}
-    for field in ('fiber_g',):
+    for field in (nutrient_key,):
         raw = (form.get(field) or '').strip()
         if not raw:
             continue
@@ -306,7 +309,19 @@ def _nutrients_from_form(form):
     return nutrients
 
 
-def _read_meal_form(form):
+def _stale_nutrient_form(form, nutrient_key):
+    """400 response when the page that posted this form was rendered under a
+    different tracked micro (its hidden nutrient_key disagrees) — otherwise a
+    stale tab's typed amount would be dropped silently. Absent field = older
+    client; accept."""
+    sent = form.get('nutrient_key')
+    if sent and sent != nutrient_key:
+        return jsonify({'error': 'Your tracked micro changed — reload this '
+                                 'page and try again'}), 400
+    return None
+
+
+def _read_meal_form(form, nutrient_key):
     """Validate the fields shared by add/edit. Returns (description, context,
     nutrients); raises ValueError(message) on any invalid field."""
     description = (form.get('description') or '').strip()
@@ -317,7 +332,7 @@ def _read_meal_form(form):
     context = (form.get('context') or '').strip()
     if len(context) > 500:
         raise ValueError('Context too long (max 500 characters)')
-    return description, context, _nutrients_from_form(form)
+    return description, context, _nutrients_from_form(form, nutrient_key)
 
 
 def _assemble_meal_item(user_id, date_str, meal_id, description, context,
@@ -456,7 +471,8 @@ def get_meals():
 @auth.approved_required
 def add_meal():
     """Create a meal (multipart form: description, date required, optional
-    context/time/fiber_g/photo/ai_assisted)."""
+    context/time/photo/ai_assisted, plus the user's nutrient field —
+    'fiber_g' by default)."""
     user_id = g.user['user_id']
 
     # The DATE is user-local and must come from the client — the server clock
@@ -472,8 +488,12 @@ def add_meal():
     if date.fromisoformat(date_str) > datetime.now(timezone.utc).date() + timedelta(days=1):
         return jsonify({'error': "Date can't be in the future"}), 400
 
+    nutrient_key = config.resolve_nutrient(g.user)['key']
+    stale = _stale_nutrient_form(request.form, nutrient_key)
+    if stale:
+        return stale
     try:
-        description, context, nutrients = _read_meal_form(request.form)
+        description, context, nutrients = _read_meal_form(request.form, nutrient_key)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
@@ -536,10 +556,21 @@ def update_meal(date_str, meal_id):
     if not existing:
         return jsonify({'error': 'Meal not found'}), 404
 
+    nutrient_key = config.resolve_nutrient(g.user)['key']
+    stale = _stale_nutrient_form(request.form, nutrient_key)
+    if stale:
+        return stale
     try:
-        description, context, nutrients = _read_meal_form(request.form)
+        description, context, nutrients = _read_meal_form(request.form, nutrient_key)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
+
+    # Preserve values stored under OTHER nutrient keys (meals logged before a
+    # micro switch): the form only carries the active key, and a plain replace
+    # would erase the old value the settings page promises to keep.
+    for k, v in (existing.get('nutrients') or {}).items():
+        if k != nutrient_key:
+            nutrients[k] = v
 
     photo_key = existing.get('photo_key')
     # Defer the S3 removal until the row is safely written, so a failed update
@@ -637,7 +668,8 @@ def _ai_error_response(user_id, today, err):
 @limiter.limit('6 per minute')
 @auth.approved_required
 def estimate_fiber():
-    """Estimate viscous fiber for a meal description."""
+    """Estimate the user's tracked nutrient for a meal description.
+    (URL kept for history; the estimator follows the user's nutrient config.)"""
     if not config.OPENAI_API_KEY:
         return jsonify({'error': 'AI estimation is not enabled on this server'}), 400
     data = request.get_json(silent=True) or {}
@@ -651,7 +683,7 @@ def estimate_fiber():
     today, blocked = _consume_ai_use_or_429(user_id)
     if blocked:
         return blocked
-    result, err = ai.estimate_text(description)
+    result, err = ai.estimate_text(description, config.resolve_nutrient(g.user))
     if err:
         return _ai_error_response(user_id, today, err)
     return jsonify(result)
@@ -661,7 +693,7 @@ def estimate_fiber():
 @limiter.limit('6 per minute')
 @auth.approved_required
 def estimate_photo():
-    """Describe a meal photo and estimate its viscous fiber (vision)."""
+    """Describe a meal photo and estimate its tracked nutrient (vision)."""
     if not config.OPENAI_API_KEY:
         return jsonify({'error': 'AI estimation is not enabled on this server'}), 400
     photo = request.files.get('photo')
@@ -679,7 +711,7 @@ def estimate_photo():
     today, blocked = _consume_ai_use_or_429(user_id)
     if blocked:
         return blocked
-    result, err = ai.estimate_photo(photo_bytes)
+    result, err = ai.estimate_photo(photo_bytes, config.resolve_nutrient(g.user))
     if err:
         return _ai_error_response(user_id, today, err)
     return jsonify(result)
@@ -691,7 +723,7 @@ def estimate_photo():
 @auth.approved_required
 def review_page():
     return render_template('review.html', user=g.user,
-                           goal_g=config.VISCOUS_FIBER_GOAL_G,
+                           nutrient=config.resolve_nutrient(g.user),
                            meals_url='/api/meals')
 
 
@@ -720,12 +752,17 @@ def share_view(token):
         return render_template('share_404.html', user=auth.current_user(),
                                login_next='/'), 404
     # Attribution for recipients: name + picture ONLY — never the email.
+    # The nutrient config comes from the SAME owner row: the shared data must
+    # be labeled with the owner's tracked micro, never the viewer's. A failed
+    # read degrades to the fiber default (like the attribution) — no leak.
     owner = None
+    nutrient = config.resolve_nutrient(None)
     try:
         row = db.get_user(share['user_id'])
         if row is not None:
             owner = {'name': row.get('name') or '',
                      'picture': row.get('picture') or ''}
+            nutrient = config.resolve_nutrient(row)
     except Exception as e:
         print(f"Error reading share owner: {type(e).__name__}")
     # user is chrome-only (corner menu); the meal data is scoped to the token
@@ -733,7 +770,7 @@ def share_view(token):
     return render_template('share_view.html',
                            user=auth.current_user(),
                            owner=owner,
-                           goal_g=config.VISCOUS_FIBER_GOAL_G,
+                           nutrient=nutrient,
                            meals_url=f'/s/{token}/meals')
 
 
@@ -832,7 +869,96 @@ def revoke_share(token):
 @app.route('/settings')
 @auth.approved_required
 def settings_page():
-    return render_template('settings.html', user=g.user)
+    return render_template('settings.html', user=g.user,
+                           nutrient=config.resolve_nutrient(g.user),
+                           default_goal=config.VISCOUS_FIBER_GOAL_G)
+
+
+_NUTRIENT_SLUG_RE = re.compile(r'[^a-z0-9]+')
+
+
+# The derived key wears three hats — meal-form field name, nutrients map key,
+# and AI json_schema property — so it must never collide with any name those
+# namespaces already use. 'constructor' is the one all-lowercase JS
+# Object.prototype property a slug can produce ('__proto__' can't survive the
+# single-underscore slugging).
+_RESERVED_NUTRIENT_KEYS = frozenset((
+    'date', 'time', 'description', 'context', 'photo', 'ai_assisted',
+    'remove_photo', 'nutrient_key',            # meal-form fields
+    'note', 'items', 'amount', 'model',        # AI schema/wire properties
+    'constructor',                             # JS prototype pollution
+))
+
+
+def _derive_nutrient_key(label, unit):
+    """Stable storage key from label+unit, e.g. ('Iron','mg') -> 'iron_mg'.
+
+    The key doubles as the form field name, the DynamoDB map key, and the AI
+    schema property, so it must be a plain [a-z0-9_] identifier outside
+    _RESERVED_NUTRIENT_KEYS. None when nothing survives (e.g. a fully
+    non-Latin label — PoC limitation, clear 400)."""
+    slug = _NUTRIENT_SLUG_RE.sub('_', f'{label} {unit}'.lower()).strip('_')
+    if not slug:
+        return None
+    if slug[0].isdigit():
+        slug = 'n_' + slug
+    return slug[:48]
+
+
+@app.route('/api/settings/nutrient', methods=['POST'])
+@auth.approved_required
+def set_nutrient():
+    """Set the user's tracked micro: the fiber preset or a free-form custom
+    one (label/unit/goal/direction). Writes only the session user's row."""
+    data = request.get_json(silent=True) or {}
+    user_id = g.user['user_id']
+    preset = data.get('preset')
+
+    if preset == 'fiber':
+        d = config.DEFAULT_NUTRIENT
+        args = (d['key'], d['label'], d['unit'], d['goal'], d['direction'])
+    elif preset == 'custom':
+        label = str(data.get('label') or '').strip()
+        unit = str(data.get('unit') or '').strip()
+        if not label or len(label) > 40:
+            return jsonify({'error': 'Label must be 1-40 characters'}), 400
+        if not unit or len(unit) > 10:
+            return jsonify({'error': 'Unit must be 1-10 characters'}), 400
+        if any(ord(c) < 32 for c in label + unit):
+            return jsonify({'error': 'Label and unit must be plain text'}), 400
+        direction = data.get('direction')
+        if direction not in config.NUTRIENT_DIRECTIONS:
+            return jsonify({'error': "direction must be 'at_least' or 'at_most'"}), 400
+        try:
+            goal = Decimal(str(data.get('goal')))
+        except InvalidOperation:
+            return jsonify({'error': 'Goal must be a number'}), 400
+        if not goal.is_finite() or goal <= 0 or goal > _NUTRIENT_MAX:
+            return jsonify({'error': 'Goal must be greater than 0 and sane'}), 400
+        key = _derive_nutrient_key(label, unit)
+        if not key:
+            return jsonify({'error': 'Label must contain letters or digits (a-z, 0-9)'}), 400
+        if key == 'fiber_g':
+            # Letting this through would silently discard the custom goal and
+            # direction (the resolver treats fiber_g as the preset).
+            return jsonify({'error': 'That matches the built-in viscous fiber '
+                                     'preset — select it instead'}), 400
+        if key in _RESERVED_NUTRIENT_KEYS:
+            return jsonify({'error': 'That name is reserved — pick a different '
+                                     'label or unit'}), 400
+        args = (key, label, unit, goal, direction)
+    else:
+        return jsonify({'error': "preset must be 'fiber' or 'custom'"}), 400
+
+    try:
+        db.set_user_nutrient(user_id, *args)
+    except Exception as e:
+        print(f"Error saving nutrient config for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to save — please try again'}), 500
+    key, label, unit, goal, direction = args
+    return jsonify({'nutrient': config.resolve_nutrient({
+        'nutrient_key': key, 'nutrient_label': label, 'nutrient_unit': unit,
+        'nutrient_goal': goal, 'nutrient_direction': direction})})
 
 
 @app.route('/api/account/delete', methods=['POST'])

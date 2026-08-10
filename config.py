@@ -3,6 +3,7 @@
 Everything configurable comes from the environment (.env via python-dotenv).
 No secrets, bucket names, hostnames, or emails are ever hardcoded here.
 """
+import math
 import os
 
 from dotenv import load_dotenv
@@ -124,6 +125,60 @@ FIBER_GUIDE = [
     {'name': 'Banana', 'serving': '1 medium', 'grams': 0.5, 'star': False, 'category': 'Fruit'},
     {'name': 'Mango, sliced', 'serving': '1 cup', 'grams': 0.5, 'star': False, 'category': 'Fruit'},
 ]
+
+# --- Per-user tracked nutrient -----------------------------------------------
+# Each user tracks ONE micro-nutrient. Default (and the only preset) is the
+# viscous-fiber experience above; a custom micro is free-form label/unit/goal/
+# direction stored on the users row (nutrient_* attrs, validated in app.py).
+
+NUTRIENT_DIRECTIONS = ('at_least', 'at_most')  # maximize toward goal / stay under limit
+
+DEFAULT_NUTRIENT = {
+    'key': 'fiber_g',
+    'label': 'viscous fiber',
+    'unit': 'g',
+    'goal': VISCOUS_FIBER_GOAL_G,
+    'direction': 'at_least',
+    'is_default': True,
+}
+
+
+def resolve_nutrient(user_row):
+    """The user's tracked-nutrient config: {key,label,unit,goal,direction,is_default}.
+
+    Single source of truth for every consumer (routes, templates, AI prompts).
+    Falls back to the viscous-fiber default when the row has no nutrient_key
+    (existing users — no migration) or keys 'fiber_g' (choosing the preset
+    writes the defaults back). Goal comes out JSON-safe: int when integral,
+    else float — a raw Decimal would blow up in |tojson / jsonify, and a
+    blanket float() would render "20.0 g goal".
+    """
+    key = (user_row or {}).get('nutrient_key')
+    if not key or key == 'fiber_g':
+        return dict(DEFAULT_NUTRIENT)
+    try:
+        goal = float(user_row.get('nutrient_goal', 0))
+    except (TypeError, ValueError):
+        goal = 0.0
+    if not math.isfinite(goal) or goal <= 0:
+        # Corrupt row (today's writer sets all five attrs atomically, but a
+        # manual edit could break this): a 0/NaN goal would NaN the chart
+        # axis math, so degrade to the safe default instead.
+        return dict(DEFAULT_NUTRIENT)
+    if goal.is_integer():
+        goal = int(goal)
+    direction = user_row.get('nutrient_direction')
+    if direction not in NUTRIENT_DIRECTIONS:
+        direction = 'at_least'
+    return {
+        'key': str(key),
+        'label': str(user_row.get('nutrient_label') or key),
+        'unit': str(user_row.get('nutrient_unit') or ''),
+        'goal': goal,
+        'direction': direction,
+        'is_default': False,
+    }
+
 
 # Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
 # plain-http localhost (Safari rejects Secure cookies there). NEVER set in

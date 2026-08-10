@@ -72,11 +72,15 @@ stub_openai(GOOD)
 resp = tk.post(admin, '/api/estimate-fiber', json={'description': 'dal with carrots'})
 tk.check('text estimate 200', resp.status_code == 200)
 result = resp.get_json()
-tk.check('estimate payload shape',
-         result['viscous_fiber_g'] == 5.5 and len(result['items']) == 2 and
+tk.check('estimate payload shape (normalized to amount)',
+         result['amount'] == 5.5 and len(result['items']) == 2 and
+         result['items'][0]['amount'] == 3.5 and
          result['model'] == config.OPENAI_MODEL)
 tk.check('strict schema requested',
          captured['payload']['response_format']['json_schema']['strict'] is True)
+tk.check('fiber schema keeps historical property names',
+         'viscous_fiber_g' in
+         captured['payload']['response_format']['json_schema']['schema']['properties'])
 tk.check('guide embedded in system prompt',
          'Psyllium husk powder' in captured['payload']['messages'][0]['content'])
 tk.check('one AI use consumed', int(db.get_user(UID)['ai_uses_today']) == 1)
@@ -100,6 +104,39 @@ tk.check('scale-reference + no-vessel rules in photo prompt',
          'scale reference' in captured['payload']['messages'][0]['content'] and
          'do not mention plates' in captured['payload']['messages'][0]['content'])
 tk.check('two AI uses consumed', int(db.get_user(UID)['ai_uses_today']) == 2)
+
+# --- Custom micro: schema + prompt follow the user's nutrient config ----------
+db.set_user_nutrient(UID, 'iron_mg', 'Iron', 'mg', 18, 'at_most')
+GOOD_IRON = json.dumps({
+    'iron_mg': 6.5,
+    'items': [{'food': 'Beef stew', 'serving': '1 cup', 'amount': 4.0},
+              {'food': 'Spinach, cooked', 'serving': '1 cup', 'amount': 2.5}],
+    'note': '',
+})
+stub_openai(GOOD_IRON)
+resp = tk.post(admin, '/api/estimate-fiber', json={'description': 'beef and spinach stew'})
+result = resp.get_json()
+tk.check('custom estimate 200, normalized to amount',
+         resp.status_code == 200 and result['amount'] == 6.5 and
+         result['items'][1]['amount'] == 2.5)
+props = captured['payload']['response_format']['json_schema']['schema']['properties']
+tk.check('custom schema keyed by the derived nutrient key',
+         'iron_mg' in props and 'viscous_fiber_g' not in props)
+prompt = captured['payload']['messages'][0]['content']
+tk.check('custom prompt built from label/unit, no fiber guide',
+         'Iron' in prompt and 'mg' in prompt and 'daily limit is 18' in prompt and
+         'Psyllium husk powder' not in prompt)
+stub_openai(GOOD_PHOTO.replace('viscous_fiber_g', 'iron_mg').replace('grams', 'amount'))
+resp = tk.post(admin, '/api/estimate-photo', data={
+    'photo': (io.BytesIO(tk.TINY_JPEG), 'p.jpg')}, content_type='multipart/form-data')
+tk.check('custom photo estimate keeps scale-reference rules',
+         resp.status_code == 200 and
+         'scale reference' in captured['payload']['messages'][0]['content'] and
+         'estimate its Iron' in captured['payload']['messages'][1]['content'][0]['text'])
+db.set_user_nutrient(UID, 'fiber_g', 'viscous fiber', 'g', 20, 'at_least')
+# Neutralize this block's extra calls so the cap/limit math below is unchanged.
+tk.FIXTURES.users.items[(UID,)]['ai_uses_today'] = 2
+tk.limiter.reset()
 
 # --- Validation ---------------------------------------------------------------
 tk.check('empty description 400',
