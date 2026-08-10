@@ -262,7 +262,9 @@ def logout():
 
 # --- Admin API (account metadata ONLY — never another user's meals/photos) ---
 
-def _user_to_json(u):
+def _user_to_json(u, email_by_id=None):
+    """email_by_id: user_id -> email lookup so 'invited by' shows something
+    readable; a deleted inviter resolves to null (UI shows a fallback)."""
     return {
         'user_id': u.get('user_id'),
         'email': u.get('email'),
@@ -270,6 +272,8 @@ def _user_to_json(u):
         'status': u.get('status'),
         'created_at': u.get('created_at'),
         'approved_at': u.get('approved_at'),
+        'invited_by': u.get('invited_by'),
+        'invited_by_email': (email_by_id or {}).get(u.get('invited_by')),
         'ai_uses_date': u.get('ai_uses_date'),
         'ai_uses_today': int(u.get('ai_uses_today', 0)),
     }
@@ -284,7 +288,9 @@ def admin_list_users():
         print(f"Error listing users: {type(e).__name__}")
         return jsonify({'error': 'Failed to list users'}), 500
     users.sort(key=lambda u: u.get('created_at') or '')
-    return jsonify({'users': [_user_to_json(u) for u in users],
+    # Resolve "invited by" from the rows already in hand — no extra queries.
+    email_by_id = {u.get('user_id'): u.get('email') for u in users}
+    return jsonify({'users': [_user_to_json(u, email_by_id) for u in users],
                     'max_users': config.MAX_USERS})
 
 
@@ -960,6 +966,82 @@ def revoke_share(token):
     return jsonify({'revoked': True})
 
 
+# --- Invite management -------------------------------------------------------
+
+def _invite_to_json(row):
+    """Inviter-facing view. Deliberately NO used_by: the invitee's identity is
+    not the inviter's to see — the label is the inviter's own note."""
+    return {
+        'token': row['invite_token'],
+        'url': f"/i/{row['invite_token']}",
+        'label': row.get('label', ''),
+        'created_at': row.get('created_at'),
+        'expires_at': int(row['expires_at']) if row.get('expires_at') is not None else None,
+        'revoked': bool(row.get('revoked')),
+        'used': 'used_by' in row,
+        'used_at': row.get('used_at'),
+        'active': db.invite_is_active(row),
+    }
+
+
+@app.route('/invites')
+@auth.approved_required
+def invites_page():
+    return render_template('invites.html', user=g.user)
+
+
+@app.route('/api/invites')
+@auth.approved_required
+def list_invites():
+    try:
+        rows = db.list_user_invites(g.user['user_id'])
+    except Exception as e:
+        print(f"Error listing invites: {type(e).__name__}")
+        return jsonify({'error': 'Failed to list invite links'}), 500
+    rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+    return jsonify({'invites': [_invite_to_json(r) for r in rows],
+                    'max_active': config.MAX_ACTIVE_INVITES})
+
+
+@app.route('/api/invites', methods=['POST'])
+@auth.approved_required
+def create_invite():
+    data = request.get_json(silent=True) or {}
+    label = (data.get('label') or '').strip()
+    if len(label) > 100:
+        return jsonify({'error': 'Label too long (max 100 characters)'}), 400
+    expires = str(data.get('expires') or '7')
+    if expires not in ('1', '7', '30'):
+        return jsonify({'error': 'expires must be 1, 7 or 30 (days)'}), 400
+    expires_at = int(time.time()) + int(expires) * 86400
+
+    user_id = g.user['user_id']
+    try:
+        active = [r for r in db.list_user_invites(user_id) if db.invite_is_active(r)]
+        if len(active) >= config.MAX_ACTIVE_INVITES:
+            return jsonify({'error': f'Limit of {config.MAX_ACTIVE_INVITES} active '
+                                     'invites reached — revoke one first'}), 400
+        row = db.create_invite(user_id, expires_at, label or None)
+    except Exception as e:
+        print(f"Error creating invite for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to create invite link'}), 500
+    return jsonify(_invite_to_json(row)), 201
+
+
+@app.route('/api/invites/<token>', methods=['DELETE'])
+@auth.approved_required
+def revoke_invite(token):
+    """Revoke = flip the flag, conditioned on ownership; the row is kept."""
+    try:
+        ok = db.revoke_invite(token, g.user['user_id'])
+    except Exception as e:
+        print(f"Error revoking invite: {type(e).__name__}")
+        return jsonify({'error': 'Failed to revoke invite link'}), 500
+    if not ok:
+        return jsonify({'error': 'Invite link not found'}), 404
+    return jsonify({'revoked': True})
+
+
 # --- Settings / account deletion ---------------------------------------------
 
 @app.route('/settings')
@@ -1047,6 +1129,7 @@ def delete_account():
         db.delete_user_photos(user_id)
         db.delete_all_meals(user_id)
         db.delete_user_shares(user_id)
+        db.delete_user_invites(user_id)
         db.delete_user(user_id)  # row deleted LAST so a partial failure is retryable
     except Exception as e:
         print(f"Error deleting account {user_id}: {type(e).__name__}")

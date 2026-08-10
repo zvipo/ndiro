@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Invite friends{% endblock %}
+{% block favicon %}✉️{% endblock %}
+
+{% block styles %}
+        .create-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .create-row > div {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .create-row input[type="text"] {
+            min-width: 200px;
+        }
+
+        .invite-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .invite-row .who {
+            min-width: 0;
+        }
+
+        .invite-row .who .label-line {
+            font-size: 0.92rem;
+        }
+
+        .invite-row .who .meta-line {
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .invite-row .row-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 6px;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 6px;
+            padding: 2px 8px;
+            border: 1px solid var(--border);
+        }
+
+        .badge.active { color: var(--green); border-color: var(--green); }
+        .badge.used { color: var(--gold); border-color: var(--gold); }
+        .badge.revoked { color: var(--red); border-color: var(--red); }
+        .badge.expired { color: var(--dim); }
+
+        .form-error {
+            color: var(--red);
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: none;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>✉️ Invite friends</h1>
+            <span class="subtitle">Links that approve a friend's signup instantly</span>
+        </div>
+
+        <div class="card">
+            <p class="muted" style="font-size:0.85rem; margin-bottom:12px;">
+                Each link admits <strong>one</strong> friend: they sign in with
+                Google through it and their account is approved right away — no
+                waiting queue. Links expire on their own and can be revoked any
+                time before they're used.</p>
+            <div class="create-row">
+                <div>
+                    <label class="form-label" for="labelInput">Label (for you)</label>
+                    <input type="text" id="labelInput" placeholder="e.g. Tino" maxlength="100">
+                </div>
+                <div>
+                    <label class="form-label" for="expiresInput">Expires</label>
+                    <select id="expiresInput">
+                        <option value="7">In 7 days</option>
+                        <option value="1">In 1 day</option>
+                        <option value="30">In 30 days</option>
+                    </select>
+                </div>
+                <button type="button" class="btn primary" id="createBtn">Create invite</button>
+            </div>
+            <div class="form-error" id="createError"></div>
+        </div>
+
+        <div id="invitesContainer"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
+        <div class="page-note" id="pageNote" style="display:none"></div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function loadInvites() {
+            let data;
+            try {
+                const resp = await fetch('/api/invites');
+                if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                if (!resp.ok) { showNote('Could not load invite links.'); return; }
+                data = await resp.json();
+            } catch (e) {
+                showNote('Could not load invite links.');
+                return;
+            }
+            renderInvites(data);
+        }
+
+        function showNote(msg) {
+            const note = document.getElementById('pageNote');
+            note.style.display = msg ? 'block' : 'none';
+            note.textContent = msg || '';
+        }
+
+        function showCreateError(msg) {
+            const el = document.getElementById('createError');
+            el.style.display = msg ? 'block' : 'none';
+            el.textContent = msg || '';
+        }
+
+        function fmtDate(epochOrIso) {
+            const d = typeof epochOrIso === 'number' ? new Date(epochOrIso * 1000) : new Date(epochOrIso);
+            return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function renderInvites(data) {
+            const container = document.getElementById('invitesContainer');
+            container.innerHTML = '';
+            showNote(data.invites.length === 0 ? 'No invites yet.' : null);
+            for (const inv of data.invites) {
+                container.appendChild(inviteCard(inv));
+            }
+        }
+
+        function inviteCard(inv) {
+            const card = document.createElement('div');
+            card.className = 'card invite-row';
+
+            const badge = document.createElement('span');
+            // Precedence: a used invite reads "used" even if since expired.
+            const state = inv.used ? 'used' : (inv.revoked ? 'revoked' : (inv.active ? 'active' : 'expired'));
+            badge.className = 'badge ' + state;
+            badge.textContent = state;
+            card.appendChild(badge);
+
+            const who = document.createElement('div');
+            who.className = 'who';
+            const label = document.createElement('div');
+            label.className = 'label-line';
+            label.textContent = inv.label || 'Unlabelled invite';
+            who.appendChild(label);
+            const meta = document.createElement('div');
+            meta.className = 'meta-line';
+            const bits = ['created ' + fmtDate(inv.created_at)];
+            if (inv.used) {
+                bits.push('used ' + fmtDate(inv.used_at));
+            } else if (inv.expires_at) {
+                bits.push((inv.expires_at * 1000 > Date.now() ? 'expires ' : 'expired ') + fmtDate(inv.expires_at));
+            }
+            meta.textContent = bits.join(' · ');
+            who.appendChild(meta);
+            card.appendChild(who);
+
+            const actions = document.createElement('div');
+            actions.className = 'row-actions';
+            if (inv.active) {
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'btn';
+                copyBtn.textContent = 'Copy link';
+                copyBtn.addEventListener('click', async () => {
+                    try {
+                        await navigator.clipboard.writeText(location.origin + inv.url);
+                        copyBtn.textContent = 'Copied ✓';
+                        setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1500);
+                    } catch (e) {
+                        prompt('Copy this link:', location.origin + inv.url);
+                    }
+                });
+                actions.appendChild(copyBtn);
+
+                const revokeBtn = document.createElement('button');
+                revokeBtn.className = 'btn danger';
+                revokeBtn.textContent = 'Revoke';
+                revokeBtn.addEventListener('click', async () => {
+                    if (!confirm('Revoke this invite? The link stops working immediately.')) return;
+                    revokeBtn.disabled = true;
+                    revokeBtn.innerHTML = '<span class="spin">🥦</span>';
+                    try {
+                        const resp = await fetch('/api/invites/' + encodeURIComponent(inv.token), { method: 'DELETE' });
+                        if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({}));
+                            alert(err.error || 'Failed to revoke.');
+                        }
+                    } catch (e) {
+                        alert('Network error.');
+                    }
+                    loadInvites();
+                });
+                actions.appendChild(revokeBtn);
+            }
+            card.appendChild(actions);
+            return card;
+        }
+
+        document.getElementById('createBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('createBtn');
+            showCreateError(null);
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spin">🥦</span> Creating…';
+            try {
+                const resp = await fetch('/api/invites', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        label: document.getElementById('labelInput').value.trim(),
+                        expires: document.getElementById('expiresInput').value,
+                    }),
+                });
+                if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                const result = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showCreateError(result.error || 'Failed to create invite.');
+                    return;
+                }
+                document.getElementById('labelInput').value = '';
+                await loadInvites();
+            } catch (e) {
+                showCreateError('Network error — invite not created.');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create invite';
+            }
+        });
+
+        loadInvites();
+    </script>
+{% endblock %}

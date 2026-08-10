@@ -85,7 +85,8 @@ resp = tk.get(c, '/api/admin/users')
 user_keys = set().union(*(set(u.keys()) for u in resp.get_json()['users']))
 tk.check('admin payload is metadata-only (no meal/photo/share fields)',
          user_keys <= {'user_id', 'email', 'name', 'status', 'created_at',
-                       'approved_at', 'ai_uses_date', 'ai_uses_today'})
+                       'approved_at', 'invited_by', 'invited_by_email',
+                       'ai_uses_date', 'ai_uses_today'})
 
 # --- 429 responses are JSON with a clear message ------------------------------
 tk.limiter.reset()

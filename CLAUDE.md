@@ -27,6 +27,7 @@ python tests/probe_cross_user.py     # tenant isolation (THE security test)
 python tests/test_m3_shares.py       # shares, identical 404s, account deletion
 python tests/test_m4_ai.py           # AI caps/refunds/rate limits
 python tests/test_m6_nutrient.py     # per-user tracked micro (settings/gating)
+python tests/test_m7_invites.py      # invite links (auto-approve, single-use)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -66,7 +67,7 @@ raises without it (tests set their own).
   `review.html` and `share_view.html` — the share view differs only in data URL
   and chrome, and has no edit/AI affordances by construction.
 
-## Data model (DynamoDB, on-demand, auto-created, deliberately NO GSIs)
+## Data model (DynamoDB, on-demand, auto-created, deliberately NO GSIs — four tables)
 
 - **users** — PK `user_id` = Google `sub` (stable; emails change). `email`,
   `name`, `status` ∈ `pending|approved|rejected|admin`, `created_at`,
@@ -93,6 +94,12 @@ raises without it (tests set their own).
 - **shares** — PK `share_token` = `token_urlsafe(24)` (192 bits). `user_id`,
   `created_at`, `expires_at?` (epoch; absent = never), `revoked`, `label?`.
   Rows are kept after revoke/expiry; listing is a filtered scan (deliberate).
+- **invites** — PK `invite_token` = `token_urlsafe(24)`. Single-use expiring
+  auto-approve links: `user_id` (inviter), `created_at`, `expires_at` (epoch,
+  ALWAYS set — a row without it is inactive, fail-closed, unlike shares),
+  `revoked`, `used_by?`/`used_at?` (set by the atomic `claim_invite`), `label?`.
+  Redeemed accounts carry `invited_by` on the users row. Rows kept; filtered
+  scan; capped at `MAX_ACTIVE_INVITES` active per user.
 
 S3: photos at `users/{user_id}/meals/{date}/{meal_id}.jpg` in a private bucket;
 keys built **server-side only** in db.py; presigned GETs (1h) re-signed every
@@ -127,7 +134,15 @@ reuses the same key (no orphans).
    admin see another user's meals or photos.
 8. Server logs carry user IDs and error types only — never meal descriptions,
    contexts, or photo bytes.
-9. `MAX_USERS` enforced server-side at account creation.
+9. `MAX_USERS` enforced server-side at account creation — including invited
+   signups (the gate runs BEFORE invite logic; a full instance never consumes
+   an invite).
+9b. Invite redemption is server-side ONLY (nothing from a URL sets status):
+   `/i/<token>`'s four dead states (missing/revoked/expired/used) are
+   byte-identical 404s; the inviter is freshly re-read at both view and
+   redemption time (rejected/deleted inviters mint nothing); the claim is a
+   race-safe conditional write; invite tokens are never logged; the /i/ page
+   shows the inviter's name, never their email.
 10. Server clock (TZ=UTC) is never used for user-local dates: meal `date` is
     required from the client (400 without it); UTC is a fallback for the time
     component only. Reads take `?anchor=` (client's local today).
