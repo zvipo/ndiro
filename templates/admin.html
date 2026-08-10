@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Admin{% endblock %}
+{% block favicon %}🛡{% endblock %}
+
+{% block styles %}
+        .user-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .user-row .who {
+            min-width: 0;
+        }
+
+        .user-row .who .email {
+            font-size: 0.92rem;
+            overflow-wrap: break-word;
+        }
+
+        .user-row .who .name {
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        .user-row .meta {
+            margin-left: auto;
+            text-align: right;
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 6px;
+            padding: 2px 8px;
+            border: 1px solid var(--border);
+        }
+
+        .badge.pending { color: var(--gold); border-color: var(--gold); }
+        .badge.approved { color: var(--green); border-color: var(--green); }
+        .badge.rejected { color: var(--red); border-color: var(--red); }
+        .badge.admin { color: var(--purple); border-color: var(--purple); }
+
+        .row-actions {
+            display: flex;
+            gap: 6px;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🛡 Admin</h1>
+            <span class="subtitle" id="countLabel"></span>
+        </div>
+
+        {# Account metadata only, by design: no admin surface anywhere shows a
+           user's meals or photos. #}
+        <div id="usersContainer"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
+        <div class="page-note" id="pageNote" style="display:none"></div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function loadUsers() {
+            let data;
+            try {
+                const resp = await fetch('/api/admin/users');
+                if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                data = await resp.json();
+            } catch (e) {
+                showNote('Could not load users.');
+                return;
+            }
+            renderUsers(data);
+        }
+
+        function showNote(msg) {
+            const note = document.getElementById('pageNote');
+            note.style.display = msg ? 'block' : 'none';
+            note.textContent = msg || '';
+        }
+
+        function fmtDate(iso) {
+            if (!iso) return '';
+            return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function renderUsers(data) {
+            document.getElementById('countLabel').textContent =
+                data.users.length + ' / ' + data.max_users + ' accounts';
+            const container = document.getElementById('usersContainer');
+            container.innerHTML = '';
+            for (const u of data.users) {
+                container.appendChild(userCard(u));
+            }
+            if (data.users.length === 0) showNote('No users yet.');
+        }
+
+        function userCard(u) {
+            const card = document.createElement('div');
+            card.className = 'card user-row';
+
+            const badge = document.createElement('span');
+            badge.className = 'badge ' + u.status;
+            badge.textContent = u.status;
+            card.appendChild(badge);
+
+            const who = document.createElement('div');
+            who.className = 'who';
+            const email = document.createElement('div');
+            email.className = 'email';
+            email.textContent = u.email;
+            who.appendChild(email);
+            const name = document.createElement('div');
+            name.className = 'name';
+            name.textContent = u.name || '';
+            who.appendChild(name);
+            card.appendChild(who);
+
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            const bits = ['joined ' + fmtDate(u.created_at)];
+            if (u.approved_at) bits.push('approved ' + fmtDate(u.approved_at));
+            if (u.ai_uses_today) bits.push('AI today: ' + u.ai_uses_today);
+            meta.textContent = bits.join(' · ');
+            card.appendChild(meta);
+
+            if (u.status !== 'admin') {
+                const actions = document.createElement('div');
+                actions.className = 'row-actions';
+                if (u.status !== 'approved') actions.appendChild(actionBtn(u, 'approve', 'Approve'));
+                if (u.status !== 'rejected') actions.appendChild(actionBtn(u, 'reject', 'Reject'));
+                card.appendChild(actions);
+            }
+            return card;
+        }
+
+        function actionBtn(u, action, label) {
+            const btn = document.createElement('button');
+            btn.className = 'btn' + (action === 'reject' ? ' danger' : ' primary');
+            btn.textContent = label;
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spin">🥦</span>';
+                try {
+                    const resp = await fetch('/api/admin/users/' + encodeURIComponent(u.user_id) + '/' + action,
+                                             { method: 'POST' });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        alert(err.error || 'Action failed.');
+                    }
+                } catch (e) {
+                    alert('Network error.');
+                }
+                loadUsers();
+            });
+            return btn;
+        }
+
+        loadUsers();
+    </script>
+{% endblock %}

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#282828">
+    <title>{% block title %}Ndiro{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>{% block favicon %}🥦{% endblock %}</text></svg>">
+
+    <script>
+        /* Apply saved theme before first paint (default dark = no attribute). */
+        (function () {
+            try {
+                if (localStorage.getItem('theme') === 'light')
+                    document.documentElement.setAttribute('data-theme', 'light');
+            } catch (e) { /* private mode: stay dark */ }
+        })();
+    </script>
+
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg-0: #282828;
+            --bg-1: #1d2021;
+            --card: #3c3836;
+            --bg-soft: #32302f;
+            --border: #504945;
+            --dim: #665c54;
+            --muted: #a89984;
+            --text: #ebdbb2;
+            --gold: #fabd2f;
+            --green: #b8bb26;
+            --red: #fb4934;
+            --magenta: #b16286;
+            --purple: #d3869b;
+            --shadow: rgba(0, 0, 0, 0.45);
+        }
+
+        :root[data-theme="light"] {
+            color-scheme: light;
+            --bg-0: #fbf1c7;
+            --bg-1: #f2e5bc;
+            --card: #f9f5d7;
+            --bg-soft: #ebdbb2;
+            --border: #d5c4a1;
+            --dim: #a89984;
+            --muted: #7c6f64;
+            --text: #3c3836;
+            --gold: #b57614;
+            --green: #79740e;
+            --red: #9d0006;
+            --magenta: #8f3f71;
+            --purple: #8f3f71;
+            --shadow: rgba(0, 0, 0, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(160deg, var(--bg-0) 0%, var(--bg-1) 100%);
+            background-attachment: fixed;
+            min-height: 100vh;
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 640px;
+            margin: 0 auto;
+            padding: 20px 20px 80px;
+        }
+
+        .container.wide {
+            width: 92%;
+            max-width: 1000px;
+            padding: 20px 0 80px;
+        }
+
+        .page-header {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin: 8px 0 18px;
+            flex-wrap: wrap;
+        }
+
+        .page-header h1 {
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        .page-header .subtitle {
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        .page-header .header-link {
+            margin-left: auto;
+            font-size: 0.8rem;
+            color: var(--dim);
+            text-decoration: none;
+        }
+
+        .page-header .header-link:hover {
+            color: var(--gold);
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 6px 18px var(--shadow);
+        }
+
+        .btn {
+            background: var(--border);
+            border: 1px solid var(--dim);
+            border-radius: 8px;
+            color: var(--text);
+            padding: 8px 16px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            font-family: inherit;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn:hover {
+            border-color: var(--gold);
+        }
+
+        .btn.primary {
+            background: var(--gold);
+            border-color: var(--gold);
+            color: #1d2021;
+            font-weight: 600;
+        }
+
+        .btn.subtle {
+            background: transparent;
+            border-color: var(--border);
+            color: var(--muted);
+        }
+
+        .btn.danger {
+            border-color: var(--red);
+            color: var(--red);
+            background: transparent;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        input[type="text"], input[type="search"], input[type="number"],
+        input[type="date"], input[type="time"], select, textarea {
+            background: var(--bg-0);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            padding: 8px 10px;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+
+        .page-note {
+            text-align: center;
+            color: var(--dim);
+            font-size: 0.85rem;
+            margin-top: 30px;
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        /* Busy indicator: a spinning 🥦 wherever work is in flight */
+        .spin {
+            display: inline-block;
+            animation: spin 1.1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Subtle login/logout control, tucked in the corner */
+        .auth-control {
+            position: fixed;
+            bottom: 10px;
+            right: 12px;
+            z-index: 100;
+            font-size: 12px;
+        }
+
+        .auth-control a {
+            color: color-mix(in srgb, var(--text) 30%, transparent);
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .auth-control a:hover {
+            color: color-mix(in srgb, var(--text) 85%, transparent);
+        }
+
+        /* Floating home button, bottom-left (mirrors the auth corner) */
+        .home-control {
+            position: fixed;
+            bottom: 14px;
+            left: 14px;
+            z-index: 100;
+        }
+
+        .home-control a {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            background: var(--card);
+            border: 1px solid var(--dim);
+            border-radius: 50%;
+            color: var(--text);
+            font-size: 20px;
+            line-height: 1;
+            text-decoration: none;
+            box-shadow: 0 4px 12px var(--shadow);
+            transition: border-color 0.2s ease, transform 0.2s ease;
+        }
+
+        .home-control a:hover {
+            border-color: var(--gold);
+            transform: translateY(-1px);
+        }
+
+        /* Theme toggle: floating circle, mirrors the home control */
+        .theme-control {
+            position: fixed;
+            bottom: 62px;
+            left: 14px;
+            z-index: 100;
+        }
+
+        .theme-control button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            background: var(--card);
+            border: 1px solid var(--dim);
+            border-radius: 50%;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+            box-shadow: 0 4px 12px var(--shadow);
+            transition: border-color 0.2s ease, transform 0.2s ease;
+        }
+
+        .theme-control button:hover {
+            border-color: var(--gold);
+            transform: translateY(-1px);
+        }
+
+        {% block styles %}{% endblock %}
+    </style>
+</head>
+<body>
+    <div class="container {% block container_class %}{% endblock %}">
+        {% block content %}{% endblock %}
+    </div>
+
+    {% block chrome %}
+    <div class="home-control">
+        <a href="/" title="Home">🏠</a>
+    </div>
+
+    <div class="theme-control">
+        <button type="button" id="themeToggle" aria-label="Switch theme">☀️</button>
+    </div>
+
+    <div class="auth-control">
+        {% if user %}<a href="/logout?next=/" title="Sign out ({{ user.email }})">✓</a>{% else %}<a href="/login?next={{ request.path }}" title="Sign in">🔒</a>{% endif %}
+    </div>
+    {% endblock %}
+
+    <script>
+        // ------- Theme toggle (persisted; pre-paint script in <head> applies it) -------
+        function applyTheme(theme) {
+            if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+            else document.documentElement.removeAttribute('data-theme');
+            var toggle = document.getElementById('themeToggle');
+            if (toggle) toggle.textContent = theme === 'light' ? '🌙' : '☀️';
+            document.querySelector('meta[name="theme-color"]').setAttribute('content',
+                getComputedStyle(document.documentElement).getPropertyValue('--bg-0').trim());
+            // Pages with token-palette drawings (the review chart) listen and re-render.
+            document.dispatchEvent(new CustomEvent('ndiro-theme-change'));
+        }
+        (function () {
+            var toggle = document.getElementById('themeToggle');
+            if (toggle) {
+                toggle.addEventListener('click', function () {
+                    var next = document.documentElement.hasAttribute('data-theme') ? 'dark' : 'light';
+                    try { localStorage.setItem('theme', next); } catch (e) {}
+                    applyTheme(next);
+                });
+            }
+            applyTheme(document.documentElement.hasAttribute('data-theme') ? 'light' : 'dark');
+        })();
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

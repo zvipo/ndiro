@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Ndiro{% endblock %}
+
+{% block styles %}
+        .hero {
+            text-align: center;
+            margin: 48px 0 28px;
+        }
+
+        .hero .mark {
+            font-size: 3rem;
+        }
+
+        .hero h1 {
+            font-size: 2rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .hero .tagline {
+            color: var(--muted);
+            margin-top: 6px;
+            font-size: 0.95rem;
+        }
+
+        .nav-cards a.card {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            text-decoration: none;
+            color: var(--text);
+            transition: border-color 0.2s ease;
+        }
+
+        .nav-cards a.card:hover {
+            border-color: var(--gold);
+        }
+
+        .nav-cards .desc {
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .signin {
+            text-align: center;
+            margin-top: 28px;
+        }
+
+        .signin .consent {
+            margin-top: 12px;
+            font-size: 0.78rem;
+            color: var(--dim);
+        }
+
+        .signin .consent a {
+            color: var(--muted);
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="hero">
+            <div class="mark">🥦</div>
+            <h1>Ndiro</h1>
+            <div class="tagline">a plate-by-plate log of meals &amp; viscous soluble fiber</div>
+        </div>
+
+        {% if user and user.status in ('approved', 'admin') %}
+        <div class="nav-cards">
+            <a class="card" href="/log"><strong>🥦 Log</strong><span class="desc">add today's meals</span></a>
+            <a class="card" href="/review"><strong>📊 Review</strong><span class="desc">monthly chart &amp; feed</span></a>
+            <a class="card" href="/shares"><strong>🔗 Share links</strong><span class="desc">read-only links for your dietician</span></a>
+            <a class="card" href="/settings"><strong>⚙️ Settings</strong><span class="desc">account &amp; deletion</span></a>
+            {% if user.status == 'admin' %}
+            <a class="card" href="/admin"><strong>🛡 Admin</strong><span class="desc">approve &amp; manage users</span></a>
+            {% endif %}
+        </div>
+        {% elif user and user.status == 'pending' %}
+        <div class="signin">
+            <a class="btn" href="/waiting">Your account is waiting for approval →</a>
+        </div>
+        {% else %}
+        <div class="signin">
+            <a class="btn primary" href="/login?next=/log">Sign in with Google</a>
+            <div class="consent">By signing in you agree to the <a href="/privacy">privacy&nbsp;&amp;&nbsp;terms</a>.</div>
+        </div>
+        {% endif %}
+{% endblock %}
