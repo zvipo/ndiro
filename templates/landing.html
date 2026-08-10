@@ -63,17 +63,17 @@
         <div class="hero">
             <div class="mark">🥦</div>
             <h1>Ndiro</h1>
-            <div class="tagline">a plate-by-plate log of meals &amp; viscous soluble fiber</div>
+            <div class="tagline">A plate-by-plate log of meals &amp; viscous soluble fiber</div>
         </div>
 
         {% if user and user.status in ('approved', 'admin') %}
         <div class="nav-cards">
-            <a class="card" href="/log"><strong>🥦 Log</strong><span class="desc">add today's meals</span></a>
-            <a class="card" href="/review"><strong>📊 Review</strong><span class="desc">monthly chart &amp; feed</span></a>
-            <a class="card" href="/shares"><strong>🔗 Share links</strong><span class="desc">read-only links for your dietician</span></a>
-            <a class="card" href="/settings"><strong>⚙️ Settings</strong><span class="desc">account &amp; deletion</span></a>
+            <a class="card" href="/log"><strong>🥦 Log</strong><span class="desc">Add today's meals</span></a>
+            <a class="card" href="/review"><strong>📊 Review</strong><span class="desc">Monthly chart &amp; feed</span></a>
+            <a class="card" href="/shares"><strong>🔗 Share links</strong><span class="desc">Read-only links for your dietician</span></a>
+            <a class="card" href="/settings"><strong>⚙️ Settings</strong><span class="desc">Account &amp; deletion</span></a>
             {% if user.status == 'admin' %}
-            <a class="card" href="/admin"><strong>🛡 Admin</strong><span class="desc">approve &amp; manage users</span></a>
+            <a class="card" href="/admin"><strong>🛡 Admin</strong><span class="desc">Approve &amp; manage users</span></a>
             {% endif %}
         </div>
         {% elif user and user.status == 'pending' %}
