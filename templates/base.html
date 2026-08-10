@@ -100,16 +100,6 @@
             color: var(--muted);
         }
 
-        .page-header .header-link {
-            margin-left: auto;
-            font-size: 0.8rem;
-            color: var(--dim);
-            text-decoration: none;
-        }
-
-        .page-header .header-link:hover {
-            color: var(--gold);
-        }
 
         .card {
             background: var(--card);
@@ -202,14 +192,22 @@
             to { transform: rotate(360deg); }
         }
 
-        /* Corner menu: a hamburger that opens a nav + settings panel */
-        .menu {
+        /* Fixed top-right cluster: a direct home button + the menu hamburger */
+        .corner-controls {
             position: fixed;
             top: 12px;
             right: 12px;
             z-index: 200;
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
         }
 
+        .menu {
+            position: relative;
+        }
+
+        .corner-btn,
         .menu-toggle {
             display: flex;
             align-items: center;
@@ -227,6 +225,12 @@
             transition: border-color 0.2s ease, transform 0.2s ease;
         }
 
+        .corner-btn {
+            text-decoration: none;
+            font-size: 20px;
+        }
+
+        .corner-btn:hover,
         .menu-toggle:hover {
             border-color: var(--gold);
             transform: translateY(-1px);
@@ -295,26 +299,28 @@
     </div>
 
     {% block chrome %}
-    <div class="menu" id="appMenu">
-        <button type="button" class="menu-toggle" id="menuToggle" aria-label="Menu" aria-expanded="false">☰</button>
-        <nav class="menu-panel" id="menuPanel" hidden>
-            {% if user %}<div class="menu-email">{{ user.email }}</div>{% endif %}
-            {% if user and user.status in ('approved', 'admin') %}
-            <a href="/log">🥦 Log</a>
-            <a href="/review">📊 Review</a>
-            <a href="/shares">🔗 Share links</a>
-            <a href="/settings">⚙️ Settings</a>
-            {% if user.status == 'admin' %}<a href="/admin">👤 Admin</a>{% endif %}
-            <div class="menu-sep"></div>
-            {% endif %}
-            <a href="/">🏠 Home</a>
-            <a href="/privacy">📄 Privacy</a>
-            <button type="button" class="menu-item-btn" id="themeToggle">
-                <span id="themeIcon">☀️</span> <span id="themeLabel">Light mode</span>
-            </button>
-            <div class="menu-sep"></div>
-            {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="/login?next={{ request.path }}">→ Sign in</a>{% endif %}
-        </nav>
+    <div class="corner-controls">
+        <a class="corner-btn" href="/" title="Home" aria-label="Home">🏠</a>
+        <div class="menu" id="appMenu">
+            <button type="button" class="menu-toggle" id="menuToggle" aria-label="Menu" aria-expanded="false">☰</button>
+            <nav class="menu-panel" id="menuPanel" hidden>
+                {% if user %}<div class="menu-email">{{ user.email }}</div>{% endif %}
+                {% if user and user.status in ('approved', 'admin') %}
+                <a href="/log">🥦 Log</a>
+                <a href="/review">📊 Review</a>
+                <a href="/shares">🔗 Share links</a>
+                <a href="/settings">⚙️ Settings</a>
+                {% if user.status == 'admin' %}<a href="/admin">👤 Admin</a>{% endif %}
+                <div class="menu-sep"></div>
+                {% endif %}
+                <a href="/privacy">📄 Privacy</a>
+                <button type="button" class="menu-item-btn" id="themeToggle">
+                    <span id="themeIcon">☀️</span> <span id="themeLabel">Light mode</span>
+                </button>
+                <div class="menu-sep"></div>
+                {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="/login?next={{ request.path }}">→ Sign in</a>{% endif %}
+            </nav>
+        </div>
     </div>
     {% endblock %}
 
