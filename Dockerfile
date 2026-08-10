@@ -4,6 +4,12 @@
 # the matching shared libraries.
 FROM python:3.12-slim AS builder
 
+# INSTALL_HEIC=1 (default) also installs pillow-heif for server-side HEIC
+# decoding — works where a wheel exists (amd64/Render) or the system libheif is
+# new enough. Set to 0 on targets that can't satisfy it (e.g. a 32-bit Pi):
+#   docker build --build-arg INSTALL_HEIC=0 -t ndiro .
+ARG INSTALL_HEIC=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         pkg-config \
@@ -13,9 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt requirements-heic.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --prefix=/install -r requirements.txt
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt \
+    && if [ "$INSTALL_HEIC" = "1" ]; then \
+         pip install --no-cache-dir --prefix=/install -r requirements-heic.txt; \
+       fi
 
 # --- Final stage: minimal runtime image --------------------------------------
 FROM python:3.12-slim

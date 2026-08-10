@@ -10,9 +10,19 @@ optimization).
 import io
 
 from PIL import Image, ImageOps
-import pillow_heif
 
-pillow_heif.register_heif_opener()  # lets PIL.Image.open read HEIC/HEIF
+# HEIC/HEIF support is optional: pillow-heif needs a recent libheif that some
+# targets (e.g. a 32-bit Raspberry Pi) can't provide. When it's absent, Pillow
+# still handles JPEG/PNG and a HEIC upload simply fails to decode -> the caller
+# returns a friendly "couldn't read that image" 400. Phones convert HEIC to
+# JPEG client-side before upload, so this only affects a HEIC sent from a
+# desktop browser that can't decode it.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()  # lets PIL.Image.open read HEIC/HEIF
+    HEIC_SUPPORTED = True
+except Exception:  # pragma: no cover - depends on the deployment target
+    HEIC_SUPPORTED = False
 
 # Reject decompression bombs while allowing real phone photos (a 48 MP camera
 # is ~8000x6000 ≈ 48 MP). 60 MP leaves headroom yet bounds a malicious
