@@ -28,6 +28,7 @@ import db
 
 _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
+_INVITE_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')  # token_urlsafe shape
 _NUTRIENT_MAX = Decimal('100000')  # grams; anything larger is nonsense / a DynamoDB overflow
 
 app = Flask(__name__)
@@ -125,9 +126,54 @@ def login():
     # Remember where to land after the OAuth round-trip. Kept in the session
     # (not the state param) so state stays a pure CSRF token.
     session['login_next'] = auth._safe_next(request.args.get('next'), default='/log')
+    # An invite token rides the session the same way (shape-checked only here;
+    # real validation happens server-side in /callback). No/invalid param
+    # clears any stale token from an earlier aborted flow.
+    invite = request.args.get('invite')
+    if invite and _INVITE_RE.match(invite):
+        session['invite_token'] = invite
+    else:
+        session.pop('invite_token', None)
     state = secrets.token_urlsafe(16)
     session['oauth_state'] = state
     return redirect(auth.build_auth_url(state))
+
+
+def _valid_invite_for_redemption(token):
+    """(invite_row, inviter_row) when the token is fully redeemable, else None.
+
+    ALL of: row exists, unrevoked, unused, unexpired, AND the inviter's row
+    freshly re-read and still approved/admin — a rejected or deleted inviter
+    must not keep minting approved accounts from links made earlier."""
+    if not token:
+        return None
+    invite = db.get_invite(token)
+    if not db.invite_is_active(invite):
+        return None
+    inviter = db.get_user(invite['user_id'])
+    if not inviter or inviter.get('status') not in auth.APPROVED_STATUSES:
+        return None
+    return invite, inviter
+
+
+def _redeem_invite(token, new_user_id):
+    """Validate + atomically claim an invite for new_user_id.
+
+    Returns the inviter user_id on success, None otherwise (race losers and
+    any error fall back to the normal pending flow — never an error page in
+    the middle of the OAuth flow). Logs never include the token: pre-claim it
+    is a live capability (invariant #8)."""
+    try:
+        valid = _valid_invite_for_redemption(token)
+        if valid is None:
+            return None
+        invite, _ = valid
+        if not db.claim_invite(token, new_user_id):
+            return None  # lost the single-use race
+        return invite['user_id']
+    except Exception as e:
+        print(f"Invite redemption failed for user {new_user_id}: {type(e).__name__}")
+        return None
 
 
 @app.route('/callback')
@@ -137,6 +183,10 @@ def callback():
     if not request.args.get('state') or \
             request.args.get('state') != session.pop('oauth_state', None):
         return 'Invalid OAuth state', 400
+
+    # Pop the invite token unconditionally so it can never survive into the
+    # post-login session (session.clear() below is the backstop).
+    invite_token = session.pop('invite_token', None)
 
     code = request.args.get('code')
     if not code:
@@ -151,16 +201,38 @@ def callback():
     try:
         user = db.get_user(user_id)
         if user is None:
-            # First sign-in. MAX_USERS is enforced HERE, server-side.
+            # First sign-in. MAX_USERS is enforced HERE, server-side — BEFORE
+            # any invite logic, so a full instance never consumes an invite
+            # (the row stays usable once space frees up).
             if db.count_users() >= config.MAX_USERS:
                 return render_template('full.html'), 403
-            status = 'admin' if email in config.ADMIN_EMAILS else 'pending'
-            user = db.create_user(user_id, email, name, status, picture)
-        elif (user.get('email') != email or user.get('name') != name
-              or user.get('picture', '') != picture):
-            # sub is the stable key; keep email/name/picture current.
-            db.update_user_profile(user_id, email, name, picture)
-            user = {**user, 'email': email, 'name': name, 'picture': picture}
+            if email in config.ADMIN_EMAILS:
+                # Admin bootstrap wins without consuming an invite.
+                user = db.create_user(user_id, email, name, 'admin', picture)
+            else:
+                # An invite that validates AND is atomically claimed approves
+                # the signup; any failure falls back to the normal pending
+                # queue (the /i/ page filtered dead tokens before sign-in).
+                inviter_id = _redeem_invite(invite_token, user_id)
+                if inviter_id:
+                    user = db.create_user(user_id, email, name, 'approved',
+                                          picture, invited_by=inviter_id)
+                else:
+                    user = db.create_user(user_id, email, name, 'pending', picture)
+        else:
+            if (user.get('email') != email or user.get('name') != name
+                    or user.get('picture', '') != picture):
+                # sub is the stable key; keep email/name/picture current.
+                db.update_user_profile(user_id, email, name, picture)
+                user = {**user, 'email': email, 'name': name, 'picture': picture}
+            if user.get('status') == 'pending':
+                # A pending user redeeming an invite gets approved (friend
+                # signed up first, then received the invite). Rejected users
+                # never do — rejection is a ban, handled below.
+                inviter_id = _redeem_invite(invite_token, user_id)
+                if inviter_id:
+                    db.set_user_status(user_id, 'approved', invited_by=inviter_id)
+                    user = {**user, 'status': 'approved'}
     except Exception as e:
         print(f"Sign-in failed for user {user_id}: {type(e).__name__}")
         return 'Sign-in failed — please try again later.', 500
@@ -725,6 +797,30 @@ def review_page():
     return render_template('review.html', user=g.user,
                            nutrient=config.resolve_nutrient(g.user),
                            meals_url='/api/meals')
+
+
+# --- Invite links ------------------------------------------------------------
+# /i/<token> is public, token-gated, rate-limited. Redemption itself happens
+# ONLY server-side in /callback — nothing from a URL can set account status.
+# The four dead states (missing/revoked/expired/used) render byte-identical
+# 404s: no enumeration oracle, and the token never lands in the page body.
+
+@app.route('/i/<token>')
+@limiter.limit('30 per minute')
+def invite_view(token):
+    try:
+        valid = _valid_invite_for_redemption(token)
+    except Exception as e:
+        print(f"Error resolving invite: {type(e).__name__}")
+        valid = None
+    if valid is None:
+        return render_template('invite_404.html', user=auth.current_user(),
+                               login_next='/'), 404
+    _, inviter = valid
+    # Attribution: inviter NAME only — never the email.
+    return render_template('invite_view.html', user=auth.current_user(),
+                           inviter_name=inviter.get('name') or 'A Ndiro user',
+                           token=token)
 
 
 # --- Share links -------------------------------------------------------------
