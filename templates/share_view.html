@@ -5,21 +5,54 @@
 
 {% block styles %}
 {% include "_review_styles.html" %}
+        /* The header row aligns by text baseline, so the chip's box must be
+           its TEXT alone; the avatar is absolutely positioned and centered on
+           the text line (in-flow it would either set the baseline from the
+           img bottom or center on its own 26px height — both misalign). */
+        .share-owner {
+            position: relative;
+            display: inline-flex;
+            align-items: baseline;
+            gap: 6px;
+            padding-left: 34px;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .share-owner strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .share-owner-pic {
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1px solid var(--border);
+        }
 {% endblock %}
 
 {% block content %}
         <div class="page-header">
             <h1>🥦 Ndiro</h1>
             <span class="subtitle">Shared read-only meal log · viscous soluble fiber</span>
+            {% if owner and owner.name %}
+            <span class="share-owner">
+                {% if owner.picture %}<img class="share-owner-pic" src="{{ owner.picture }}" alt="" referrerpolicy="no-referrer">{% endif %}
+                Shared by <strong>{{ owner.name }}</strong>
+            </span>
+            {% endif %}
         </div>
 
 {% include "_review_core.html" %}
 {% endblock %}
 
-{# No account chrome on shared views: theme toggle only — no home link, no
-   sign-in control, and (by construction of _review_core) no edit or AI UI. #}
-{% block chrome %}
-    <div class="menu">
-        <button type="button" class="menu-toggle" id="themeToggle" aria-label="Switch theme"><span id="themeIcon">☀️</span></button>
-    </div>
-{% endblock %}
+{# Shared views use the standard corner menu from base — theme toggle plus a
+   sign-in/sign-up link so recipients can join. Only chrome varies by session;
+   the meal data stays scoped to the token row, and (by construction of
+   _review_core) there is no edit or AI UI. #}

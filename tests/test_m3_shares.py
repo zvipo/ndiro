@@ -64,8 +64,12 @@ tk.check('share page renders anonymously', resp.status_code == 200)
 tk.check('share page has no edit/AI affordances',
          b'saveBtn' not in resp.data and b'estimateBtn' not in resp.data and
          b'deleteMeal' not in resp.data)
-tk.check('share page has no sign-in chrome',
-         b'class="auth-control"' not in resp.data and b'/login?next' not in resp.data)
+tk.check('share page offers sign-up to anonymous viewers',
+         b'/login?next=' in resp.data and b'Sign up' in resp.data)
+tk.check('share page attributes the sharer by name',
+         b'Shared by' in resp.data and b'Alice' in resp.data)
+tk.check('share page never leaks the sharer email',
+         b'alice@example.test' not in resp.data)
 
 resp = tk.get(anon, f'/s/{token}/meals?month={DAY[:7]}&anchor={DAY}')
 data = resp.get_json()
