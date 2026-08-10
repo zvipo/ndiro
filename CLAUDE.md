@@ -19,7 +19,7 @@ vars (`env_template.txt` has placeholders; `.env` is git- and docker-ignored).
 ```bash
 pip install -r requirements.txt
 python app.py                        # dev server, port 5000 (needs .env with SECRET_KEY)
-gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --preload app:app
+gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --no-control-socket --preload app:app
 
 # Stub tests — no credentials or network needed; run all five after changes:
 python tests/test_m1_auth.py         # auth/approval/MAX_USERS

@@ -62,4 +62,7 @@ EXPOSE $PORT
 # SINGLE worker is load-bearing: the rate limiter is in-memory (memory://),
 # so a second worker would hold a divergent limit state. Threads provide the
 # concurrency; the 60s timeout leaves room for the AI calls' 20-25s reads.
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 60 --preload app:app
+# --no-control-socket: gunicorn >=25.1 otherwise tries to create
+# $HOME/.gunicorn/gunicorn.ctl (unwritable here) and logs an error each boot;
+# the gunicornc management CLI is unused with this single pinned worker.
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 60 --no-control-socket --preload app:app
