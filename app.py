@@ -141,6 +141,7 @@ def callback():
         return err, 400
 
     user_id, email, name = info['sub'], info['email'], info['name']
+    picture = info.get('picture', '')
     try:
         user = db.get_user(user_id)
         if user is None:
@@ -148,11 +149,12 @@ def callback():
             if db.count_users() >= config.MAX_USERS:
                 return render_template('full.html'), 403
             status = 'admin' if email in config.ADMIN_EMAILS else 'pending'
-            user = db.create_user(user_id, email, name, status)
-        elif user.get('email') != email or user.get('name') != name:
-            # sub is the stable key; keep email/name current.
-            db.update_user_profile(user_id, email, name)
-            user = {**user, 'email': email, 'name': name}
+            user = db.create_user(user_id, email, name, status, picture)
+        elif (user.get('email') != email or user.get('name') != name
+              or user.get('picture', '') != picture):
+            # sub is the stable key; keep email/name/picture current.
+            db.update_user_profile(user_id, email, name, picture)
+            user = {**user, 'email': email, 'name': name, 'picture': picture}
     except Exception as e:
         print(f"Sign-in failed for user {user_id}: {type(e).__name__}")
         return 'Sign-in failed — please try again later.', 500

@@ -47,7 +47,7 @@ def fetch_userinfo(code):
     """Exchange the authorization code and fetch userinfo, server-to-server
     over TLS (which is why the id_token signature is not separately verified).
 
-    Returns ({'sub','email','name'}, None) or (None, error_message).
+    Returns ({'sub','email','name','picture'}, None) or (None, error_message).
     """
     token_resp = requests.post(GOOGLE_TOKEN_ENDPOINT, data={
         'client_id': config.GOOGLE_CLIENT_ID,
@@ -76,7 +76,9 @@ def fetch_userinfo(code):
     email = (info.get('email') or '').lower()
     if not sub or not email:
         return None, 'Google account details incomplete'
-    return {'sub': str(sub), 'email': email, 'name': info.get('name') or ''}, None
+    return {'sub': str(sub), 'email': email,
+            'name': info.get('name') or '',
+            'picture': info.get('picture') or ''}, None
 
 
 def current_user():

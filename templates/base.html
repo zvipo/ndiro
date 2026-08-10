@@ -230,6 +230,18 @@
             font-size: 20px;
         }
 
+        .menu-toggle.has-avatar {
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .menu-avatar {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 50%;
+        }
+
         .corner-btn:hover,
         .menu-toggle:hover {
             border-color: var(--gold);
@@ -302,7 +314,7 @@
     <div class="corner-controls">
         <a class="corner-btn" href="/" title="Home" aria-label="Home">🏠</a>
         <div class="menu" id="appMenu">
-            <button type="button" class="menu-toggle" id="menuToggle" aria-label="Menu" aria-expanded="false">☰</button>
+            <button type="button" class="menu-toggle{% if user and user.picture %} has-avatar{% endif %}" id="menuToggle" aria-label="Menu" aria-expanded="false">{% if user and user.picture %}<img class="menu-avatar" src="{{ user.picture }}" alt="" referrerpolicy="no-referrer">{% else %}☰{% endif %}</button>
             <nav class="menu-panel" id="menuPanel" hidden>
                 {% if user %}<div class="menu-email">{{ user.email }}</div>{% endif %}
                 {% if user and user.status in ('approved', 'admin') %}

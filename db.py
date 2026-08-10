@@ -133,12 +133,13 @@ def count_users():
         kwargs['ExclusiveStartKey'] = lek
 
 
-def create_user(user_id, email, name, status):
+def create_user(user_id, email, name, status, picture=''):
     """Create a user row (first sign-in). Returns the item."""
     item = {
         'user_id': user_id,
         'email': email,
         'name': name,
+        'picture': picture,
         'status': status,
         'created_at': _utc_now_iso(),
     }
@@ -148,13 +149,13 @@ def create_user(user_id, email, name, status):
     return item
 
 
-def update_user_profile(user_id, email, name):
-    """Keep email/name current on sign-in (emails change; sub is stable)."""
+def update_user_profile(user_id, email, name, picture=''):
+    """Keep email/name/picture current on sign-in (they change; sub is stable)."""
     users_table().update_item(
         Key={'user_id': user_id},
-        UpdateExpression='SET email = :e, #n = :n',
+        UpdateExpression='SET email = :e, #n = :n, picture = :p',
         ExpressionAttributeNames={'#n': 'name'},
-        ExpressionAttributeValues={':e': email, ':n': name},
+        ExpressionAttributeValues={':e': email, ':n': name, ':p': picture},
     )
 
 
