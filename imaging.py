@@ -14,6 +14,12 @@ import pillow_heif
 
 pillow_heif.register_heif_opener()  # lets PIL.Image.open read HEIC/HEIF
 
+# Reject decompression bombs while allowing real phone photos (a 48 MP camera
+# is ~8000x6000 ≈ 48 MP). 60 MP leaves headroom yet bounds a malicious
+# tiny-file → huge-canvas expansion. Backstop Pillow's own bomb guard too.
+MAX_PIXELS = 60_000_000
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
 
 def to_jpeg(raw_bytes, max_dim=1600, quality=85):
     """Decode any supported image and return downscaled RGB JPEG bytes.
@@ -22,7 +28,15 @@ def to_jpeg(raw_bytes, max_dim=1600, quality=85):
     """
     try:
         img = Image.open(io.BytesIO(raw_bytes))
+        # Image.open only reads the header, so check decoded pixel dimensions
+        # BEFORE load() — a small, highly compressed file can otherwise expand
+        # to hundreds of MB and exhaust the (single-container) server.
+        w, h = img.size
+        if w * h > MAX_PIXELS:
+            raise ValueError('image dimensions too large')
         img.load()
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f'unreadable image: {type(e).__name__}')
 

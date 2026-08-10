@@ -66,9 +66,18 @@ Build the container:
 
 ```bash
 docker build -t ndiro .
+# LOCAL testing only — bound to loopback, never all interfaces:
 docker run -d --name ndiro --restart unless-stopped \
-    --env-file /path/to/.env -p 8000:8000 ndiro
+    --env-file /path/to/.env -p 127.0.0.1:8000:8000 ndiro
 ```
+
+**Do not publish the port on a public interface.** The app runs behind a
+single trusted reverse proxy and sets `ProxyFix(x_for=1)`, so it trusts the
+`X-Forwarded-For` header — a client that can reach gunicorn directly could
+spoof it to bypass the per-IP rate limits, and `Secure` session cookies won't
+work without the proxy's TLS. In production the container must be reachable
+**only** through the TLS reverse proxy (see the Caddy section: shared Docker
+network, no host ports published).
 
 Notes that matter:
 

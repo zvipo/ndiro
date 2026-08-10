@@ -109,6 +109,7 @@
             try {
                 const resp = await fetch('/api/shares');
                 if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                if (!resp.ok) { showNote('Could not load share links.'); return; }
                 data = await resp.json();
             } catch (e) {
                 showNote('Could not load share links.');

@@ -71,6 +71,7 @@
             try {
                 const resp = await fetch('/api/admin/users');
                 if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                if (!resp.ok) { showNote('Could not load users.'); return; }
                 data = await resp.json();
             } catch (e) {
                 showNote('Could not load users.');

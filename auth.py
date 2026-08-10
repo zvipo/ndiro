@@ -49,29 +49,43 @@ def fetch_userinfo(code):
 
     Returns ({'sub','email','name','picture'}, None) or (None, error_message).
     """
-    token_resp = requests.post(GOOGLE_TOKEN_ENDPOINT, data={
-        'client_id': config.GOOGLE_CLIENT_ID,
-        'client_secret': config.GOOGLE_CLIENT_SECRET,
-        'code': code,
-        'grant_type': 'authorization_code',
-        'redirect_uri': config.GOOGLE_REDIRECT_URI,
-    }, timeout=10)
+    try:
+        token_resp = requests.post(GOOGLE_TOKEN_ENDPOINT, data={
+            'client_id': config.GOOGLE_CLIENT_ID,
+            'client_secret': config.GOOGLE_CLIENT_SECRET,
+            'code': code,
+            'grant_type': 'authorization_code',
+            'redirect_uri': config.GOOGLE_REDIRECT_URI,
+        }, timeout=10)
+    except requests.RequestException as e:
+        print(f"Google token exchange failed: {type(e).__name__}")
+        return None, 'Could not reach Google — please try again'
     if token_resp.status_code != 200:
         return None, 'Failed to exchange authorization code'
 
-    access_token = token_resp.json().get('access_token')
+    try:
+        access_token = token_resp.json().get('access_token')
+    except ValueError:
+        return None, 'Malformed token response from Google'
     if not access_token:
         return None, 'No access token returned'
 
-    userinfo_resp = requests.get(
-        GOOGLE_USERINFO_ENDPOINT,
-        headers={'Authorization': f'Bearer {access_token}'},
-        timeout=10,
-    )
+    try:
+        userinfo_resp = requests.get(
+            GOOGLE_USERINFO_ENDPOINT,
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        print(f"Google userinfo fetch failed: {type(e).__name__}")
+        return None, 'Could not reach Google — please try again'
     if userinfo_resp.status_code != 200:
         return None, 'Failed to fetch user info'
 
-    info = userinfo_resp.json()
+    try:
+        info = userinfo_resp.json()
+    except ValueError:
+        return None, 'Malformed user info from Google'
     sub = info.get('id') or info.get('sub')  # v2 endpoint calls it 'id'
     email = (info.get('email') or '').lower()
     if not sub or not email:

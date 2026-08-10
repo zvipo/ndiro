@@ -6,6 +6,7 @@ ai.py (fiber estimators). All routes live at root so the Google redirect URI
 and root-absolute template paths never change.
 """
 import calendar
+import re
 import secrets
 import time
 import os
@@ -23,6 +24,10 @@ import auth
 import config
 import imaging
 import db
+
+_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+_MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
+_NUTRIENT_MAX = Decimal('100000')  # grams; anything larger is nonsense / a DynamoDB overflow
 
 app = Flask(__name__)
 
@@ -246,20 +251,29 @@ def log_page():
 
 
 def _valid_date(date_str):
-    """Return the string if it is a valid YYYY-MM-DD date, else None."""
+    """Return the string if it is a strictly canonical YYYY-MM-DD date, else None.
+
+    strptime alone is lenient ('2026-8-5' parses), which would produce a sort
+    key that zero-padded month queries never match (silent data loss) and 500
+    when fed to date.fromisoformat as an anchor. Require the round trip.
+    """
+    if not isinstance(date_str, str) or not _DATE_RE.match(date_str):
+        return None
     try:
         datetime.strptime(date_str, '%Y-%m-%d')
         return date_str
-    except (TypeError, ValueError):
+    except ValueError:
         return None
 
 
 def _valid_month(month_str):
-    """Parse YYYY-MM into (year, month), else None."""
+    """Parse a strictly canonical YYYY-MM into (year, month), else None."""
+    if not isinstance(month_str, str) or not _MONTH_RE.match(month_str):
+        return None
     try:
         parsed = datetime.strptime(month_str, '%Y-%m')
         return parsed.year, parsed.month
-    except (TypeError, ValueError):
+    except ValueError:
         return None
 
 
@@ -278,10 +292,55 @@ def _nutrients_from_form(form):
             value = Decimal(raw)
         except InvalidOperation:
             raise ValueError(f'{field} must be a number')
+        # Decimal('NaN'/'Infinity') parse fine but blow up later: NaN raises
+        # InvalidOperation on comparison, Infinity is rejected by DynamoDB.
+        if not value.is_finite():
+            raise ValueError(f'{field} must be a real number')
         if value < 0:
             raise ValueError(f'{field} must be >= 0')
+        # Sane upper bound: also keeps huge finite values (e.g. 1e999) from
+        # reaching DynamoDB, which rejects them (a 500) — no real meal is 100kg.
+        if value > _NUTRIENT_MAX:
+            raise ValueError(f'{field} is implausibly large')
         nutrients[field] = value
     return nutrients
+
+
+def _read_meal_form(form):
+    """Validate the fields shared by add/edit. Returns (description, context,
+    nutrients); raises ValueError(message) on any invalid field."""
+    description = (form.get('description') or '').strip()
+    if not description:
+        raise ValueError('Description is required')
+    if len(description) > 500:
+        raise ValueError('Description too long (max 500 characters)')
+    context = (form.get('context') or '').strip()
+    if len(context) > 500:
+        raise ValueError('Context too long (max 500 characters)')
+    return description, context, _nutrients_from_form(form)
+
+
+def _assemble_meal_item(user_id, date_str, meal_id, description, context,
+                        nutrients, photo_key, created_at, form):
+    """Build a meal item dict (shared by add/edit)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    item = {
+        'user_id': user_id,
+        'sk': db.meal_sk(date_str, meal_id),
+        'date': date_str,
+        'meal_id': meal_id,
+        'description': description,
+        'nutrients': nutrients,
+        'created_at': created_at or now_iso,
+        'updated_at': now_iso,
+    }
+    if context:
+        item['context'] = context
+    if form.get('ai_assisted') == '1':
+        item['ai_assisted'] = True
+    if photo_key:
+        item['photo_key'] = photo_key
+    return item
 
 
 def _meal_to_json(item, owner_user_id):
@@ -400,17 +459,6 @@ def add_meal():
     context/time/fiber_g/photo/ai_assisted)."""
     user_id = g.user['user_id']
 
-    description = (request.form.get('description') or '').strip()
-    if not description:
-        return jsonify({'error': 'Description is required'}), 400
-    if len(description) > 500:
-        return jsonify({'error': 'Description too long (max 500 characters)'}), 400
-
-    # Optional dietician-driven context (mood, cravings — esp. around sweets).
-    context = (request.form.get('context') or '').strip()
-    if len(context) > 500:
-        return jsonify({'error': 'Context too long (max 500 characters)'}), 400
-
     # The DATE is user-local and must come from the client — the server clock
     # is never a fallback for it (a UTC server is up to a day off the user).
     date_str = request.form.get('date')
@@ -418,9 +466,14 @@ def add_meal():
         return jsonify({'error': 'Date is required'}), 400
     if not _valid_date(date_str):
         return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    # Reject future dates: a meal dated ahead of "today" is filtered out of
+    # every view, so it would look like a failed save. 1-day slack covers a
+    # client whose local date is ahead of the UTC server.
+    if date.fromisoformat(date_str) > datetime.now(timezone.utc).date() + timedelta(days=1):
+        return jsonify({'error': "Date can't be in the future"}), 400
 
     try:
-        nutrients = _nutrients_from_form(request.form)
+        description, context, nutrients = _read_meal_form(request.form)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
@@ -452,28 +505,15 @@ def add_meal():
             print(f"Error uploading photo for user {user_id}: {type(e).__name__}")
             return jsonify({'error': 'Photo upload failed'}), 502
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    item = {
-        'user_id': user_id,
-        'sk': db.meal_sk(date_str, meal_id),
-        'date': date_str,
-        'meal_id': meal_id,
-        'description': description,
-        'nutrients': nutrients,
-        'created_at': now_iso,
-        'updated_at': now_iso,
-    }
-    if context:
-        item['context'] = context
-    if request.form.get('ai_assisted') == '1':
-        item['ai_assisted'] = True
-    if photo_key:
-        item['photo_key'] = photo_key
+    item = _assemble_meal_item(user_id, date_str, meal_id, description, context,
+                               nutrients, photo_key, None, request.form)
 
     try:
         db.put_meal(item)
     except Exception as e:
         print(f"Error saving meal for user {user_id}: {type(e).__name__}")
+        if photo_key:
+            db.delete_photo(photo_key)  # don't orphan the just-uploaded object
         return jsonify({'error': 'Failed to save meal'}), 500
 
     return jsonify(_meal_to_json(item, user_id)), 201
@@ -496,33 +536,27 @@ def update_meal(date_str, meal_id):
     if not existing:
         return jsonify({'error': 'Meal not found'}), 404
 
-    description = (request.form.get('description') or '').strip()
-    if not description:
-        return jsonify({'error': 'Description is required'}), 400
-    if len(description) > 500:
-        return jsonify({'error': 'Description too long (max 500 characters)'}), 400
-
-    context = (request.form.get('context') or '').strip()
-    if len(context) > 500:
-        return jsonify({'error': 'Context too long (max 500 characters)'}), 400
-
     try:
-        nutrients = _nutrients_from_form(request.form)
+        description, context, nutrients = _read_meal_form(request.form)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
     photo_key = existing.get('photo_key')
-
+    # Defer the S3 removal until the row is safely written, so a failed update
+    # never leaves the still-current row pointing at a deleted object.
+    delete_after_commit = None
     if request.form.get('remove_photo') and photo_key:
-        db.delete_photo(photo_key)  # best-effort
+        delete_after_commit = photo_key
         photo_key = None
 
     photo = request.files.get('photo')
     if photo and photo.filename:
         if not config.S3_BUCKET:
             return jsonify({'error': 'Photo storage not configured (set S3_BUCKET)'}), 400
-        # Reuse the meal's canonical key so a replacement never orphans an object.
+        # Reuse the meal's canonical key so a replacement overwrites in place
+        # (no delete, no orphan). Overrides a pending remove_photo.
         photo_key = db.photo_key(user_id, date_str, meal_id)
+        delete_after_commit = None
         try:
             db.put_photo(photo, photo_key)
         except ValueError:
@@ -531,22 +565,9 @@ def update_meal(date_str, meal_id):
             print(f"Error uploading photo for user {user_id}: {type(e).__name__}")
             return jsonify({'error': 'Photo upload failed'}), 502
 
-    item = {
-        'user_id': user_id,
-        'sk': db.meal_sk(date_str, meal_id),
-        'date': date_str,
-        'meal_id': meal_id,
-        'description': description,
-        'nutrients': nutrients,
-        'created_at': existing.get('created_at'),
-        'updated_at': datetime.now(timezone.utc).isoformat(),
-    }
-    if context:
-        item['context'] = context
-    if request.form.get('ai_assisted') == '1':
-        item['ai_assisted'] = True
-    if photo_key:
-        item['photo_key'] = photo_key
+    item = _assemble_meal_item(user_id, date_str, meal_id, description, context,
+                               nutrients, photo_key, existing.get('created_at'),
+                               request.form)
 
     try:
         db.put_meal(item)
@@ -554,6 +575,8 @@ def update_meal(date_str, meal_id):
         print(f"Error updating meal for user {user_id}: {type(e).__name__}")
         return jsonify({'error': 'Failed to update meal'}), 500
 
+    if delete_after_commit:
+        db.delete_photo(delete_after_commit)  # best-effort, post-commit
     return jsonify(_meal_to_json(item, user_id))
 
 
@@ -570,14 +593,15 @@ def delete_meal(date_str, meal_id):
     if not existing:
         return jsonify({'error': 'Meal not found'}), 404
 
-    db.delete_photo(existing.get('photo_key'))  # best-effort
-
+    # Delete the row first: if that fails we return an error with the photo
+    # still intact (not a row pointing at a missing object).
     try:
         db.delete_meal_item(user_id, date_str, meal_id)
     except Exception as e:
         print(f"Error deleting meal for user {user_id}: {type(e).__name__}")
         return jsonify({'error': 'Failed to delete meal'}), 500
 
+    db.delete_photo(existing.get('photo_key'))  # best-effort, post-commit
     return jsonify({'deleted': True, 'date': date_str, 'meal_id': meal_id})
 
 
@@ -805,13 +829,15 @@ def delete_account():
     if data.get('confirm') != 'delete':
         return jsonify({'error': 'Confirmation required'}), 400
     user_id = g.user['user_id']
-    db.delete_user_photos(user_id)  # best-effort inside
     try:
+        # Photos first and STRICTLY: if the S3 wipe is incomplete we abort with
+        # the account intact, so the user can retry rather than be left with
+        # orphaned private photos and no account.
+        db.delete_user_photos(user_id)
         db.delete_all_meals(user_id)
         db.delete_user_shares(user_id)
-        db.delete_user(user_id)
+        db.delete_user(user_id)  # row deleted LAST so a partial failure is retryable
     except Exception as e:
-        # User row is deleted LAST so a partial failure stays retryable.
         print(f"Error deleting account {user_id}: {type(e).__name__}")
         return jsonify({'error': 'Account deletion failed — please try again'}), 500
     session.clear()

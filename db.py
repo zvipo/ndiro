@@ -436,23 +436,28 @@ def presign_photo(key, owner_user_id):
 
 def delete_user_photos(user_id):
     """Delete the whole users/{user_id}/ S3 prefix (account deletion).
-    Best-effort: logs and continues on error."""
+
+    Raises on any failure — the caller must NOT delete the user row unless this
+    completes, or private photos would be orphaned with no account to retry the
+    wipe. delete_objects reports per-object errors even on a 200, so those are
+    surfaced too.
+    """
     if not config.S3_BUCKET:
         return 0
     deleted = 0
-    try:
-        prefix = f'users/{user_id}/'
-        kwargs = {'Bucket': config.S3_BUCKET, 'Prefix': prefix}
-        while True:
-            resp = _s3_client().list_objects_v2(**kwargs)
-            objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
-            if objs:
-                _s3_client().delete_objects(
-                    Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
-                deleted += len(objs)
-            if not resp.get('IsTruncated'):
-                break
-            kwargs['ContinuationToken'] = resp['NextContinuationToken']
-    except Exception as e:
-        print(f"Error deleting S3 prefix for user {user_id}: {type(e).__name__}")
+    prefix = f'users/{user_id}/'
+    kwargs = {'Bucket': config.S3_BUCKET, 'Prefix': prefix}
+    while True:
+        resp = _s3_client().list_objects_v2(**kwargs)
+        objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
+        if objs:
+            result = _s3_client().delete_objects(
+                Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
+            errors = result.get('Errors') or []
+            if errors:
+                raise RuntimeError(f'{len(errors)} S3 object(s) failed to delete')
+            deleted += len(objs)
+        if not resp.get('IsTruncated'):
+            break
+        kwargs['ContinuationToken'] = resp['NextContinuationToken']
     return deleted

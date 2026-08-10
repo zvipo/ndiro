@@ -77,6 +77,12 @@
         }
 
         .guide-row {
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            border: none;
+            font: inherit;
+            color: inherit;
             display: flex;
             align-items: baseline;
             gap: 8px;
@@ -336,7 +342,7 @@
                 </div>
                 <div>
                     <label class="form-label" for="dateInput">Date</label>
-                    <input type="date" id="dateInput">
+                    <input type="date" id="dateInput" max="9999-12-31">
                 </div>
                 <div>
                     <label class="form-label" for="timeInput">Time</label>
@@ -593,7 +599,9 @@
         }
 
         function initForm() {
-            document.getElementById('dateInput').value = currentDateLocal();
+            var _di = document.getElementById('dateInput');
+            _di.value = currentDateLocal();
+            _di.max = currentDateLocal();  // no future-dated meals (they'd be filtered from views)
             document.getElementById('timeInput').value = currentTimeHHMM();
             document.getElementById('photoBtn').addEventListener('click', () =>
                 document.getElementById('photoInput').click());
@@ -649,7 +657,8 @@
                 return;
             }
             for (const item of matches) {
-                const row = document.createElement('div');
+                const row = document.createElement('button');
+                row.type = 'button';
                 row.className = 'guide-row';
                 if (item.star) {
                     const star = document.createElement('span');
@@ -669,11 +678,15 @@
                 grams.textContent = '+' + item.grams + ' g';
                 row.appendChild(grams);
                 // pointerdown + preventDefault: fires before blur on iOS and lets
+                // repeated taps add without the input losing focus. A real
+                // <button> gives keyboard/AT users click + Enter/Space for free.
                 // repeated taps accumulate servings without the panel closing.
-                row.addEventListener('pointerdown', (e) => {
-                    e.preventDefault();
-                    addGuideGrams(item, row);
-                });
+                // pointerdown preventDefault keeps the search input focused (so
+                // the keyboard stays up for rapid multi-add and the panel
+                // persists); the button's click does the single add and also
+                // fires on keyboard Enter/Space for AT users.
+                row.addEventListener('pointerdown', (e) => e.preventDefault());
+                row.addEventListener('click', () => addGuideGrams(item, row));
                 panel.appendChild(row);
             }
             panel.style.display = 'block';
@@ -837,7 +850,9 @@
             document.getElementById('descInput').value = '';
             document.getElementById('contextInput').value = '';
             document.getElementById('fiberInput').value = '';
-            document.getElementById('dateInput').value = currentDateLocal();
+            var _di = document.getElementById('dateInput');
+            _di.value = currentDateLocal();
+            _di.max = currentDateLocal();  // no future-dated meals (they'd be filtered from views)
             document.getElementById('dateInput').disabled = false;
             document.getElementById('timeInput').value = currentTimeHHMM();
             document.getElementById('timeInput').disabled = false;
