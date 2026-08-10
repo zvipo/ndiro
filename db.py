@@ -20,32 +20,48 @@ from botocore.exceptions import ClientError
 
 import config
 
-_dynamodb = boto3.resource(
-    'dynamodb',
-    region_name=config.AWS_REGION,
-    aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
-)
+# AWS handles are created lazily so a missing/broken AWS config degrades at
+# request time (logged errors, 5xx on the affected feature) instead of
+# crashing boot — only SECRET_KEY is allowed to hard-fail the app.
+_dynamodb = None
+_s3 = None
 
-_s3 = boto3.client(
-    's3',
-    region_name=config.AWS_REGION,
-    aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
-)
+
+def _dynamo():
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource(
+            'dynamodb',
+            region_name=config.AWS_REGION,
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+        )
+    return _dynamodb
+
+
+def _s3_client():
+    global _s3
+    if _s3 is None:
+        _s3 = boto3.client(
+            's3',
+            region_name=config.AWS_REGION,
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+        )
+    return _s3
 
 
 # Table handles as functions so tests can swap in fakes.
 def users_table():
-    return _dynamodb.Table(config.USERS_TABLE)
+    return _dynamo().Table(config.USERS_TABLE)
 
 
 def meals_table():
-    return _dynamodb.Table(config.MEALS_TABLE)
+    return _dynamo().Table(config.MEALS_TABLE)
 
 
 def shares_table():
-    return _dynamodb.Table(config.SHARES_TABLE)
+    return _dynamo().Table(config.SHARES_TABLE)
 
 
 def _utc_now_iso():
@@ -75,14 +91,14 @@ def ensure_tables():
     for name_fn, key_schema, attr_defs in _TABLE_SPECS:
         name = name_fn()
         try:
-            table = _dynamodb.Table(name)
+            table = _dynamo().Table(name)
             try:
                 table.load()
             except ClientError as e:
                 if e.response['Error']['Code'] != 'ResourceNotFoundException':
                     raise
                 print(f"Creating DynamoDB table {name} ...")
-                created = _dynamodb.create_table(
+                created = _dynamo().create_table(
                     TableName=name,
                     KeySchema=key_schema,
                     AttributeDefinitions=attr_defs,
@@ -370,7 +386,7 @@ def photo_key(user_id, date_str, meal_id):
 
 def put_photo(file_storage, key):
     """Upload a photo. Client re-encodes to JPEG before sending."""
-    _s3.put_object(
+    _s3_client().put_object(
         Bucket=config.S3_BUCKET,
         Key=key,
         Body=file_storage.stream,
@@ -383,7 +399,7 @@ def delete_photo(key):
     if not key or not config.S3_BUCKET:
         return
     try:
-        _s3.delete_object(Bucket=config.S3_BUCKET, Key=key)
+        _s3_client().delete_object(Bucket=config.S3_BUCKET, Key=key)
     except Exception as e:
         print(f"Error deleting photo object: {type(e).__name__}")
 
@@ -400,7 +416,7 @@ def presign_photo(key, owner_user_id):
         print(f"REFUSED to presign key outside user prefix (user {owner_user_id})")
         return None
     try:
-        return _s3.generate_presigned_url(
+        return _s3_client().generate_presigned_url(
             'get_object',
             Params={'Bucket': config.S3_BUCKET, 'Key': key},
             ExpiresIn=config.PHOTO_URL_TTL,
@@ -420,10 +436,10 @@ def delete_user_photos(user_id):
         prefix = f'users/{user_id}/'
         kwargs = {'Bucket': config.S3_BUCKET, 'Prefix': prefix}
         while True:
-            resp = _s3.list_objects_v2(**kwargs)
+            resp = _s3_client().list_objects_v2(**kwargs)
             objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
             if objs:
-                _s3.delete_objects(
+                _s3_client().delete_objects(
                     Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
                 deleted += len(objs)
             if not resp.get('IsTruncated'):

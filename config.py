@@ -7,7 +7,9 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load ONLY the app's own .env (default find_dotenv walks up parent
+# directories and could pick up an unrelated file). Real env vars still win.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 # --- Flask session signing key (REQUIRED — no insecure fallback) -------------
 SECRET_KEY = os.getenv('SECRET_KEY')

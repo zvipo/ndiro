@@ -195,5 +195,5 @@ def install(db_module):
     db_module.meals_table = lambda: meals
     db_module.shares_table = lambda: shares
     db_module.ensure_tables = lambda: None
-    db_module._s3 = s3
+    db_module._s3_client = lambda: s3
     return SimpleNamespace(users=users, meals=meals, shares=shares, s3=s3)

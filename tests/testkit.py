@@ -9,6 +9,9 @@ import sys
 # Test env: placeholders only, set before config.py is imported. Real values
 # (if any) from a local .env are irrelevant because os.environ wins.
 os.environ['SECRET_KEY'] = 'test-secret-key-not-for-production'
+os.environ['AWS_REGION'] = 'us-east-1'
+os.environ['AWS_ACCESS_KEY_ID'] = 'test-access-key-id'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'test-secret-access-key'
 os.environ['GOOGLE_CLIENT_ID'] = 'test-client-id.apps.googleusercontent.com'
 os.environ['GOOGLE_CLIENT_SECRET'] = 'test-client-secret'
 os.environ['GOOGLE_REDIRECT_URI'] = 'https://ndiro.test/callback'
