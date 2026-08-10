@@ -1,7 +1,16 @@
-# Debian slim (not alpine): Pillow and pillow-heif ship prebuilt manylinux
-# wheels for amd64 AND arm64 here (with libheif/libjpeg bundled), so the image
-# builds fast on the Raspberry Pi and Render without compiling native code.
+# Debian slim. Pillow/pillow-heif install from wheels where available; where a
+# wheel is missing for the target arch (e.g. pillow-heif on arm64), the build
+# stage has the headers to compile from source, and the runtime stage carries
+# the matching shared libraries.
 FROM python:3.12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libheif-dev \
+        libde265-dev \
+        libjpeg-dev \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
@@ -9,6 +18,14 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # --- Final stage: minimal runtime image --------------------------------------
 FROM python:3.12-slim
+
+# Runtime shared libraries for Pillow / pillow-heif (HEIC decode + JPEG).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libheif1 \
+        libde265-0 \
+        libjpeg62-turbo \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
 
 # Server timezone is ALWAYS UTC. User-local dates come from the client — the
 # server clock is never used for them, and UTC is what the AI daily cap keys on.
