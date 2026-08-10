@@ -140,21 +140,26 @@
             // Draw at 1 SVG unit ≈ 1 CSS px of the card's current width, so the
             // chart fills the container at any browser size (redrawn on resize).
             const holder = document.getElementById('fiberChart');
-            const GUTTER = 30, H = 150, BASE = 112, PLOT_H = 92;
-            const W = Math.max(320, holder.clientWidth || 320);
-            const SLOT = (W - GUTTER) / days.length;
-            const BAR_W = Math.min(Math.max(6, SLOT * 0.65), 36);
-            // Scale floors derive from the goal (goal/2 and goal/4 — the
-            // historical 10 and 5 at the fiber goal of 20) so a small-magnitude
-            // micro (e.g. mg) still gets a usable axis.
+            const H = 150, BASE = 112, PLOT_H = 92;
+            // Scale floors derive from the goal (goal/2, and goal/4 snapped to
+            // a clean 1/2/5×10ᵏ step — the historical 10 and 5 at the fiber
+            // goal of 20) so any goal magnitude gets a usable, readable axis.
             const maxFiber = Math.max(GOAL_G / 2, ...days.map(d => d.totals[NUTRIENT.key] || 0));
             // Axis always includes the goal so distance-to-goal reads honestly.
             const axisTop = Math.max(maxFiber, GOAL_G);
-            // Tick step in clean goal-quarters, at most ~3 gridlines; top tick = niceMax.
-            const stepBase = GOAL_G / 4;
+            const rawStep = GOAL_G / 4;
+            const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+            const norm = rawStep / mag;
+            const stepBase = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+            // At most ~3 gridlines; top tick = niceMax.
             const step = Math.max(stepBase, Math.ceil(axisTop / 15) * stepBase);
             const niceMax = Math.ceil(axisTop / step) * step;
             const tickLabel = v => String(Math.round(v * 100) / 100);
+            // Gutter fits the widest label ("1000 mg" needs more than "20 g").
+            const GUTTER = Math.max(30, 8 + (tickLabel(niceMax) + ' ' + NUTRIENT.unit).length * 5);
+            const W = Math.max(320, holder.clientWidth || 320);
+            const SLOT = (W - GUTTER) / days.length;
+            const BAR_W = Math.min(Math.max(6, SLOT * 0.65), 36);
 
             // Palette from the CSS tokens at draw time, so the theme toggle
             // re-renders the chart in the right colors.
