@@ -34,7 +34,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 app.secret_key = config.SECRET_KEY  # config hard-fails at import when unset
 app.config.update(
-    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SECURE=config.COOKIE_SECURE,  # =True outside local dev (see config.py)
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',  # the load-bearing CSRF control: blocks cross-site cookie attachment on writes
     PERMANENT_SESSION_LIFETIME=timedelta(days=30),

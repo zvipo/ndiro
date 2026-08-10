@@ -124,3 +124,8 @@ FIBER_GUIDE = [
     {'name': 'Banana', 'serving': '1 medium', 'grams': 0.5, 'star': False, 'category': 'Fruit'},
     {'name': 'Mango, sliced', 'serving': '1 cup', 'grams': 0.5, 'star': False, 'category': 'Fruit'},
 ]
+
+# Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
+# plain-http localhost (Safari rejects Secure cookies there). NEVER set in
+# production — TLS-only cookies are assumed by the whole auth design.
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', '1') != '0'

@@ -40,5 +40,9 @@ OPENAI_MODEL=gpt-5-mini
 # Max AI estimates per user per UTC day.
 AI_DAILY_LIMIT=10
 
+# Local dev over plain http only (Safari rejects Secure cookies on localhost).
+# NEVER set this in production.
+# COOKIE_SECURE=0
+
 # --- Serving ---
 PORT=8000
