@@ -1,5 +1,6 @@
 {# Shared review chart + feed. Context (from the parent render): meals_url —
-   the data endpoint ('/api/meals' or '/s/<token>/meals'); goal_g — daily goal.
+   the data endpoint ('/api/meals' or '/s/<token>/meals'); nutrient — the
+   tracked micro config (the OWNER's on the share view, never the viewer's).
    The share view differs ONLY in its data URL and page chrome: this core has
    no edit affordances and no AI branches by construction. #}
         <div class="card month-nav">
@@ -10,8 +11,12 @@
 
         <div class="card">
             <div class="chart-caption">
-                <span class="label">Daily viscous fiber (g)</span>
-                <span class="hint"><span class="goal">―</span> {{ goal_g }} g goal · <span class="dot">●</span> context note</span>
+                <span class="label">Daily {{ nutrient.label }} ({{ nutrient.unit }})</span>
+                {% if nutrient.direction == 'at_most' %}
+                <span class="hint"><span class="limit">―</span> {{ nutrient.goal }} {{ nutrient.unit }} limit · <span class="dot">●</span> context note</span>
+                {% else %}
+                <span class="hint"><span class="goal">―</span> {{ nutrient.goal }} {{ nutrient.unit }} goal · <span class="dot">●</span> context note</span>
+                {% endif %}
             </div>
             <div id="fiberChart"></div>
         </div>
@@ -23,8 +28,13 @@
         // Read-only monthly review. Note: photo URLs are presigned (1h) — a tab
         // left open past that shows broken thumbnails until refresh.
         const MEALS_URL = {{ meals_url|tojson }};
-        // Portfolio Diet daily goal; mirrors VISCOUS_FIBER_GOAL_G in config.py.
-        const GOAL_G = {{ goal_g|tojson }};
+        // The tracked micro (the owner's on the share view): {key, label, unit,
+        // goal, direction, is_default} from config.resolve_nutrient.
+        const NUTRIENT = {{ nutrient|tojson }};
+        const GOAL_G = NUTRIENT.goal;
+        // at_most = the goal is a ceiling: the line reads "limit" and days
+        // over it are flagged red instead of the neutral gold.
+        const AT_MOST = NUTRIENT.direction === 'at_most';
         let shownMonth = getMonthParam();
         let serverToday = null;
         let lastChartDays = null;
@@ -134,12 +144,17 @@
             const W = Math.max(320, holder.clientWidth || 320);
             const SLOT = (W - GUTTER) / days.length;
             const BAR_W = Math.min(Math.max(6, SLOT * 0.65), 36);
-            const maxFiber = Math.max(10, ...days.map(d => d.totals.fiber_g || 0));
+            // Scale floors derive from the goal (goal/2 and goal/4 — the
+            // historical 10 and 5 at the fiber goal of 20) so a small-magnitude
+            // micro (e.g. mg) still gets a usable axis.
+            const maxFiber = Math.max(GOAL_G / 2, ...days.map(d => d.totals[NUTRIENT.key] || 0));
             // Axis always includes the goal so distance-to-goal reads honestly.
             const axisTop = Math.max(maxFiber, GOAL_G);
-            // Tick step in clean 5s, at most ~3 gridlines; top tick = niceMax.
-            const step = Math.max(5, Math.ceil(axisTop / 15) * 5);
+            // Tick step in clean goal-quarters, at most ~3 gridlines; top tick = niceMax.
+            const stepBase = GOAL_G / 4;
+            const step = Math.max(stepBase, Math.ceil(axisTop / 15) * stepBase);
             const niceMax = Math.ceil(axisTop / step) * step;
+            const tickLabel = v => String(Math.round(v * 100) / 100);
 
             // Palette from the CSS tokens at draw time, so the theme toggle
             // re-renders the chart in the right colors.
@@ -149,8 +164,10 @@
                 grid: css.getPropertyValue('--border').trim(),
                 text: css.getPropertyValue('--muted').trim(),
                 goal: css.getPropertyValue('--green').trim(),
+                limit: css.getPropertyValue('--red').trim(),
                 dot: css.getPropertyValue('--purple').trim(),
             };
+            const goalColor = AT_MOST ? PAL.limit : PAL.goal;
 
             const svgns = 'http://www.w3.org/2000/svg';
             const svg = document.createElementNS(svgns, 'svg');
@@ -176,17 +193,17 @@
             for (let v = step; v <= niceMax; v += step) {
                 const y = BASE - (v / niceMax) * PLOT_H;
                 el('line', { x1: GUTTER, y1: y, x2: W, y2: y, stroke: PAL.grid, 'stroke-width': 1 });
-                text(v === niceMax ? v + ' g' : String(v), GUTTER - 4, y + 3, 'end');
+                text(v === niceMax ? tickLabel(v) + ' ' + NUTRIENT.unit : tickLabel(v), GUTTER - 4, y + 3, 'end');
             }
             el('line', { x1: GUTTER, y1: BASE, x2: W, y2: BASE, stroke: PAL.grid, 'stroke-width': 1 });
             text('0', GUTTER - 4, BASE + 3, 'end');
 
-            // Dashed goal line (recessive vs the solid gold bars).
+            // Dashed goal/limit line (recessive vs the solid bars).
             const goalY = BASE - (GOAL_G / niceMax) * PLOT_H;
-            el('line', { x1: GUTTER, y1: goalY, x2: W, y2: goalY, stroke: PAL.goal,
+            el('line', { x1: GUTTER, y1: goalY, x2: W, y2: goalY, stroke: goalColor,
                          'stroke-width': 1, 'stroke-dasharray': '4 3', opacity: 0.75 });
-            const goalLabel = text('goal', W - 2, goalY - 3, 'end');
-            goalLabel.setAttribute('fill', PAL.goal);
+            const goalLabel = text(AT_MOST ? 'limit' : 'goal', W - 2, goalY - 3, 'end');
+            goalLabel.setAttribute('fill', goalColor);
             // X-axis title, centered under the day numbers.
             text('day of month', GUTTER + (W - GUTTER) / 2, H - 4);
 
@@ -202,14 +219,15 @@
             days.forEach((day, i) => {
                 const x = GUTTER + i * SLOT + (SLOT - BAR_W) / 2;
                 const dayNum = parseInt(day.date.slice(8), 10);
-                const fiber = day.totals.fiber_g || 0;
+                const fiber = day.totals[NUTRIENT.key] || 0;
+                const overLimit = AT_MOST && fiber > GOAL_G;
                 const hasContext = day.meals.some(m => m.context);
                 const hasMeals = day.meals.length > 0;
                 const g = el('g', { cursor: hasMeals ? 'pointer' : 'default' });
 
                 if (fiber > 0) {
                     const h = Math.max(3, (fiber / niceMax) * PLOT_H);
-                    el('path', { d: barPath(x, h), fill: PAL.bar }, g);
+                    el('path', { d: barPath(x, h), fill: overLimit ? PAL.limit : PAL.bar }, g);
                 } else {
                     // Stub so every day visibly exists (zero fiber or nothing logged).
                     el('rect', { x: x, y: BASE - 2, width: BAR_W, height: 2, fill: PAL.grid }, g);
@@ -227,7 +245,9 @@
                 // Invisible full-height hit target with a native tooltip.
                 const hit = el('rect', { x: GUTTER + i * SLOT, y: BASE - PLOT_H - 10, width: SLOT, height: PLOT_H + 12, fill: 'transparent' }, g);
                 const label = formatDay(day.date).replace('Today — ', '') + ' — ' +
-                    (hasMeals ? fiber + ' g viscous fiber' + (hasContext ? ' · context note' : '') : 'nothing logged');
+                    (hasMeals ? fiber + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label +
+                        (overLimit ? ' · over limit' : '') + (hasContext ? ' · context note' : '')
+                     : 'nothing logged');
                 el('title', {}, hit).textContent = label;
                 if (hasMeals) {
                     g.addEventListener('click', () => {
@@ -280,10 +300,11 @@
                 const h2 = document.createElement('h2');
                 h2.textContent = formatDay(day.date);
                 heading.appendChild(h2);
-                if (day.totals.fiber_g != null) {
+                if (day.totals[NUTRIENT.key] != null) {
+                    const total = day.totals[NUTRIENT.key];
                     const fiber = document.createElement('span');
-                    fiber.className = 'day-fiber';
-                    fiber.textContent = day.totals.fiber_g + ' g viscous fiber';
+                    fiber.className = 'day-fiber' + (AT_MOST && total > GOAL_G ? ' over' : '');
+                    fiber.textContent = total + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label;
                     heading.appendChild(fiber);
                 }
                 section.appendChild(heading);
@@ -323,17 +344,17 @@
                 body.appendChild(ctx);
             }
 
-            if (meal.time || meal.nutrients.fiber_g != null || meal.ai_assisted) {
+            if (meal.time || meal.nutrients[NUTRIENT.key] != null || meal.ai_assisted) {
                 const meta = document.createElement('div');
                 meta.className = 'meal-meta';
                 if (meal.time) {
                     meta.appendChild(document.createTextNode(formatTime(meal.time)));
                 }
-                if (meal.nutrients.fiber_g != null) {
+                if (meal.nutrients[NUTRIENT.key] != null) {
                     if (meal.time) meta.appendChild(document.createTextNode(' · '));
                     const fiber = document.createElement('span');
                     fiber.className = 'fiber';
-                    fiber.textContent = meal.nutrients.fiber_g + ' g viscous fiber';
+                    fiber.textContent = meal.nutrients[NUTRIENT.key] + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label;
                     meta.appendChild(fiber);
                 }
                 if (meal.ai_assisted) {

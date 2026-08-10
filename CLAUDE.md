@@ -4,9 +4,11 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-**Ndiro** — a multi-user Flask web app for logging meals and tracking **viscous
-soluble fiber** (dietician-driven, cholesterol-lowering), backed by DynamoDB +
-S3 with Google sign-in and optional OpenAI estimators. PoC scale: ~100 users,
+**Ndiro** — a multi-user Flask web app for logging meals and tracking **one
+micro-nutrient per user**: **viscous soluble fiber** by default (dietician-
+driven, cholesterol-lowering), or a free-form custom micro (label/unit/goal/
+direction) chosen in settings. Backed by DynamoDB + S3 with Google sign-in
+and optional OpenAI estimators. PoC scale: ~100 users,
 one Docker container, single gunicorn worker. **This repo is public: never
 commit secrets, bucket names, hostnames, IPs, or emails.** All config is env
 vars (`env_template.txt` has placeholders; `.env` is git- and docker-ignored).
@@ -18,11 +20,12 @@ pip install -r requirements.txt
 python app.py                        # dev server, port 5000 (needs .env with SECRET_KEY)
 gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --preload app:app
 
-# Stub tests — no credentials or network needed; run all four after changes:
+# Stub tests — no credentials or network needed; run all five after changes:
 python tests/test_m1_auth.py         # auth/approval/MAX_USERS
 python tests/probe_cross_user.py     # tenant isolation (THE security test)
 python tests/test_m3_shares.py       # shares, identical 404s, account deletion
 python tests/test_m4_ai.py           # AI caps/refunds/rate limits
+python tests/test_m6_nutrient.py     # per-user tracked micro (settings/gating)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -34,7 +37,10 @@ raises without it (tests set their own).
   root so the Google redirect URI and root-absolute template paths never move.
 - **`config.py`** — env loading, SECRET_KEY hard-fail, `FIBER_GUIDE` (the
   dietician's food table — single source of truth for the tap-to-add UI **and**
-  the AI prompt), `VISCOUS_FIBER_GOAL_G` (20, Portfolio Diet).
+  the AI prompt), `VISCOUS_FIBER_GOAL_G` (20, Portfolio Diet), and
+  `resolve_nutrient(user_row)` — the single source of truth for the user's
+  tracked micro `{key,label,unit,goal,direction,is_default}`; absent attrs or
+  `nutrient_key='fiber_g'` fall back to the fiber default (no migration).
 - **`db.py`** — boto3 setup, auto-create of the three tables on boot,
   users/meals/shares accessors, S3 photo helpers, the AI daily-use counter.
   Table handles are functions (`users_table()` etc.) so tests swap in fakes.
@@ -43,6 +49,10 @@ raises without it (tests set their own).
   `approved_required` / `admin_required`, `_safe_next`.
 - **`ai.py`** — estimator prompts/schema, `_openai_estimate` (plain requests,
   strict json_schema, timeouts (5,20) text / (5,25) vision under gunicorn's 60s).
+  Every entry point takes the resolved nutrient config: the fiber default keeps
+  the curated guide prompt + historical `viscous_fiber_g` schema; a custom
+  micro gets a generic label/unit prompt with the schema keyed by its
+  `nutrient_key`. Client responses are normalized to `amount` on both paths.
 - **`templates/`** — `base.html` holds the shared skin: 14-token gruvbox
   dark/light `:root` blocks, pre-paint `localStorage('theme')` script, ☀️/🌙
   toggle (dispatches `ndiro-theme-change`; the review chart re-renders from CSS
@@ -54,7 +64,14 @@ raises without it (tests set their own).
 
 - **users** — PK `user_id` = Google `sub` (stable; emails change). `email`,
   `name`, `status` ∈ `pending|approved|rejected|admin`, `created_at`,
-  `approved_at?`, `ai_uses_date` (UTC day), `ai_uses_today`.
+  `approved_at?`, `ai_uses_date` (UTC day), `ai_uses_today`, and optional
+  `nutrient_key/nutrient_label/nutrient_unit/nutrient_goal/nutrient_direction`
+  (the tracked micro; absent on legacy rows = fiber default, resolved at read
+  time by `config.resolve_nutrient` — never migrate). The meal form field name
+  and the `nutrients` map key ARE `nutrient_key` (slug of label+unit, validated
+  in `app.py:_derive_nutrient_key`; a custom slug equal to `fiber_g` is
+  rejected). Switching micros does NOT convert old meals — old days read 0 for
+  the new key (disclosed in settings; values are kept under their old key).
   User counting/listing use scans — fine at ≤100 users, don't "fix" it.
 - **meals** — PK `user_id`, SK `sk` = `{YYYY-MM-DD}#{meal_id}`;
   `meal_id` = `HHMMSS-{hex6}` where HHMMSS is the **client-provided** time (it
@@ -80,7 +97,8 @@ reuses the same key (no orphans).
    NEVER comes from URL/query/form. `tests/probe_cross_user.py` enforces this.
 2. `/s/<token>` + `/s/<token>/meals`: read-only, scoped to the token row's
    user_id; the session is read ONLY for menu chrome on the page, never for
-   data access (`/s/<token>/meals` stays fully session-independent);
+   data access (`/s/<token>/meals` stays fully session-independent); the
+   nutrient config shown comes from the token row's OWNER, never the viewer;
    missing/revoked/expired tokens are byte-identical 404s (no enumeration
    oracle — the share 404 pins `login_next='/'` so the token path never
    lands in the page).
