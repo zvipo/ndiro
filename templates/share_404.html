@@ -13,10 +13,7 @@
         </div>
 {% endblock %}
 
-{# Same minimal chrome as the share view: this page must be identical for
-   missing, revoked, and expired tokens alike. #}
-{% block chrome %}
-    <div class="menu">
-        <button type="button" class="menu-toggle" id="themeToggle" aria-label="Switch theme"><span id="themeIcon">☀️</span></button>
-    </div>
-{% endblock %}
+{# Standard corner menu from base, but with login_next pinned to '/' by the
+   route: the default (request.path) would embed the token in the page,
+   breaking the byte-identical-404s invariant across missing/revoked/expired
+   tokens. #}

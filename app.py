@@ -716,8 +716,23 @@ def share_view(token):
     share = _resolve_share(token)
     if share is None:
         # Byte-identical for missing/revoked/expired — no enumeration oracle.
-        return render_template('share_404.html'), 404
+        # login_next='/' keeps the token path out of the page for that reason.
+        return render_template('share_404.html', user=auth.current_user(),
+                               login_next='/'), 404
+    # Attribution for recipients: name + picture ONLY — never the email.
+    owner = None
+    try:
+        row = db.get_user(share['user_id'])
+        if row is not None:
+            owner = {'name': row.get('name') or '',
+                     'picture': row.get('picture') or ''}
+    except Exception as e:
+        print(f"Error reading share owner: {type(e).__name__}")
+    # user is chrome-only (corner menu); the meal data is scoped to the token
+    # row's user_id and never to the session.
     return render_template('share_view.html',
+                           user=auth.current_user(),
+                           owner=owner,
                            goal_g=config.VISCOUS_FIBER_GOAL_G,
                            meals_url=f'/s/{token}/meals')
 

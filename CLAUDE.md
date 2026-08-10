@@ -78,9 +78,12 @@ reuses the same key (no orphans).
 
 1. Every meal read/write keys on `user_id = session['user_id']` — user_id
    NEVER comes from URL/query/form. `tests/probe_cross_user.py` enforces this.
-2. `/s/<token>` + `/s/<token>/meals`: read-only, session-independent, scoped to
-   the token row's user_id; missing/revoked/expired tokens are byte-identical
-   404s (no enumeration oracle).
+2. `/s/<token>` + `/s/<token>/meals`: read-only, scoped to the token row's
+   user_id; the session is read ONLY for menu chrome on the page, never for
+   data access (`/s/<token>/meals` stays fully session-independent);
+   missing/revoked/expired tokens are byte-identical 404s (no enumeration
+   oracle — the share 404 pins `login_next='/'` so the token path never
+   lands in the page).
 3. `approved_required`/`admin_required` do a FRESH users-table read every
    request (a rejected user's live session must die immediately; never cache
    status in the cookie). `ADMIN_EMAILS` only bootstraps status at first

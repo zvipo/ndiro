@@ -330,7 +330,7 @@
                     <span id="themeIcon">☀️</span> <span id="themeLabel">Light mode</span>
                 </button>
                 <div class="menu-sep"></div>
-                {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="/login?next={{ request.path }}">→ Sign in</a>{% endif %}
+                {% if user %}<a href="/logout?next=/">↩ Sign out</a>{% else %}<a href="/login?next={{ login_next|default(request.path) }}">→ Sign in / Sign up</a>{% endif %}
             </nav>
         </div>
     </div>
