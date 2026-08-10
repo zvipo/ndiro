@@ -21,6 +21,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import ai
 import auth
 import config
+import imaging
 import db
 
 app = Flask(__name__)
@@ -443,6 +444,8 @@ def add_meal():
         photo_key = db.photo_key(user_id, date_str, meal_id)
         try:
             db.put_photo(photo, photo_key)
+        except ValueError:
+            return jsonify({'error': "Couldn't read that image — try a JPEG or PNG"}), 400
         except Exception as e:
             print(f"Error uploading photo for user {user_id}: {type(e).__name__}")
             return jsonify({'error': 'Photo upload failed'}), 502
@@ -520,6 +523,8 @@ def update_meal(date_str, meal_id):
         photo_key = db.photo_key(user_id, date_str, meal_id)
         try:
             db.put_photo(photo, photo_key)
+        except ValueError:
+            return jsonify({'error': "Couldn't read that image — try a JPEG or PNG"}), 400
         except Exception as e:
             print(f"Error uploading photo for user {user_id}: {type(e).__name__}")
             return jsonify({'error': 'Photo upload failed'}), 502
@@ -639,6 +644,10 @@ def estimate_photo():
     photo_bytes = photo.read()
     if len(photo_bytes) > 8 * 1024 * 1024:
         return jsonify({'error': 'Photo too large for estimation'}), 400
+    try:
+        photo_bytes = imaging.to_jpeg(photo_bytes)  # HEIC/any -> JPEG for the vision API
+    except ValueError:
+        return jsonify({'error': "Couldn't read that image — try a JPEG or PNG"}), 400
 
     user_id = g.user['user_id']
     today, blocked = _consume_ai_use_or_429(user_id)

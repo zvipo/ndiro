@@ -24,7 +24,7 @@ tk.check('no key: estimate-fiber 400',
          tk.post(admin, '/api/estimate-fiber', json={'description': 'oats'}).status_code == 400)
 tk.check('no key: estimate-photo 400',
          tk.post(admin, '/api/estimate-photo', data={
-             'photo': (io.BytesIO(b'x'), 'p.jpg')},
+             'photo': (io.BytesIO(tk.TINY_JPEG), 'p.jpg')},
              content_type='multipart/form-data').status_code == 400)
 tk.check('no key: AI buttons not rendered on /log',
          b'id="estimateBtn"' not in tk.get(admin, '/log').data)
@@ -90,7 +90,7 @@ GOOD_PHOTO = json.dumps({
 })
 stub_openai(GOOD_PHOTO)
 resp = tk.post(admin, '/api/estimate-photo', data={
-    'photo': (io.BytesIO(b'fake-jpeg'), 'p.jpg')}, content_type='multipart/form-data')
+    'photo': (io.BytesIO(tk.TINY_JPEG), 'p.jpg')}, content_type='multipart/form-data')
 tk.check('photo estimate 200 with description',
          resp.status_code == 200 and resp.get_json()['description'] == 'Steamed broccoli with rice')
 tk.check('photo sent as data URL with vision timeout',

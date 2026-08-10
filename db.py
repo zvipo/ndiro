@@ -19,6 +19,7 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 import config
+import imaging
 
 # AWS handles are created lazily so a missing/broken AWS config degrades at
 # request time (logged errors, 5xx on the affected feature) instead of
@@ -385,11 +386,17 @@ def photo_key(user_id, date_str, meal_id):
 
 
 def put_photo(file_storage, key):
-    """Upload a photo. Client re-encodes to JPEG before sending."""
+    """Normalize any uploaded image to JPEG server-side, then store it.
+
+    The client downscales to JPEG when it can, but browsers that can't decode
+    HEIC upload the raw file — so normalizing here (imaging.to_jpeg) is what
+    guarantees a valid JPEG is stored. Raises ValueError on an unreadable image.
+    """
+    jpeg_bytes = imaging.to_jpeg(file_storage.read())
     _s3_client().put_object(
         Bucket=config.S3_BUCKET,
         Key=key,
-        Body=file_storage.stream,
+        Body=jpeg_bytes,
         ContentType='image/jpeg',
     )
 

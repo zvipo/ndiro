@@ -32,7 +32,7 @@ resp = tk.post(alice, '/api/meals', data={
     'date': DAY,
     'time': '12:30',
     'fiber_g': '4.0',
-    'photo': (io.BytesIO(b'fake-jpeg-bytes'), 'photo.jpg'),
+    'photo': (io.BytesIO(tk.TINY_JPEG), 'photo.jpg'),
 }, content_type='multipart/form-data')
 tk.check('alice creates meal (201)', resp.status_code == 201)
 meal = resp.get_json()

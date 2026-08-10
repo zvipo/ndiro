@@ -27,7 +27,7 @@ resp = tk.post(alice, '/api/meals', data={
     'description': 'Oats with blackberries',
     'context': 'slow morning',
     'date': DAY, 'time': '08:15', 'fiber_g': '3.5',
-    'photo': (io.BytesIO(b'fake-jpeg'), 'photo.jpg'),
+    'photo': (io.BytesIO(tk.TINY_JPEG), 'photo.jpg'),
 }, content_type='multipart/form-data')
 assert resp.status_code == 201, resp.get_json()
 

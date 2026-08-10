@@ -135,7 +135,9 @@ def estimate_text(description):
 
 
 def estimate_photo(photo_bytes):
-    """Describe a meal photo and estimate its viscous fiber (vision)."""
+    """Describe a meal photo and estimate its viscous fiber (vision).
+
+    photo_bytes must already be normalized JPEG (the route calls imaging.to_jpeg)."""
     data_url = 'data:image/jpeg;base64,' + base64.b64encode(photo_bytes).decode('ascii')
     system = (
         _estimator_system_prompt() +
