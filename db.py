@@ -162,8 +162,10 @@ def update_user_profile(user_id, email, name, picture=''):
 
 def set_user_nutrient(user_id, key, label, unit, goal, direction):
     """Persist the user's tracked-nutrient config (already validated by the
-    route). Choosing the fiber preset writes the default values back — a plain
-    SET, equivalent to absent attrs through config.resolve_nutrient."""
+    route). goal 0 is the "follow the catalog default" sentinel — see
+    config.resolve_nutrient; label/unit/direction are stored for legacy
+    compatibility but the resolver treats the catalog as authoritative for
+    catalog keys."""
     users_table().update_item(
         Key={'user_id': user_id},
         UpdateExpression=('SET nutrient_key = :k, nutrient_label = :l, '

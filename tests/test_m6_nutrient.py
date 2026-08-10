@@ -44,6 +44,9 @@ bad = [
     ('goal Infinity', {'key': 'sodium_mg', 'goal': 'Infinity'}),
     ('goal not a number', {'key': 'sodium_mg', 'goal': 'lots'}),
     ('goal implausibly large', {'key': 'sodium_mg', 'goal': 1e9}),
+    # '' is a cleared/unparseable UI field, NOT an omission — silent reset
+    # of a personalized goal to the default would be data loss.
+    ('goal empty string', {'key': 'sodium_mg', 'goal': ''}),
 ]
 for name, payload in bad:
     tk.check(f'rejected: {name}',
@@ -79,6 +82,22 @@ tk.check('omitted goal uses the catalog default (and direction is server-side)',
          resp.status_code == 200 and
          resp.get_json()['nutrient']['goal'] == 25 and
          resp.get_json()['nutrient']['direction'] == 'at_most')
+tk.check('non-personalized goal stores the follow-the-default sentinel',
+         float(db.get_user('sub-alice')['nutrient_goal']) == 0.0)
+resp = tk.post(alice, '/api/settings/nutrient', json={'key': 'added_sugar_g',
+                                                      'goal': 25})
+tk.check('goal equal to the catalog default also stores the sentinel',
+         resp.status_code == 200 and
+         float(db.get_user('sub-alice')['nutrient_goal']) == 0.0)
+
+# Catalog label/unit/direction are authoritative — a tampered row snapshot
+# does not override them, so catalog edits reach every user immediately.
+row = dict(db.get_user('sub-alice'))
+row['nutrient_label'] = 'hacked'
+row['nutrient_direction'] = 'at_least'
+cfg = config.resolve_nutrient(row)
+tk.check('catalog wins over the row snapshot for catalog keys',
+         cfg['label'] == 'added sugar' and cfg['direction'] == 'at_most')
 
 # The fiber default keeps its guide but honors a personalized goal.
 resp = tk.post(alice, '/api/settings/nutrient', json={'key': 'fiber_g', 'goal': 25})
@@ -95,8 +114,20 @@ cfg = config.resolve_nutrient(db.get_user('sub-alice'))
 tk.check('legacy non-catalog row still resolves',
          cfg['key'] == 'magnesium_mg' and cfg['goal'] == 400 and
          cfg['is_default'] is False)
-tk.check('legacy row settings page still renders',
-         tk.get(alice, '/settings').status_code == 200)
+resp = tk.get(alice, '/settings')
+tk.check('legacy row settings page keeps the current micro selectable',
+         resp.status_code == 200 and b'magnesium_mg' in resp.data and
+         b'Magnesium (mg)' in resp.data)
+resp = tk.post(alice, '/api/settings/nutrient', json={'key': 'magnesium_mg',
+                                                      'goal': 500})
+tk.check('legacy owner can keep their micro and adjust its goal',
+         resp.status_code == 200 and
+         resp.get_json()['nutrient'] == {'key': 'magnesium_mg', 'label': 'Magnesium',
+                                         'unit': 'mg', 'goal': 500,
+                                         'direction': 'at_least', 'is_default': False})
+tk.check('nobody can CREATE a non-catalog micro',
+         tk.post(alice, '/api/settings/nutrient',
+                 json={'key': 'unicorn_dust_g', 'goal': 5}).status_code == 400)
 
 # Back to the catalog for the rest of the suite.
 resp = tk.post(alice, '/api/settings/nutrient', json={'key': 'sodium_mg', 'goal': 2000})
@@ -149,15 +180,21 @@ tk.check('edit under the new micro adds its key alongside the old value',
          resp.status_code == 200 and
          resp.get_json()['nutrients'] == {'fiber_g': 5.5, 'sodium_mg': 300.0})
 
-# Corrupt row (goal 0/NaN) degrades to the safe default instead of NaN charts.
-row = db.get_user('sub-alice')
+# Invalid goals degrade safely, never NaN-ing the chart: a catalog key falls
+# back to ITS catalog default; a legacy key (no catalog entry to fall back
+# on) degrades to the fiber default.
+row = dict(db.get_user('sub-alice'))  # sodium_mg
 row['nutrient_goal'] = 0
-tk.check('corrupt zero goal resolves to the fiber default',
-         config.resolve_nutrient(row)['is_default'] is True)
+tk.check('catalog row with zero/sentinel goal uses the catalog default',
+         config.resolve_nutrient(row)['goal'] == 2300)
 row['nutrient_goal'] = float('nan')
-tk.check('corrupt NaN goal resolves to the fiber default',
-         config.resolve_nutrient(row)['is_default'] is True)
-row['nutrient_goal'] = 2000
+tk.check('catalog row with NaN goal uses the catalog default',
+         config.resolve_nutrient(row)['goal'] == 2300)
+legacy_row = {'nutrient_key': 'magnesium_mg', 'nutrient_label': 'Magnesium',
+              'nutrient_unit': 'mg', 'nutrient_goal': 0,
+              'nutrient_direction': 'at_least'}
+tk.check('legacy row with corrupt goal degrades to the fiber default',
+         config.resolve_nutrient(legacy_row)['is_default'] is True)
 
 # --- Template gating ---------------------------------------------------------
 resp = tk.get(alice, '/log')

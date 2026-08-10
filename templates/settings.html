@@ -83,12 +83,20 @@
                 <div>
                     <label class="form-label" for="nutrientSelect">Micro</label>
                     <select id="nutrientSelect">
+                        {% if not nutrient_in_catalog %}
+                        {# Legacy pre-catalog micro: keep it selectable so opening
+                           this page can never silently switch the user to fiber. #}
+                        <option value="{{ nutrient.key }}" selected
+                            data-goal="{{ nutrient.goal }}" data-unit="{{ nutrient.unit }}"
+                            data-direction="{{ nutrient.direction }}">
+                            {{ nutrient.label|capitalize }} ({{ nutrient.unit }}) — current</option>
+                        {% endif %}
                         {% for entry in catalog %}
                         <option value="{{ entry.key }}"
                             data-goal="{{ entry.goal }}" data-unit="{{ entry.unit }}"
                             data-direction="{{ entry.direction }}"
                             {% if entry.key == nutrient.key %}selected{% endif %}>
-                            {{ entry.label|capitalize }} ({{ entry.unit }}){% if loop.first %} — default, with the food guide{% endif %}</option>
+                            {{ entry.label|capitalize }} ({{ entry.unit }}){% if entry.key == 'fiber_g' %} — default, with the food guide{% endif %}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -126,6 +134,7 @@
         const nutrientSelect = document.getElementById('nutrientSelect');
         const goalInput = document.getElementById('nutrientGoal');
         const CURRENT_KEY = {{ nutrient.key|tojson }};
+        const CURRENT_GOAL = {{ nutrient.goal|tojson }};
 
         function showNutrientError(msg) {
             const el = document.getElementById('nutrientError');
@@ -142,18 +151,26 @@
             document.getElementById('directionHint').textContent = atMost
                 ? 'Stay under this amount — days over it show red in Review.'
                 : 'Aim to reach at least this amount each day.';
-            if (prefillGoal) goalInput.value = opt.dataset.goal;
+            // Coming back to the saved micro restores the SAVED goal, not the
+            // catalog default — browsing the list must not discard it.
+            if (prefillGoal) {
+                goalInput.value = nutrientSelect.value === CURRENT_KEY
+                    ? CURRENT_GOAL : opt.dataset.goal;
+            }
         }
 
         nutrientSelect.addEventListener('change', () => syncNutrientFields(true));
-        // On load: keep the user's saved goal, unless their stored micro is no
-        // longer offered (legacy) and the select fell back to the first entry.
-        syncNutrientFields(nutrientSelect.value !== CURRENT_KEY);
+        syncNutrientFields(false);  // page load: label/unit/hint only, keep the saved goal
 
         saveNutrientBtn.addEventListener('click', async () => {
+            const goalVal = goalInput.value.trim();
+            if (!goalVal || !(parseFloat(goalVal) > 0)) {
+                showNutrientError('Enter a daily amount greater than 0.');
+                return;
+            }
             const payload = {
                 key: nutrientSelect.value,
-                goal: goalInput.value.trim(),
+                goal: goalVal,
             };
             saveNutrientBtn.disabled = true;
             saveNutrientBtn.innerHTML = '<span class="spin">🥦</span> Saving…';

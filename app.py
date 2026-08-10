@@ -869,9 +869,10 @@ def revoke_share(token):
 @app.route('/settings')
 @auth.approved_required
 def settings_page():
-    return render_template('settings.html', user=g.user,
-                           nutrient=config.resolve_nutrient(g.user),
-                           catalog=config.NUTRIENT_CATALOG)
+    nutrient = config.resolve_nutrient(g.user)
+    return render_template('settings.html', user=g.user, nutrient=nutrient,
+                           catalog=config.NUTRIENT_CATALOG,
+                           nutrient_in_catalog=bool(config.catalog_entry(nutrient['key'])))
 
 
 @app.route('/api/settings/nutrient', methods=['POST'])
@@ -884,29 +885,53 @@ def set_nutrient():
     data = request.get_json(silent=True) or {}
     user_id = g.user['user_id']
 
-    entry = config.catalog_entry(data.get('key'))
+    key = data.get('key')
+    entry = config.catalog_entry(key)
+    legacy = False
     if entry is None:
-        return jsonify({'error': 'Pick a micro from the list'}), 400
+        # A pre-catalog free-form row may carry a non-catalog key. Its OWNER
+        # may keep it (and adjust its goal) so opening settings never
+        # force-switches them; nobody can CREATE a non-catalog micro.
+        current = config.resolve_nutrient(g.user)
+        if key and key == g.user.get('nutrient_key') and not current['is_default']:
+            entry, legacy = current, True
+        else:
+            return jsonify({'error': 'Pick a micro from the list'}), 400
+
     raw_goal = data.get('goal')
-    if raw_goal in (None, ''):
-        goal = Decimal(str(entry['goal']))
+    if raw_goal is None:
+        goal = None  # follow the catalog default (0 sentinel below)
     else:
+        # '' is NOT an omission: the settings form always sends the field, so
+        # empty means cleared/unparseable input — reject rather than silently
+        # resetting a personalized goal to the default.
         try:
             goal = Decimal(str(raw_goal))
         except InvalidOperation:
             return jsonify({'error': 'Goal must be a number'}), 400
-        if not goal.is_finite() or goal <= 0 or goal > _NUTRIENT_MAX:
+        if not goal.is_finite() or goal <= 0 or goal > config.NUTRIENT_GOAL_MAX:
             return jsonify({'error': 'Goal must be greater than 0 and sane'}), 400
+
+    # Catalog micros store goal 0 ("follow the catalog default") unless the
+    # user actually deviates — so a future change to a catalog default reaches
+    # everyone who never personalized. Legacy rows always store explicitly
+    # (the row snapshot is their only definition).
+    if legacy:
+        stored_goal = goal if goal is not None else Decimal(str(entry['goal']))
+    elif goal is None or goal == Decimal(str(entry['goal'])):
+        stored_goal = Decimal(0)
+    else:
+        stored_goal = goal
 
     try:
         db.set_user_nutrient(user_id, entry['key'], entry['label'],
-                             entry['unit'], goal, entry['direction'])
+                             entry['unit'], stored_goal, entry['direction'])
     except Exception as e:
         print(f"Error saving nutrient config for user {user_id}: {type(e).__name__}")
         return jsonify({'error': 'Failed to save — please try again'}), 500
     return jsonify({'nutrient': config.resolve_nutrient({
         'nutrient_key': entry['key'], 'nutrient_label': entry['label'],
-        'nutrient_unit': entry['unit'], 'nutrient_goal': goal,
+        'nutrient_unit': entry['unit'], 'nutrient_goal': stored_goal,
         'nutrient_direction': entry['direction']})})
 
 

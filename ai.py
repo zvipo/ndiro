@@ -38,7 +38,7 @@ def _estimator_system_prompt(cfg):
             'serving; * marks foods with 3 g or more per serving):\n\n'
             + _fiber_guide_prompt() +
             '\n\nDaily context: minimum target 5-10 g/day; Portfolio Diet goal '
-            f'{config.VISCOUS_FIBER_GOAL_G} g/day.\n'
+            f'{cfg["goal"]} g/day.\n'
             'Rules:\n'
             '- Prefer guide values; scale linearly by portion (half a serving = half the grams).\n'
             '- Foods not in the guide get a conservative (low) estimate; meat, dairy, '

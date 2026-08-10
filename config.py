@@ -5,6 +5,7 @@ No secrets, bucket names, hostnames, or emails are ever hardcoded here.
 """
 import math
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -135,14 +136,7 @@ FIBER_GUIDE = [
 
 NUTRIENT_DIRECTIONS = ('at_least', 'at_most')  # maximize toward goal / stay under limit
 
-DEFAULT_NUTRIENT = {
-    'key': 'fiber_g',
-    'label': 'viscous fiber',
-    'unit': 'g',
-    'goal': VISCOUS_FIBER_GOAL_G,
-    'direction': 'at_least',
-    'is_default': True,
-}
+NUTRIENT_GOAL_MAX = 100000  # write- AND read-side ceiling; mirrors app.py's _NUTRIENT_MAX
 
 # Order = display order in the settings dropdown; the fiber default first.
 # Default goals are common adult reference values (RDA/AI or WHO/AHA limits) —
@@ -170,6 +164,29 @@ NUTRIENT_CATALOG = [
      'goal': 300, 'direction': 'at_most'},
 ]
 
+# The fiber default IS the first catalog entry — one definition, no drift.
+DEFAULT_NUTRIENT = {**NUTRIENT_CATALOG[0], 'is_default': True}
+
+# Catalog keys double as meal-form field names, nutrients map keys, and AI
+# json_schema properties. This import-time check makes a colliding or
+# malformed future entry fail at boot instead of corrupting meal writes or
+# AI schemas at runtime. 'constructor' would collide with Object.prototype
+# in the templates' JS lookups.
+_RESERVED_NUTRIENT_KEYS = frozenset((
+    'date', 'time', 'description', 'context', 'photo', 'ai_assisted',
+    'remove_photo', 'nutrient_key',            # meal-form fields
+    'note', 'items', 'amount', 'model',        # AI schema/wire properties
+    'constructor',                             # JS prototype pollution
+))
+assert len({e['key'] for e in NUTRIENT_CATALOG}) == len(NUTRIENT_CATALOG), \
+    'NUTRIENT_CATALOG keys must be unique'
+for _e in NUTRIENT_CATALOG:
+    assert re.fullmatch(r'[a-z][a-z0-9_]*', _e['key']), \
+        f"catalog key {_e['key']!r} must be a [a-z0-9_] identifier"
+    assert _e['key'] not in _RESERVED_NUTRIENT_KEYS, \
+        f"catalog key {_e['key']!r} collides with a reserved name"
+    assert _e['direction'] in NUTRIENT_DIRECTIONS and _e['goal'] > 0
+
 
 def catalog_entry(key):
     """The catalog row for a key, or None (unknown/legacy free-form keys)."""
@@ -180,12 +197,12 @@ def catalog_entry(key):
 
 
 def _safe_goal(raw):
-    """A positive finite goal (int when integral) or None."""
+    """A positive finite in-range goal (int when integral) or None."""
     try:
         goal = float(raw)
     except (TypeError, ValueError):
         return None
-    if not math.isfinite(goal) or goal <= 0:
+    if not math.isfinite(goal) or goal <= 0 or goal > NUTRIENT_GOAL_MAX:
         return None
     return int(goal) if goal.is_integer() else goal
 
@@ -194,27 +211,28 @@ def resolve_nutrient(user_row):
     """The user's tracked-nutrient config: {key,label,unit,goal,direction,is_default}.
 
     Single source of truth for every consumer (routes, templates, AI prompts).
-    Falls back to the viscous-fiber default when the row has no nutrient_key
-    (existing users — no migration) or keys 'fiber_g' (choosing the preset
-    writes the defaults back). Goal comes out JSON-safe: int when integral,
+    No nutrient_key (existing users — no migration) = the fiber default.
+    Catalog keys resolve from the CATALOG (label/unit/direction edits reach
+    every user immediately); the row contributes only a personalized goal —
+    absent or 0 (the follow-the-default sentinel) means the catalog goal.
+    Legacy free-form keys (pre-catalog rows) resolve from the row snapshot;
+    a corrupt goal there degrades to the safe default (a 0/NaN goal would
+    NaN the chart axis math). Goal comes out JSON-safe: int when integral,
     else float — a raw Decimal would blow up in |tojson / jsonify, and a
     blanket float() would render "20.0 g goal".
     """
     key = (user_row or {}).get('nutrient_key')
-    if not key or key == 'fiber_g':
-        cfg = dict(DEFAULT_NUTRIENT)
-        if key == 'fiber_g':
-            # The goal is user-editable even for the fiber default; rows
-            # without the attr (legacy) keep the Portfolio Diet 20.
-            goal = _safe_goal(user_row.get('nutrient_goal'))
-            if goal is not None:
-                cfg['goal'] = goal
+    if not key:
+        return dict(DEFAULT_NUTRIENT)
+    entry = catalog_entry(key)
+    if entry is not None:
+        cfg = {**entry, 'is_default': key == 'fiber_g'}
+        goal = _safe_goal(user_row.get('nutrient_goal'))
+        if goal is not None:
+            cfg['goal'] = goal
         return cfg
     goal = _safe_goal(user_row.get('nutrient_goal'))
     if goal is None:
-        # Corrupt row (today's writer sets all five attrs atomically, but a
-        # manual edit could break this): a 0/NaN goal would NaN the chart
-        # axis math, so degrade to the safe default instead.
         return dict(DEFAULT_NUTRIENT)
     direction = user_row.get('nutrient_direction')
     if direction not in NUTRIENT_DIRECTIONS:
