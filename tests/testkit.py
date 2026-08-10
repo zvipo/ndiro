@@ -25,6 +25,11 @@ os.environ.pop('OPENAI_API_KEY', None)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Hermetic tests: a developer's real .env must never alter test behavior.
+# The explicit os.environ values above are the whole test environment.
+import dotenv  # noqa: E402
+dotenv.load_dotenv = lambda *args, **kwargs: None
+
 import db  # noqa: E402
 import fakes  # noqa: E402
 
