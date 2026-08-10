@@ -1,2 +1,2 @@
 # ndiro
-Meal logging webiste
+Meal logging website
