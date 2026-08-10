@@ -1,0 +1,165 @@
+        /* Shared styles for the review chart + feed (review.html, share_view.html) */
+        .month-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+        }
+
+        .month-nav .btn {
+            padding: 4px 14px;
+            font-size: 1rem;
+        }
+
+        #monthLabel {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .chart-caption {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 8px;
+        }
+
+        .chart-caption .label {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted);
+        }
+
+        .chart-caption .hint {
+            font-size: 0.72rem;
+            color: var(--muted);
+        }
+
+        .chart-caption .hint .dot {
+            color: var(--purple);
+        }
+
+        .chart-caption .hint .goal {
+            color: var(--green);
+        }
+
+        #fiberChart svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        .day-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin: 22px 0 10px;
+            padding: 0 2px;
+        }
+
+        .day-heading h2 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .day-fiber {
+            font-size: 0.8rem;
+            color: var(--gold);
+        }
+
+        .meal-card {
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+        }
+
+        /* Meals with a context note get a findable purple edge (dietician ask). */
+        .meal-card.has-context {
+            border-left: 3px solid var(--purple);
+        }
+
+        .meal-photo {
+            width: 84px;
+            height: 84px;
+            object-fit: cover;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+
+        .meal-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .meal-desc {
+            font-size: 0.92rem;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        .meal-context {
+            font-size: 0.82rem;
+            color: var(--muted);
+            font-style: italic;
+            margin-top: 4px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        .meal-context::before {
+            content: '● ';
+            color: var(--purple);
+            font-style: normal;
+            font-size: 0.6rem;
+            vertical-align: 2px;
+        }
+
+        .meal-meta {
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-top: 6px;
+        }
+
+        .meal-meta .fiber {
+            color: var(--green);
+        }
+
+        .meal-meta .ai-mark {
+            font-size: 0.7rem;
+            color: var(--gold);
+            cursor: default;
+        }
+
+        /* Photo lightbox: tap a thumbnail to view, tap anywhere / Esc to close */
+        .lightbox {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 300;
+            padding: 24px;
+            cursor: zoom-out;
+        }
+
+        .lightbox img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 10px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+        }
+
+        .lightbox .lightbox-close {
+            position: fixed;
+            top: 14px;
+            right: 18px;
+            color: color-mix(in srgb, var(--text) 70%, transparent);
+            font-size: 26px;
+            line-height: 1;
+            cursor: pointer;
+            user-select: none;
+        }

@@ -1,0 +1,48 @@
+# Ndiro configuration template.
+# Copy to .env and fill in real values. NEVER commit .env — it is gitignored
+# and dockerignored on purpose; secrets are injected at run time.
+
+# --- AWS ---
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+
+# DynamoDB table names (auto-created on first boot if missing)
+USERS_TABLE=ndiro-users
+MEALS_TABLE=ndiro-meals
+SHARES_TABLE=ndiro-shares
+
+# Private S3 bucket for meal photos. Optional: unset = photo upload disabled
+# with a clear message; text-only meals still work.
+S3_BUCKET=your-private-bucket-name
+
+# --- Flask ---
+# REQUIRED. The app refuses to boot without it. Generate with:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+# Must stay stable across restarts or all sessions invalidate.
+SECRET_KEY=
+
+# --- Google OAuth (Web application client, Google Cloud Console) ---
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+# Must exactly match an Authorized redirect URI on that client.
+GOOGLE_REDIRECT_URI=http://localhost:5000/callback
+
+# --- Accounts ---
+# Comma-separated emails that bootstrap as admin on their FIRST sign-in.
+ADMIN_EMAILS=admin@example.com
+# Max total user accounts (enforced server-side at sign-up).
+MAX_USERS=100
+
+# --- AI estimator (optional; unset key = AI buttons hidden, endpoints 400) ---
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5-mini
+# Max AI estimates per user per UTC day.
+AI_DAILY_LIMIT=10
+
+# Local dev over plain http only (Safari rejects Secure cookies on localhost).
+# NEVER set this in production.
+# COOKIE_SECURE=0
+
+# --- Serving ---
+PORT=8000
