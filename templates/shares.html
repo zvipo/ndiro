@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Share links{% endblock %}
+{% block favicon %}🔗{% endblock %}
+
+{% block styles %}
+        .create-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .create-row > div {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .create-row input[type="text"] {
+            min-width: 200px;
+        }
+
+        .share-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .share-row .who {
+            min-width: 0;
+        }
+
+        .share-row .who .label-line {
+            font-size: 0.92rem;
+        }
+
+        .share-row .who .meta-line {
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .share-row .row-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 6px;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 6px;
+            padding: 2px 8px;
+            border: 1px solid var(--border);
+        }
+
+        .badge.active { color: var(--green); border-color: var(--green); }
+        .badge.revoked { color: var(--red); border-color: var(--red); }
+        .badge.expired { color: var(--dim); }
+
+        .form-error {
+            color: var(--red);
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: none;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🔗 Share links</h1>
+            <span class="subtitle">Read-only views of your review page</span>
+        </div>
+
+        <div class="card">
+            <p class="muted" style="font-size:0.85rem; margin-bottom:12px;">
+                Anyone with a link sees a read-only copy of your monthly review —
+                meals, notes, photos, chart. No sign-in needed. Revoke a link any
+                time and it stops working immediately.</p>
+            <div class="create-row">
+                <div>
+                    <label class="form-label" for="labelInput">Label (for you)</label>
+                    <input type="text" id="labelInput" placeholder="e.g. Dr. Moyo" maxlength="100">
+                </div>
+                <div>
+                    <label class="form-label" for="expiresInput">Expires</label>
+                    <select id="expiresInput">
+                        <option value="30">In 30 days</option>
+                        <option value="7">In 7 days</option>
+                        <option value="90">In 90 days</option>
+                        <option value="never">Never</option>
+                    </select>
+                </div>
+                <button type="button" class="btn primary" id="createBtn">Create link</button>
+            </div>
+            <div class="form-error" id="createError"></div>
+        </div>
+
+        <div id="sharesContainer"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
+        <div class="page-note" id="pageNote" style="display:none"></div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function loadShares() {
+            let data;
+            try {
+                const resp = await fetch('/api/shares');
+                if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                if (!resp.ok) { showNote('Could not load share links.'); return; }
+                data = await resp.json();
+            } catch (e) {
+                showNote('Could not load share links.');
+                return;
+            }
+            renderShares(data);
+        }
+
+        function showNote(msg) {
+            const note = document.getElementById('pageNote');
+            note.style.display = msg ? 'block' : 'none';
+            note.textContent = msg || '';
+        }
+
+        function showCreateError(msg) {
+            const el = document.getElementById('createError');
+            el.style.display = msg ? 'block' : 'none';
+            el.textContent = msg || '';
+        }
+
+        function fmtDate(epochOrIso) {
+            const d = typeof epochOrIso === 'number' ? new Date(epochOrIso * 1000) : new Date(epochOrIso);
+            return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function renderShares(data) {
+            const container = document.getElementById('sharesContainer');
+            container.innerHTML = '';
+            showNote(data.shares.length === 0 ? 'No share links yet.' : null);
+            for (const s of data.shares) {
+                container.appendChild(shareCard(s));
+            }
+        }
+
+        function shareCard(s) {
+            const card = document.createElement('div');
+            card.className = 'card share-row';
+
+            const badge = document.createElement('span');
+            const state = s.active ? 'active' : (s.revoked ? 'revoked' : 'expired');
+            badge.className = 'badge ' + state;
+            badge.textContent = state;
+            card.appendChild(badge);
+
+            const who = document.createElement('div');
+            who.className = 'who';
+            const label = document.createElement('div');
+            label.className = 'label-line';
+            label.textContent = s.label || 'Unlabelled link';
+            who.appendChild(label);
+            const meta = document.createElement('div');
+            meta.className = 'meta-line';
+            const bits = ['created ' + fmtDate(s.created_at)];
+            if (s.expires_at) {
+                bits.push((s.expires_at * 1000 > Date.now() ? 'expires ' : 'expired ') + fmtDate(s.expires_at));
+            } else {
+                bits.push('never expires');
+            }
+            meta.textContent = bits.join(' · ');
+            who.appendChild(meta);
+            card.appendChild(who);
+
+            const actions = document.createElement('div');
+            actions.className = 'row-actions';
+            if (s.active) {
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'btn';
+                copyBtn.textContent = 'Copy link';
+                copyBtn.addEventListener('click', async () => {
+                    try {
+                        await navigator.clipboard.writeText(location.origin + s.url);
+                        copyBtn.textContent = 'Copied ✓';
+                        setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1500);
+                    } catch (e) {
+                        prompt('Copy this link:', location.origin + s.url);
+                    }
+                });
+                actions.appendChild(copyBtn);
+
+                const openLink = document.createElement('a');
+                openLink.className = 'btn subtle';
+                openLink.href = s.url;
+                openLink.target = '_blank';
+                openLink.rel = 'noopener';
+                openLink.textContent = 'Open';
+                actions.appendChild(openLink);
+
+                const revokeBtn = document.createElement('button');
+                revokeBtn.className = 'btn danger';
+                revokeBtn.textContent = 'Revoke';
+                revokeBtn.addEventListener('click', async () => {
+                    if (!confirm('Revoke this link? Anyone using it loses access immediately.')) return;
+                    revokeBtn.disabled = true;
+                    revokeBtn.innerHTML = '<span class="spin">🥦</span>';
+                    try {
+                        const resp = await fetch('/api/shares/' + encodeURIComponent(s.token), { method: 'DELETE' });
+                        if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({}));
+                            alert(err.error || 'Failed to revoke.');
+                        }
+                    } catch (e) {
+                        alert('Network error.');
+                    }
+                    loadShares();
+                });
+                actions.appendChild(revokeBtn);
+            }
+            card.appendChild(actions);
+            return card;
+        }
+
+        document.getElementById('createBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('createBtn');
+            showCreateError(null);
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spin">🥦</span> Creating…';
+            try {
+                const resp = await fetch('/api/shares', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        label: document.getElementById('labelInput').value.trim(),
+                        expires: document.getElementById('expiresInput').value,
+                    }),
+                });
+                if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                const result = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showCreateError(result.error || 'Failed to create link.');
+                    return;
+                }
+                document.getElementById('labelInput').value = '';
+                await loadShares();
+            } catch (e) {
+                showCreateError('Network error — link not created.');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create link';
+            }
+        });
+
+        loadShares();
+    </script>
+{% endblock %}

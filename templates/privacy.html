@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Privacy &amp; terms{% endblock %}
+{% block favicon %}🔒{% endblock %}
+
+{% block styles %}
+        .privacy p, .privacy li {
+            font-size: 0.92rem;
+            line-height: 1.55;
+        }
+
+        .privacy h2 {
+            font-size: 1rem;
+            margin: 18px 0 8px;
+        }
+
+        .privacy ul {
+            padding-left: 20px;
+            margin: 8px 0;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🔒 Privacy &amp; terms</h1>
+            <span class="subtitle">Plain language, no legalese</span>
+        </div>
+
+        <div class="card privacy">
+            <h2 style="margin-top:0;">What Ndiro stores</h2>
+            <p>Your meal descriptions, optional context notes, fiber amounts, optional
+            meal photos, and your Google account's email and name. That's it. It is all
+            stored in the operator's AWS account (DynamoDB and a private S3 bucket).</p>
+
+            <h2>Who can see your data</h2>
+            <ul>
+                <li><strong>Nothing is ever public.</strong> There is no feed and no
+                discovery. Photos are served only through short-lived signed links
+                generated for you — or for someone opening a share link you created.</li>
+                <li><strong>Share links</strong> show a read-only copy of your review
+                page to whoever has the link. You choose how long they live and can
+                revoke them at any time.</li>
+                <li><strong>Other users</strong> can never see your meals or photos.
+                Admins can see only account metadata (email, name, status) — the admin
+                screens have no way to view anyone's meals or photos.</li>
+                <li><strong>The operator</strong> can technically access the underlying
+                storage (it runs in their AWS account) and by policy does not, except
+                for abuse handling or at your request.</li>
+            </ul>
+
+            <h2>AI estimates</h2>
+            <p>If you use the fiber estimator, the meal description or photo you submit
+            is sent to OpenAI to compute the estimate, on the operator's API key.
+            Estimates are capped per user per day.</p>
+
+            <h2>Ground rules</h2>
+            <ul>
+                <li>No unlawful content. The operator may remove content or accounts
+                that break this or that abuse the service.</li>
+                <li>This is a proof of concept: no uptime or durability guarantees.
+                Please don't treat it as your only copy of anything important.</li>
+            </ul>
+
+            <h2>Deleting your data</h2>
+            <p>You can delete your account yourself in <a href="/settings">Settings</a>.
+            That permanently removes your meals, your photos, your share links, and your
+            account record — everything goes with it.</p>
+        </div>
+{% endblock %}

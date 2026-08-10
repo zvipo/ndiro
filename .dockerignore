@@ -1,0 +1,21 @@
+# Secrets must never enter the image: .env is injected at run time (--env-file).
+.env
+.env.*
+*.pem
+*.key
+
+.git
+.gitignore
+.dockerignore
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+tests/
+NDIRO_BRIEF.md
+reference/
+README.md
+CLAUDE.md
+LICENSE

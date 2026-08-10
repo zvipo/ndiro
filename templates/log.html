@@ -1,0 +1,984 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Log{% endblock %}
+
+{% block styles %}
+        .today-summary {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 40px;
+            text-align: center;
+        }
+
+        .stat-value {
+            display: block;
+            font-size: 2.1rem;
+            font-weight: bold;
+            color: var(--gold);
+            line-height: 1.1;
+        }
+
+        .stat-name {
+            display: block;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        /* --- Add/edit meal form --- */
+        .meal-form textarea,
+        .meal-form input[type="number"],
+        .meal-form input[type="date"],
+        .meal-form input[type="time"] {
+            width: 100%;
+        }
+
+        .meal-form textarea {
+            resize: vertical;
+            min-height: 56px;
+            margin-bottom: 10px;
+        }
+
+        .meal-form textarea.context-input {
+            min-height: 36px;
+            font-style: italic;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+
+        .form-row > div {
+            flex: 1;
+            min-width: 130px;
+        }
+
+        /* --- Fiber guide lookup (tap a food to add its grams) --- */
+        .guide-lookup {
+            margin-bottom: 10px;
+        }
+
+        .guide-lookup input[type="search"] {
+            width: 100%;
+            font-size: 0.85rem;
+        }
+
+        .guide-results {
+            background: var(--bg-0);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+
+        .guide-row {
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            border: none;
+            font: inherit;
+            color: inherit;
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 7px 10px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .guide-row:hover {
+            background: var(--card);
+        }
+
+        .guide-row.added {
+            background: var(--card);
+        }
+
+        .guide-row .star {
+            color: var(--gold);
+        }
+
+        .guide-row .serving {
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .guide-row .grams {
+            margin-left: auto;
+            color: var(--green);
+            white-space: nowrap;
+        }
+
+        /* --- AI estimator --- */
+        .ai-row {
+            margin-bottom: 12px;
+        }
+
+        .ai-result {
+            font-size: 0.82rem;
+            color: var(--muted);
+            margin-top: 8px;
+        }
+
+        .ai-result .grams {
+            color: var(--green);
+        }
+
+        .ai-result .note {
+            font-style: italic;
+        }
+
+        .ai-result .btn {
+            margin-top: 6px;
+        }
+
+        .ai-error {
+            color: var(--red);
+            font-size: 0.82rem;
+            margin-top: 6px;
+        }
+
+        .photo-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .photo-row input[type="file"] {
+            display: none;
+        }
+
+        .photo-name {
+            font-size: 0.8rem;
+            color: var(--muted);
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .form-error {
+            color: var(--red);
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: none;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        /* --- Day sections --- */
+        .day-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin: 22px 0 10px;
+            padding: 0 2px;
+        }
+
+        .day-heading h2 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .day-fiber {
+            font-size: 0.8rem;
+            color: var(--gold);
+        }
+
+        .day-empty {
+            font-size: 0.82rem;
+            color: var(--dim);
+            padding: 2px 2px 0;
+        }
+
+        .meal-card {
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+        }
+
+        .meal-photo {
+            width: 84px;
+            height: 84px;
+            object-fit: cover;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+
+        .meal-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .meal-desc {
+            font-size: 0.92rem;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        .meal-context {
+            font-size: 0.82rem;
+            color: var(--muted);
+            font-style: italic;
+            margin-top: 4px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        .meal-meta {
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-top: 6px;
+        }
+
+        .meal-meta .fiber {
+            color: var(--green);
+        }
+
+        .meal-meta .ai-mark {
+            font-size: 0.7rem;
+            color: var(--gold);
+            cursor: default;
+        }
+
+        .ai-glyph {
+            color: var(--gold);
+        }
+
+        .meal-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .meal-actions button {
+            background: transparent;
+            border: none;
+            color: var(--dim);
+            cursor: pointer;
+            font-size: 0.95rem;
+            padding: 2px 4px;
+        }
+
+        .meal-actions button:hover {
+            color: var(--text);
+        }
+
+        .load-more {
+            display: block;
+            margin: 24px auto 0;
+        }
+
+        /* Photo lightbox: tap a thumbnail to view, tap anywhere / Esc to close */
+        .lightbox {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 300;
+            padding: 24px;
+            cursor: zoom-out;
+        }
+
+        .lightbox img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 10px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+        }
+
+        .lightbox .lightbox-close {
+            position: fixed;
+            top: 14px;
+            right: 18px;
+            color: color-mix(in srgb, var(--text) 70%, transparent);
+            font-size: 26px;
+            line-height: 1;
+            cursor: pointer;
+            user-select: none;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🥦 Log</h1>
+        </div>
+
+        <div class="card today-summary">
+            <div>
+                <span class="stat-value" id="todayFiber">–</span>
+                <span class="stat-name">g viscous fiber today</span>
+            </div>
+            <div>
+                <span class="stat-value" id="todayMeals">–</span>
+                <span class="stat-name">meals today</span>
+            </div>
+        </div>
+
+        <div class="card meal-form" id="mealForm">
+            <textarea id="descInput" placeholder="What did you eat?" maxlength="500"></textarea>
+            <textarea id="contextInput" class="context-input" placeholder="Context — mood, cravings, occasion (esp. for sweets)" maxlength="500"></textarea>
+            <div class="form-row">
+                <div>
+                    <label class="form-label" for="fiberInput">Viscous fiber (g)</label>
+                    <input type="number" id="fiberInput" min="0" step="0.1" placeholder="optional">
+                </div>
+                <div>
+                    <label class="form-label" for="dateInput">Date</label>
+                    <input type="date" id="dateInput" max="9999-12-31">
+                </div>
+                <div>
+                    <label class="form-label" for="timeInput">Time</label>
+                    <input type="time" id="timeInput">
+                </div>
+            </div>
+            <div class="guide-lookup">
+                <input type="search" id="guideSearch" placeholder="Search fiber guide — tap a food to add its grams" autocomplete="off">
+                <div class="guide-results" id="guideResults" style="display:none"></div>
+            </div>
+            {% if ai_enabled %}
+            <div class="ai-row">
+                <button type="button" class="btn subtle" id="estimateBtn"><span class="ai-glyph">✦</span> Estimate from description</button>
+                <button type="button" class="btn subtle" id="photoEstimateBtn" style="display:none">📷<span class="ai-glyph">✦</span> Describe &amp; estimate from photo</button>
+                <div class="ai-result" id="aiResult" style="display:none"></div>
+                <div class="ai-error" id="aiError" style="display:none"></div>
+            </div>
+            {% endif %}
+            <div class="photo-row">
+                {# No `capture` attr: iOS then offers Photo Library / Take Photo / Choose File #}
+                <input type="file" id="photoInput" accept="image/*">
+                <button type="button" class="btn" id="photoBtn">📷 Photo</button>
+                <span class="photo-name" id="photoName"></span>
+                <button type="button" class="btn subtle" id="removePhotoBtn" style="display:none">Remove photo</button>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn primary" id="saveBtn">Add meal</button>
+                <button type="button" class="btn subtle" id="cancelEditBtn" style="display:none">Cancel</button>
+            </div>
+            <div class="form-error" id="formError"></div>
+        </div>
+
+        <div id="daysContainer"></div>
+
+        <button type="button" class="btn load-more" id="loadMoreBtn" style="display:none">Load 7 more days</button>
+        <div class="page-note" id="pageNote" style="display:none"></div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        const FIBER_GUIDE = {{ fiber_guide|tojson }};
+        let daysShown = 7;
+        let serverToday = null;
+        // When set, the form is editing this meal instead of adding a new one.
+        let editing = null; // {date, meal_id, has_photo}
+        let removePhotoFlag = false;
+
+        // Busy helpers: spinning 🥦 in the pressed button / loading container.
+        // innerHTML only ever receives these fixed string literals.
+        function setBusy(btn, label) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spin">🥦</span> ' + label;
+        }
+
+        function restoreBtn(btn, label) {
+            btn.disabled = false;
+            btn.innerHTML = label;  // static string literals only
+        }
+
+        function showLoading() {
+            document.getElementById('daysContainer').innerHTML =
+                '<div class="page-note"><span class="spin">🥦</span> loading…</div>';
+        }
+
+        async function loadMeals() {
+            showLoading();
+            let data;
+            try {
+                const resp = await fetch('/api/meals?days=' + daysShown + '&anchor=' + currentDateLocal());
+                if (resp.status === 401 || resp.status === 403) {
+                    window.location.href = '/login?next=/log';
+                    return;
+                }
+                data = await resp.json();
+            } catch (e) {
+                document.getElementById('daysContainer').innerHTML = '';
+                showNote('Could not load meals.');
+                return;
+            }
+            serverToday = data.today;
+            renderDays(data);
+            if (data.error) {
+                showNote('Meals unavailable — try again later.');
+            } else {
+                showNote(null);
+            }
+        }
+
+        function showNote(msg) {
+            const note = document.getElementById('pageNote');
+            note.style.display = msg ? 'block' : 'none';
+            note.textContent = msg || '';
+        }
+
+        function formatDay(dateStr) {
+            const d = new Date(dateStr + 'T00:00:00');
+            const label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+            if (dateStr === serverToday) return 'Today — ' + label;
+            return label;
+        }
+
+        function renderDays(data) {
+            const container = document.getElementById('daysContainer');
+            container.innerHTML = '';
+
+            const todayEntry = data.days.find(d => d.date === serverToday);
+            document.getElementById('todayFiber').textContent =
+                todayEntry && todayEntry.totals.fiber_g != null ? todayEntry.totals.fiber_g : '0';
+            document.getElementById('todayMeals').textContent =
+                todayEntry ? todayEntry.meals.length : '0';
+
+            for (const day of data.days) {
+                const section = document.createElement('div');
+
+                const heading = document.createElement('div');
+                heading.className = 'day-heading';
+                const h2 = document.createElement('h2');
+                h2.textContent = formatDay(day.date);
+                heading.appendChild(h2);
+                if (day.totals.fiber_g != null) {
+                    const fiber = document.createElement('span');
+                    fiber.className = 'day-fiber';
+                    fiber.textContent = day.totals.fiber_g + ' g viscous fiber';
+                    heading.appendChild(fiber);
+                }
+                section.appendChild(heading);
+
+                if (day.meals.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'day-empty';
+                    empty.textContent = 'No meals logged.';
+                    section.appendChild(empty);
+                } else {
+                    for (const meal of day.meals) {
+                        section.appendChild(mealCard(meal));
+                    }
+                }
+                container.appendChild(section);
+            }
+
+            const btn = document.getElementById('loadMoreBtn');
+            btn.style.display = daysShown < 31 ? 'block' : 'none';
+        }
+
+        function mealCard(meal) {
+            const card = document.createElement('div');
+            card.className = 'card meal-card';
+
+            if (meal.photo_url) {
+                const img = document.createElement('img');
+                img.className = 'meal-photo';
+                img.src = meal.photo_url;
+                img.alt = 'meal photo';
+                img.loading = 'lazy';
+                img.addEventListener('click', () => openLightbox(meal.photo_url));
+                card.appendChild(img);
+            }
+
+            const body = document.createElement('div');
+            body.className = 'meal-body';
+            const desc = document.createElement('div');
+            desc.className = 'meal-desc';
+            desc.textContent = meal.description;
+            body.appendChild(desc);
+
+            if (meal.context) {
+                const ctx = document.createElement('div');
+                ctx.className = 'meal-context';
+                ctx.textContent = meal.context;
+                body.appendChild(ctx);
+            }
+
+            const meta = document.createElement('div');
+            meta.className = 'meal-meta';
+            if (meal.time) {
+                meta.appendChild(document.createTextNode(formatTime(meal.time)));
+            }
+            if (meal.nutrients.fiber_g != null) {
+                if (meta.childNodes.length) meta.appendChild(document.createTextNode(' · '));
+                const fiber = document.createElement('span');
+                fiber.className = 'fiber';
+                fiber.textContent = meal.nutrients.fiber_g + ' g viscous fiber';
+                meta.appendChild(fiber);
+            }
+            if (meal.ai_assisted) {
+                if (meta.childNodes.length) meta.appendChild(document.createTextNode(' · '));
+                const mark = document.createElement('span');
+                mark.className = 'ai-mark';
+                mark.title = 'AI-assisted entry';
+                mark.textContent = '✦';
+                meta.appendChild(mark);
+            }
+            if (meta.childNodes.length) body.appendChild(meta);
+            card.appendChild(body);
+
+            const actions = document.createElement('div');
+            actions.className = 'meal-actions';
+            const editBtn = document.createElement('button');
+            editBtn.title = 'Edit';
+            editBtn.textContent = '✎';
+            editBtn.addEventListener('click', () => startEdit(meal));
+            const delBtn = document.createElement('button');
+            delBtn.title = 'Delete';
+            delBtn.textContent = '✕';
+            delBtn.addEventListener('click', () => deleteMeal(meal, delBtn));
+            actions.appendChild(editBtn);
+            actions.appendChild(delBtn);
+            card.appendChild(actions);
+
+            return card;
+        }
+
+
+        function openLightbox(url) {
+            const overlay = document.createElement('div');
+            overlay.className = 'lightbox';
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = 'meal photo';
+            overlay.appendChild(img);
+            const close = document.createElement('span');
+            close.className = 'lightbox-close';
+            close.textContent = '✕';
+            overlay.appendChild(close);
+            function dismiss() {
+                overlay.remove();
+                document.removeEventListener('keydown', onKey);
+            }
+            function onKey(e) {
+                if (e.key === 'Escape') dismiss();
+            }
+            overlay.addEventListener('click', dismiss);
+            document.addEventListener('keydown', onKey);
+            document.body.appendChild(overlay);
+        }
+
+        // ------- Form -------
+        function currentTimeHHMM() {
+            return new Date().toTimeString().slice(0, 5);
+        }
+
+        function currentDateLocal() {
+            // NOT toISOString(): that's the UTC date, which can be a day off
+            // the user's local date. The client's date is authoritative.
+            const d = new Date();
+            return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') +
+                   '-' + String(d.getDate()).padStart(2, '0');
+        }
+
+        function formatTime(t) {
+            // "14:30" -> locale short time, e.g. "2:30 PM"
+            const d = new Date('1970-01-01T' + t + ':00');
+            return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+
+        function initForm() {
+            var _di = document.getElementById('dateInput');
+            _di.value = currentDateLocal();
+            _di.max = currentDateLocal();  // no future-dated meals (they'd be filtered from views)
+            document.getElementById('timeInput').value = currentTimeHHMM();
+            document.getElementById('photoBtn').addEventListener('click', () =>
+                document.getElementById('photoInput').click());
+            document.getElementById('photoInput').addEventListener('change', (e) => {
+                const f = e.target.files[0];
+                document.getElementById('photoName').textContent = f ? f.name : '';
+                removePhotoFlag = false;
+                togglePhotoEstimateBtn(!!f);
+            });
+            document.getElementById('removePhotoBtn').addEventListener('click', () => {
+                removePhotoFlag = true;
+                document.getElementById('photoInput').value = '';
+                document.getElementById('photoName').textContent = '(photo will be removed)';
+                togglePhotoEstimateBtn(false);
+            });
+            document.getElementById('saveBtn').addEventListener('click', saveMeal);
+            document.getElementById('cancelEditBtn').addEventListener('click', resetForm);
+            initGuideLookup();
+            const estBtn = document.getElementById('estimateBtn');
+            if (estBtn) estBtn.addEventListener('click', estimateFiber);
+            const photoEstBtn = document.getElementById('photoEstimateBtn');
+            if (photoEstBtn) photoEstBtn.addEventListener('click', estimateFromPhoto);
+        }
+
+        function togglePhotoEstimateBtn(show) {
+            const btn = document.getElementById('photoEstimateBtn');
+            if (btn) btn.style.display = show ? 'inline-block' : 'none';
+        }
+
+        // ------- Fiber guide lookup (tap to add grams) -------
+        function initGuideLookup() {
+            const search = document.getElementById('guideSearch');
+            if (!search) return;
+            search.addEventListener('input', () => renderGuideResults(search.value.trim()));
+            search.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') { search.value = ''; renderGuideResults(''); }
+            });
+        }
+
+        function renderGuideResults(query) {
+            const panel = document.getElementById('guideResults');
+            panel.innerHTML = '';
+            if (!query) {
+                panel.style.display = 'none';
+                return;
+            }
+            const q = query.toLowerCase();
+            const matches = FIBER_GUIDE.filter(f =>
+                f.name.toLowerCase().includes(q) || f.category.toLowerCase().includes(q)
+            ).slice(0, 8);
+            if (matches.length === 0) {
+                panel.style.display = 'none';
+                return;
+            }
+            for (const item of matches) {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'guide-row';
+                if (item.star) {
+                    const star = document.createElement('span');
+                    star.className = 'star';
+                    star.textContent = '★';
+                    row.appendChild(star);
+                }
+                const name = document.createElement('span');
+                name.textContent = item.name;
+                row.appendChild(name);
+                const serving = document.createElement('span');
+                serving.className = 'serving';
+                serving.textContent = '· ' + item.serving;
+                row.appendChild(serving);
+                const grams = document.createElement('span');
+                grams.className = 'grams';
+                grams.textContent = '+' + item.grams + ' g';
+                row.appendChild(grams);
+                // pointerdown + preventDefault: fires before blur on iOS and lets
+                // repeated taps add without the input losing focus. A real
+                // <button> gives keyboard/AT users click + Enter/Space for free.
+                // repeated taps accumulate servings without the panel closing.
+                // pointerdown preventDefault keeps the search input focused (so
+                // the keyboard stays up for rapid multi-add and the panel
+                // persists); the button's click does the single add and also
+                // fires on keyboard Enter/Space for AT users.
+                row.addEventListener('pointerdown', (e) => e.preventDefault());
+                row.addEventListener('click', () => addGuideGrams(item, row));
+                panel.appendChild(row);
+            }
+            panel.style.display = 'block';
+        }
+
+        function addGuideGrams(item, row) {
+            const input = document.getElementById('fiberInput');
+            const cur = parseFloat(input.value) || 0;
+            input.value = Math.round((cur + item.grams) * 10) / 10;
+            row.classList.add('added');
+            setTimeout(() => row.classList.remove('added'), 300);
+        }
+
+        // ------- AI estimator (rendered only when the operator configured a key) -------
+        let estimating = false;
+        // True once AI output was accepted into the form (photo description fill
+        // or 'Use N g'); saved with the meal and shown as a ✦ marker.
+        let aiUsed = false;
+
+        function showAiError(msg) {
+            const el = document.getElementById('aiError');
+            if (!el) return;
+            el.style.display = msg ? 'block' : 'none';
+            el.textContent = msg || '';
+        }
+
+        function clearAiState() {
+            showAiError(null);
+            const result = document.getElementById('aiResult');
+            if (result) { result.style.display = 'none'; result.innerHTML = ''; }
+        }
+
+        async function estimateFiber() {
+            if (estimating) return;
+            const description = document.getElementById('descInput').value.trim();
+            clearAiState();
+            if (!description) {
+                showAiError('Add a description first.');
+                return;
+            }
+            const btn = document.getElementById('estimateBtn');
+            estimating = true;
+            setBusy(btn, 'Estimating…');
+            try {
+                const resp = await fetch('/api/estimate-fiber', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description: description })
+                });
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=/log';
+                    return;
+                }
+                const result = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showAiError(result.error || 'Estimate failed.');
+                    return;
+                }
+                renderEstimate(result);
+            } catch (e) {
+                showAiError('Network error — estimate failed.');
+            } finally {
+                estimating = false;
+                restoreBtn(btn, '<span class="ai-glyph">✦</span> Estimate from description');
+            }
+        }
+
+        async function estimateFromPhoto() {
+            if (estimating) return;
+            const file = document.getElementById('photoInput').files[0];
+            clearAiState();
+            if (!file) {
+                showAiError('Pick a photo first.');
+                return;
+            }
+            const btn = document.getElementById('photoEstimateBtn');
+            estimating = true;
+            setBusy(btn, 'Looking at the photo…');
+            try {
+                const blob = await downscaleImage(file);
+                const fd = new FormData();
+                fd.append('photo', blob, 'photo.jpg');
+                const resp = await fetch('/api/estimate-photo', { method: 'POST', body: fd });
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=/log';
+                    return;
+                }
+                const result = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showAiError(result.error || 'Estimate failed.');
+                    return;
+                }
+                if (result.description) {
+                    document.getElementById('descInput').value = result.description;
+                    aiUsed = true;
+                }
+                renderEstimate(result);
+            } catch (e) {
+                showAiError('Network error — estimate failed.');
+            } finally {
+                estimating = false;
+                restoreBtn(btn, '📷<span class="ai-glyph">✦</span> Describe & estimate from photo');
+            }
+        }
+
+        function renderEstimate(result) {
+            const panel = document.getElementById('aiResult');
+            panel.innerHTML = '';
+            for (const item of result.items || []) {
+                const line = document.createElement('div');
+                line.textContent = item.food + ' · ' + item.serving + ' · ';
+                const grams = document.createElement('span');
+                grams.className = 'grams';
+                grams.textContent = item.grams + ' g';
+                line.appendChild(grams);
+                panel.appendChild(line);
+            }
+            if (result.note) {
+                const note = document.createElement('div');
+                note.className = 'note';
+                note.textContent = result.note;
+                panel.appendChild(note);
+            }
+            const useBtn = document.createElement('button');
+            useBtn.type = 'button';
+            useBtn.className = 'btn';
+            useBtn.textContent = 'Use ' + result.viscous_fiber_g + ' g';
+            useBtn.addEventListener('click', () => {
+                document.getElementById('fiberInput').value = result.viscous_fiber_g;
+                aiUsed = true;
+            });
+            panel.appendChild(useBtn);
+            panel.style.display = 'block';
+        }
+
+        function startEdit(meal) {
+            editing = { date: meal.date, meal_id: meal.meal_id, has_photo: meal.has_photo };
+            removePhotoFlag = false;
+            aiUsed = !!meal.ai_assisted;  // preserve the marker across edits
+            document.getElementById('descInput').value = meal.description;
+            document.getElementById('contextInput').value = meal.context || '';
+            document.getElementById('fiberInput').value =
+                meal.nutrients.fiber_g != null ? meal.nutrients.fiber_g : '';
+            document.getElementById('dateInput').value = meal.date;
+            document.getElementById('dateInput').disabled = true; // date+id are the key; move = delete+re-add
+            document.getElementById('timeInput').value = meal.time || '';
+            document.getElementById('timeInput').disabled = true; // time lives in meal_id (part of the key)
+            document.getElementById('photoInput').value = '';
+            togglePhotoEstimateBtn(false);
+            document.getElementById('photoName').textContent = meal.has_photo ? '(current photo kept)' : '';
+            document.getElementById('removePhotoBtn').style.display = meal.has_photo ? 'inline-block' : 'none';
+            document.getElementById('saveBtn').textContent = 'Save changes';
+            document.getElementById('cancelEditBtn').style.display = 'inline-block';
+            document.getElementById('mealForm').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function resetForm() {
+            editing = null;
+            removePhotoFlag = false;
+            aiUsed = false;
+            document.getElementById('descInput').value = '';
+            document.getElementById('contextInput').value = '';
+            document.getElementById('fiberInput').value = '';
+            var _di = document.getElementById('dateInput');
+            _di.value = currentDateLocal();
+            _di.max = currentDateLocal();  // no future-dated meals (they'd be filtered from views)
+            document.getElementById('dateInput').disabled = false;
+            document.getElementById('timeInput').value = currentTimeHHMM();
+            document.getElementById('timeInput').disabled = false;
+            document.getElementById('photoInput').value = '';
+            document.getElementById('photoName').textContent = '';
+            document.getElementById('removePhotoBtn').style.display = 'none';
+            togglePhotoEstimateBtn(false);
+            document.getElementById('saveBtn').textContent = 'Add meal';
+            document.getElementById('cancelEditBtn').style.display = 'none';
+            showFormError(null);
+            const search = document.getElementById('guideSearch');
+            if (search) { search.value = ''; renderGuideResults(''); }
+            clearAiState();
+        }
+
+        function showFormError(msg) {
+            const el = document.getElementById('formError');
+            el.style.display = msg ? 'block' : 'none';
+            el.textContent = msg || '';
+        }
+
+        // Downscale a photo on the client (phones produce 3-12MB originals).
+        // Falls back to the original file if decoding fails (e.g. exotic formats).
+        async function downscaleImage(file, maxDim = 1600, quality = 0.8) {
+            try {
+                const bitmap = await createImageBitmap(file);
+                const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(bitmap.width * scale);
+                canvas.height = Math.round(bitmap.height * scale);
+                canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+                return blob || file;
+            } catch (e) {
+                console.warn('Image downscale failed, uploading original:', e);
+                return file;
+            }
+        }
+
+        async function saveMeal() {
+            const desc = document.getElementById('descInput').value.trim();
+            if (!desc) {
+                showFormError('Description is required.');
+                return;
+            }
+
+            const saveBtn = document.getElementById('saveBtn');
+            setBusy(saveBtn, editing ? 'Saving…' : 'Adding…');
+            showFormError(null);
+
+            const fd = new FormData();
+            fd.append('description', desc);
+            fd.append('ai_assisted', aiUsed ? '1' : '');
+            fd.append('context', document.getElementById('contextInput').value.trim());
+            fd.append('fiber_g', document.getElementById('fiberInput').value.trim());
+            if (!editing) {
+                fd.append('date', document.getElementById('dateInput').value);
+                fd.append('time', document.getElementById('timeInput').value);
+            }
+            if (editing && removePhotoFlag) {
+                fd.append('remove_photo', '1');
+            }
+            const photoFile = document.getElementById('photoInput').files[0];
+            if (photoFile) {
+                const blob = await downscaleImage(photoFile);
+                fd.append('photo', blob, 'photo.jpg');
+            }
+
+            const url = editing
+                ? '/api/meals/' + editing.date + '/' + editing.meal_id
+                : '/api/meals';
+            const method = editing ? 'PUT' : 'POST';
+
+            try {
+                // No Content-Type header: the browser sets the multipart boundary.
+                const resp = await fetch(url, { method: method, body: fd });
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=/log';
+                    return;
+                }
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    showFormError(err.error || 'Failed to save meal.');
+                    return;
+                }
+                resetForm();
+                await loadMeals();
+            } catch (e) {
+                showFormError('Network error — meal not saved.');
+            } finally {
+                restoreBtn(saveBtn, editing ? 'Save changes' : 'Add meal');
+            }
+        }
+
+        async function deleteMeal(meal, delBtn) {
+            if (!confirm('Delete this meal?')) return;
+            delBtn.disabled = true;
+            delBtn.innerHTML = '<span class="spin">🥦</span>';
+            try {
+                const resp = await fetch('/api/meals/' + meal.date + '/' + meal.meal_id, { method: 'DELETE' });
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=/log';
+                    return;
+                }
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    alert(err.error || 'Failed to delete meal.');
+                    return;
+                }
+                if (editing && editing.meal_id === meal.meal_id) resetForm();
+                await loadMeals();
+            } catch (e) {
+                alert('Network error — meal not deleted.');
+            } finally {
+                // On success the row is re-rendered away; on failure this restores it.
+                delBtn.disabled = false;
+                delBtn.textContent = '✕';
+            }
+        }
+
+        document.getElementById('loadMoreBtn').addEventListener('click', () => {
+            daysShown = Math.min(daysShown + 7, 31);
+            loadMeals();
+        });
+
+        initForm();
+        loadMeals();
+    </script>
+{% endblock %}

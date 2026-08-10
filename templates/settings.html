@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Settings{% endblock %}
+{% block favicon %}⚙️{% endblock %}
+
+{% block styles %}
+        .danger-zone {
+            border-color: var(--red);
+        }
+
+        .danger-zone h2 {
+            font-size: 1rem;
+            color: var(--red);
+            margin-bottom: 8px;
+        }
+
+        .confirm-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .form-error {
+            color: var(--red);
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: none;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>⚙️ Settings</h1>
+        </div>
+
+        <div class="card">
+            <p style="font-size:0.92rem;">Signed in as
+                <strong>{{ user.email }}</strong>{% if user.name %} ({{ user.name }}){% endif %}.</p>
+            <p class="muted" style="font-size:0.85rem; margin-top:8px;">
+                Your meals and photos are private — see the
+                <a href="/privacy">privacy &amp; terms</a>.</p>
+            <p style="margin-top:12px;"><a class="btn subtle" href="/logout?next=/">Sign out</a></p>
+        </div>
+
+        <div class="card danger-zone">
+            <h2>Delete my account</h2>
+            <p style="font-size:0.88rem;">This permanently deletes <strong>everything</strong>:
+                all your meals, all your photos, all your share links, and your account
+                itself. There is no undo and no recovery.</p>
+            <div class="confirm-row">
+                <input type="text" id="confirmInput" placeholder='type "delete" to confirm' autocomplete="off">
+                <button type="button" class="btn danger" id="deleteBtn" disabled>Delete my account</button>
+            </div>
+            <div class="form-error" id="deleteError"></div>
+        </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        const confirmInput = document.getElementById('confirmInput');
+        const deleteBtn = document.getElementById('deleteBtn');
+
+        confirmInput.addEventListener('input', () => {
+            deleteBtn.disabled = confirmInput.value.trim().toLowerCase() !== 'delete';
+        });
+
+        function showError(msg) {
+            const el = document.getElementById('deleteError');
+            el.style.display = msg ? 'block' : 'none';
+            el.textContent = msg || '';
+        }
+
+        deleteBtn.addEventListener('click', async () => {
+            if (!confirm('Really delete your account and all its data? This cannot be undone.')) return;
+            deleteBtn.disabled = true;
+            deleteBtn.innerHTML = '<span class="spin">🥦</span> Deleting…';
+            showError(null);
+            try {
+                const resp = await fetch('/api/account/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: 'delete' }),
+                });
+                if (resp.ok) {
+                    window.location.href = '/';
+                    return;
+                }
+                const err = await resp.json().catch(() => ({}));
+                showError(err.error || 'Deletion failed — please try again.');
+            } catch (e) {
+                showError('Network error — please try again.');
+            }
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = 'Delete my account';
+        });
+    </script>
+{% endblock %}
