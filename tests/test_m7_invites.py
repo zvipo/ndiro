@@ -50,6 +50,8 @@ tk.check('valid invite page renders anonymously',
          f'/login?invite={token}'.encode() in resp.data)
 tk.check('invite page never leaks the inviter email',
          b'alice@example.test' not in resp.data)
+tk.check('corner-menu sign-in also carries the invite (no bare next=/i/ link)',
+         b'next=/i/' not in resp.data)
 
 # --- New-user redemption ------------------------------------------------------
 friend = tk.client()
@@ -68,6 +70,9 @@ tk.check('invite consumed (used_by/used_at set)',
          invite_row.get('used_by') == 'sub-friend' and 'used_at' in invite_row)
 used_page = tk.get(anon, f'/i/{token}')
 tk.check('used invite page is 404', used_page.status_code == 404)
+tk.check('revoking an already-used invite is 404 (nothing was stopped)',
+         tk.delete(alice, f'/api/invites/{token}').status_code == 404 and
+         not db.get_invite(token).get('revoked'))
 
 # Same token again: next signup falls back to pending.
 second = tk.client()
@@ -104,6 +109,42 @@ row = db.get_user('sub-second')
 tk.check('rejected user cannot redeem an invite',
          row['status'] == 'rejected' and 'used_by' not in db.get_invite(tok3) and
          resp.headers['Location'].endswith('/'))
+tk.check('conditional approval refuses a non-pending user (rejection sticks)',
+         db.approve_pending_user('sub-second', 'sub-alice') is False and
+         db.get_user('sub-second')['status'] == 'rejected')
+
+# --- Claim condition is self-sufficient (revoked/expired refused in-write) ----
+tk.limiter.reset()
+tok_dead = tk.post(alice, '/api/invites', json={}).get_json()['token']
+tk.delete(alice, f'/api/invites/{tok_dead}')
+tk.check('claim refuses a revoked invite even without the pre-read',
+         db.claim_invite(tok_dead, 'sub-x') is False)
+tok_exp = tk.post(alice, '/api/invites', json={}).get_json()['token']
+tk.FIXTURES.invites.items[(tok_exp,)]['expires_at'] = int(time.time()) - 5
+tk.check('claim refuses an expired invite in-condition',
+         db.claim_invite(tok_exp, 'sub-x') is False)
+
+# --- Crash-retry: a failed account write does not burn the invite -------------
+tok_crash = tk.post(alice, '/api/invites', json={}).get_json()['token']
+_real_create_user = db.create_user
+def _boom(*a, **k):
+    raise RuntimeError('injected account-write failure')
+db.create_user = _boom
+crashy = tk.client()
+resp = tk.sign_in(crashy, sub='sub-crash', email='crash@example.test', name='Crash',
+                  login_url=f'/login?invite={tok_crash}&next=/log')
+db.create_user = _real_create_user
+tk.check('crashed redemption: 500, no row, claim held by the claimant',
+         resp.status_code == 500 and db.get_user('sub-crash') is None and
+         db.get_invite(tok_crash).get('used_by') == 'sub-crash')
+resp = tk.sign_in(crashy, sub='sub-crash', email='crash@example.test', name='Crash',
+                  login_url=f'/login?invite={tok_crash}&next=/log')
+tk.check('retry through the same link completes the approved signup',
+         resp.status_code == 302 and resp.headers['Location'].endswith('/log') and
+         db.get_user('sub-crash')['status'] == 'approved' and
+         db.get_user('sub-crash').get('invited_by') == 'sub-alice')
+tk.check('a DIFFERENT user still cannot use the crash-claimed invite',
+         db.claim_invite(tok_crash, 'sub-other') is False)
 
 # --- Dead inviter: links die with the inviter's status ------------------------
 tk.post(admin, '/api/admin/users/sub-alice/reject')
@@ -128,6 +169,7 @@ tk.check('full instance: 403, no row, invite unconsumed',
 config.MAX_USERS = 100
 
 # --- Byte-identical dead-state QUADRUPLE --------------------------------------
+tk.limiter.reset()
 missing_page = tk.get(anon, '/i/no-such-token-aaaaaaaaaaaaaaaaaaa')
 tok_revoked = tk.post(alice, '/api/invites', json={}).get_json()['token']
 tk.delete(alice, f'/api/invites/{tok_revoked}')
@@ -142,6 +184,7 @@ tk.check('missing/revoked/expired/used pages byte-identical',
          missing_page.data == revoked_page.data == expired_page.data == used_page.data)
 
 # --- Ownership + caps ---------------------------------------------------------
+tk.limiter.reset()
 tok4 = tk.post(alice, '/api/invites', json={}).get_json()['token']
 friend_c = friend  # approved non-owner
 tk.check("foreign revoke is 404, invite stays live",
@@ -177,6 +220,7 @@ tk.check('admin payload shows inviter id + email',
          by_id['sub-friend']['invited_by_email'] == 'alice@example.test')
 
 # --- Account deletion wipes invites -------------------------------------------
+tk.limiter.reset()
 live_tok = tk.post(alice, '/api/invites', json={}).get_json()['token']
 tk.post(alice, '/api/account/delete', json={'confirm': 'delete'})
 tk.check('deletion removed invite rows', db.list_user_invites('sub-alice') == [])

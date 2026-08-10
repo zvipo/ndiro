@@ -139,16 +139,26 @@ def login():
     return redirect(auth.build_auth_url(state))
 
 
-def _valid_invite_for_redemption(token):
-    """(invite_row, inviter_row) when the token is fully redeemable, else None.
+def _valid_invite_for_redemption(token, claimant=None):
+    """(invite_row, inviter_row) when the token is redeemable, else None.
 
     ALL of: row exists, unrevoked, unused, unexpired, AND the inviter's row
     freshly re-read and still approved/admin — a rejected or deleted inviter
-    must not keep minting approved accounts from links made earlier."""
+    must not keep minting approved accounts from links made earlier.
+
+    claimant: a token already claimed BY THE SAME user stays redeemable —
+    that's the retry of a signup that claimed but crashed before its account
+    write (see db.claim_invite), not a second use."""
     if not token:
         return None
     invite = db.get_invite(token)
-    if not db.invite_is_active(invite):
+    if not invite:
+        return None
+    used_by = invite.get('used_by')
+    if used_by is not None:
+        if claimant is None or used_by != claimant:
+            return None
+    elif not db.invite_is_active(invite):
         return None
     inviter = db.get_user(invite['user_id'])
     if not inviter or inviter.get('status') not in auth.APPROVED_STATUSES:
@@ -164,12 +174,12 @@ def _redeem_invite(token, new_user_id):
     the middle of the OAuth flow). Logs never include the token: pre-claim it
     is a live capability (invariant #8)."""
     try:
-        valid = _valid_invite_for_redemption(token)
+        valid = _valid_invite_for_redemption(token, claimant=new_user_id)
         if valid is None:
             return None
         invite, _ = valid
         if not db.claim_invite(token, new_user_id):
-            return None  # lost the single-use race
+            return None  # lost the single-use race (or revoked/expired since)
         return invite['user_id']
     except Exception as e:
         print(f"Invite redemption failed for user {new_user_id}: {type(e).__name__}")
@@ -227,11 +237,11 @@ def callback():
                 user = {**user, 'email': email, 'name': name, 'picture': picture}
             if user.get('status') == 'pending':
                 # A pending user redeeming an invite gets approved (friend
-                # signed up first, then received the invite). Rejected users
-                # never do — rejection is a ban, handled below.
+                # signed up first, then received the invite). The approval is
+                # CONDITIONAL on still-pending so it can never overwrite a
+                # concurrent admin rejection — rejection is a ban.
                 inviter_id = _redeem_invite(invite_token, user_id)
-                if inviter_id:
-                    db.set_user_status(user_id, 'approved', invited_by=inviter_id)
+                if inviter_id and db.approve_pending_user(user_id, inviter_id):
                     user = {**user, 'status': 'approved'}
     except Exception as e:
         print(f"Sign-in failed for user {user_id}: {type(e).__name__}")
@@ -823,10 +833,13 @@ def invite_view(token):
         return render_template('invite_404.html', user=auth.current_user(),
                                login_next='/'), 404
     _, inviter = valid
-    # Attribution: inviter NAME only — never the email.
+    # Attribution: inviter NAME only — never the email. login_url routes the
+    # corner-menu sign-in through the invite too — without it, that link
+    # would silently drop the invite and strand the friend in the queue.
     return render_template('invite_view.html', user=auth.current_user(),
                            inviter_name=inviter.get('name') or 'A Ndiro user',
-                           token=token)
+                           token=token,
+                           login_url=f'/login?invite={token}&next=/log')
 
 
 # --- Share links -------------------------------------------------------------
@@ -1004,8 +1017,12 @@ def list_invites():
 
 
 @app.route('/api/invites', methods=['POST'])
+@limiter.limit('10 per minute')
 @auth.approved_required
 def create_invite():
+    # NOTE the active-cap below is read-then-write: concurrent creates can
+    # overshoot MAX_ACTIVE_INVITES by up to the thread count. The rate limit
+    # keeps that bounded; a conditional counter is overkill at PoC scale.
     data = request.get_json(silent=True) or {}
     label = (data.get('label') or '').strip()
     if len(label) > 100:

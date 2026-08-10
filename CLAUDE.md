@@ -21,7 +21,7 @@ pip install -r requirements.txt
 python app.py                        # dev server, port 5000 (needs .env with SECRET_KEY)
 gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --no-control-socket --preload app:app
 
-# Stub tests — no credentials or network needed; run all five after changes:
+# Stub tests — no credentials or network needed; run ALL of these after changes:
 python tests/test_m1_auth.py         # auth/approval/MAX_USERS
 python tests/probe_cross_user.py     # tenant isolation (THE security test)
 python tests/test_m3_shares.py       # shares, identical 404s, account deletion
@@ -48,8 +48,9 @@ raises without it (tests set their own).
   `{key,label,unit,goal,direction,is_default}`; absent attrs or
   `nutrient_key='fiber_g'` fall back to the fiber default (no migration;
   fiber honors a stored personalized goal).
-- **`db.py`** — boto3 setup, auto-create of the three tables on boot,
-  users/meals/shares accessors, S3 photo helpers, the AI daily-use counter.
+- **`db.py`** — boto3 setup, auto-create of the four tables on boot,
+  users/meals/shares/invites accessors, S3 photo helpers, the AI daily-use
+  counter.
   Table handles are functions (`users_table()` etc.) so tests swap in fakes.
 - **`auth.py`** — Google OAuth (server-side code exchange via `requests`, no
   JWT lib; token trusted because it comes from Google over TLS), `current_user()`,
@@ -121,12 +122,15 @@ reuses the same key (no orphans).
    request (a rejected user's live session must die immediately; never cache
    status in the cookie). `ADMIN_EMAILS` only bootstraps status at first
    sign-in.
-4. Session stores only `user_id` (+ transient `oauth_state`, `login_next`);
+4. Session stores only `user_id` (+ transient `oauth_state`, `login_next`,
+   `invite_token` — the last popped unconditionally in /callback, never
+   surviving into the post-login session);
    cookie is Secure/HttpOnly/SameSite=Lax, 30 days; ProxyFix(x_proto, x_host).
 5. OAuth `state` CSRF via `session.pop` comparison; `_safe_next` allows only
    relative paths (no `//`, no `\`).
 6. Rate limits (Flask-Limiter, `memory://` — valid ONLY with one gunicorn
-   worker, which the Dockerfile pins): login/callback 10/min, `/s/*` 30/min,
+   worker, which the Dockerfile pins): login/callback 10/min, `/s/*` and
+   `/i/*` 30/min, invite creation 10/min,
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
    race-safe two-call conditional counter in db.py (increment BEFORE the
    OpenAI call; refund on upstream failure only).
@@ -159,4 +163,5 @@ reuses the same key (no orphans).
   expression shape, extend `tests/fakes.py`.
 - Photo URLs expire after 1h — a page left open longer shows broken thumbnails
   until refresh; known PoC tradeoff.
-- Account deletion order: photos → meals → shares → user row LAST (retryable).
+- Account deletion order: photos → meals → shares → invites → user row LAST
+  (retryable).

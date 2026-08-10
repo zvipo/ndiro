@@ -107,12 +107,16 @@
     <script>
         async function loadInvites() {
             let data;
+            const container = document.getElementById('invitesContainer');
             try {
                 const resp = await fetch('/api/invites');
                 if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
-                if (!resp.ok) { showNote('Could not load invite links.'); return; }
+                if (!resp.ok) { container.innerHTML = ''; showNote('Could not load invite links.'); return; }
                 data = await resp.json();
             } catch (e) {
+                // Clear the seeded spinner (and any stale list) so the error
+                // note isn't contradicted by what's on screen.
+                container.innerHTML = '';
                 showNote('Could not load invite links.');
                 return;
             }

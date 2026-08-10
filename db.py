@@ -201,17 +201,33 @@ def list_users():
         kwargs['ExclusiveStartKey'] = lek
 
 
-def set_user_status(user_id, status, invited_by=None):
-    """Set a user's status (admin approve/reject; invite redemption passes
-    invited_by when approving an already-pending user)."""
+def approve_pending_user(user_id, invited_by):
+    """Approve a user ONLY if they are still pending (conditional write):
+    an invite redemption must never overwrite a concurrent admin rejection —
+    rejection is a ban and must stick. True on success, False on the race."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET #s = :s, approved_at = :t, invited_by = :i',
+            ConditionExpression='#s = :p',
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues={':s': 'approved', ':p': 'pending',
+                                       ':t': _utc_now_iso(), ':i': invited_by},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def set_user_status(user_id, status):
+    """Set a user's status (admin approve/reject)."""
     expr = 'SET #s = :s'
     values = {':s': status}
     if status == 'approved':
         expr += ', approved_at = :t'
         values[':t'] = _utc_now_iso()
-    if invited_by:
-        expr += ', invited_by = :i'
-        values[':i'] = invited_by
     users_table().update_item(
         Key={'user_id': user_id},
         UpdateExpression=expr,
@@ -461,18 +477,25 @@ def create_invite(user_id, expires_at, label=None):
 def claim_invite(token, new_user_id):
     """Atomically consume a single-use invite for new_user_id.
 
-    The condition makes the claim race-safe against a concurrent redemption:
-    exactly one caller wins, the loser gets False. Revocation can't join the
-    condition (the expression grammar the fakes support has no parentheses),
-    so a revoke landing between the caller's validation read and this claim
-    can lose that millisecond race — accepted at PoC scale."""
+    Condition (DynamoDB precedence: AND binds tighter than OR):
+      (exists AND unused AND unrevoked AND unexpired) OR used_by = :u
+    The first arm makes the claim race-safe AND fully in-condition — a revoke
+    or expiry landing after the caller's validation read still loses. The OR
+    arm makes the claim IDEMPOTENT for the same claimant: a signup that
+    claimed but crashed before its account write retries through the same
+    link instead of burning it. Different claimants race only on the first
+    arm — exactly one ever wins."""
     try:
         invites_table().update_item(
             Key={'invite_token': token},
             UpdateExpression='SET used_by = :u, used_at = :t',
-            ConditionExpression=('attribute_exists(invite_token) '
-                                 'AND attribute_not_exists(used_by)'),
-            ExpressionAttributeValues={':u': new_user_id, ':t': _utc_now_iso()},
+            ConditionExpression=(
+                'attribute_exists(invite_token) AND attribute_not_exists(used_by) '
+                'AND revoked = :f AND expires_at > :now OR used_by = :u'),
+            ExpressionAttributeValues={
+                ':u': new_user_id, ':t': _utc_now_iso(),
+                ':f': False, ':now': int(time.time()),
+            },
         )
         return True
     except ClientError as e:
@@ -482,13 +505,15 @@ def claim_invite(token, new_user_id):
 
 
 def revoke_invite(token, user_id):
-    """Revoke an invite only if it belongs to user_id (atomic ownership check).
-    Returns True on success, False if missing or not owned. Rows are kept."""
+    """Revoke an invite only if it belongs to user_id AND is still unused
+    (atomic): "revoking" an already-redeemed invite would tell the inviter
+    they stopped something that already admitted someone. Returns True on
+    success, False if missing, not owned, or used. Rows are kept."""
     try:
         invites_table().update_item(
             Key={'invite_token': token},
             UpdateExpression='SET revoked = :r',
-            ConditionExpression='user_id = :uid',
+            ConditionExpression='user_id = :uid AND attribute_not_exists(used_by)',
             ExpressionAttributeValues={':r': True, ':uid': user_id},
         )
         return True

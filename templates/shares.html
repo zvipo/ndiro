@@ -106,12 +106,16 @@
     <script>
         async function loadShares() {
             let data;
+            const container = document.getElementById('sharesContainer');
             try {
                 const resp = await fetch('/api/shares');
                 if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
-                if (!resp.ok) { showNote('Could not load share links.'); return; }
+                if (!resp.ok) { container.innerHTML = ''; showNote('Could not load share links.'); return; }
                 data = await resp.json();
             } catch (e) {
+                // Clear the seeded spinner (and any stale list) so the error
+                // note isn't contradicted by what's on screen.
+                container.innerHTML = '';
                 showNote('Could not load share links.');
                 return;
             }

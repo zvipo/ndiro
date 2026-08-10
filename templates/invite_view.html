@@ -28,10 +28,16 @@
             margin-top: 22px;
         }
 
+        /* Mirrors landing.html's .signin .consent — incl. the anchor colour,
+           without which the privacy link renders browser-default blue. */
         .signin .consent {
+            margin-top: 12px;
+            font-size: 0.78rem;
+            color: var(--dim);
+        }
+
+        .signin .consent a {
             color: var(--muted);
-            font-size: 0.8rem;
-            margin-top: 10px;
         }
 {% endblock %}
 
