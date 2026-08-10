@@ -17,6 +17,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import ai
 import auth
 import config
 import db
@@ -567,6 +568,82 @@ def delete_meal(date_str, meal_id):
         return jsonify({'error': 'Failed to delete meal'}), 500
 
     return jsonify({'deleted': True, 'date': date_str, 'meal_id': meal_id})
+
+
+# --- AI estimators -----------------------------------------------------------
+# Optional feature on the operator's OpenAI key, for every approved user.
+# Cost control is layered: per-IP rate limit (6/min) + per-user daily cap
+# (AI_DAILY_LIMIT per UTC day, race-safe conditional counter in db.py).
+# The use is consumed BEFORE the OpenAI call; upstream failures refund it.
+
+def _consume_ai_use_or_429(user_id):
+    """Returns (today_str, None) when a use was consumed, else (None, response)."""
+    today = _utc_today_str()
+    try:
+        allowed = db.try_consume_ai_use(user_id, today, config.AI_DAILY_LIMIT)
+    except Exception as e:
+        print(f"AI-cap check failed for user {user_id}: {type(e).__name__}")
+        return None, (jsonify({'error': 'AI estimate unavailable right now'}), 503)
+    if not allowed:
+        return None, (jsonify({
+            'error': f'Daily AI limit reached ({config.AI_DAILY_LIMIT} estimates '
+                     'per day) — try again tomorrow.'}), 429)
+    return today, None
+
+
+def _ai_error_response(user_id, today, err):
+    message, status, refundable = err
+    if refundable:
+        db.refund_ai_use(user_id, today)  # best-effort
+    return jsonify({'error': message}), status
+
+
+@app.route('/api/estimate-fiber', methods=['POST'])
+@limiter.limit('6 per minute')
+@auth.approved_required
+def estimate_fiber():
+    """Estimate viscous fiber for a meal description."""
+    if not config.OPENAI_API_KEY:
+        return jsonify({'error': 'AI estimation is not enabled on this server'}), 400
+    data = request.get_json(silent=True) or {}
+    description = (data.get('description') or '').strip()
+    if not description:
+        return jsonify({'error': 'Description is required'}), 400
+    if len(description) > 500:
+        return jsonify({'error': 'Description too long (max 500 characters)'}), 400
+
+    user_id = g.user['user_id']
+    today, blocked = _consume_ai_use_or_429(user_id)
+    if blocked:
+        return blocked
+    result, err = ai.estimate_text(description)
+    if err:
+        return _ai_error_response(user_id, today, err)
+    return jsonify(result)
+
+
+@app.route('/api/estimate-photo', methods=['POST'])
+@limiter.limit('6 per minute')
+@auth.approved_required
+def estimate_photo():
+    """Describe a meal photo and estimate its viscous fiber (vision)."""
+    if not config.OPENAI_API_KEY:
+        return jsonify({'error': 'AI estimation is not enabled on this server'}), 400
+    photo = request.files.get('photo')
+    if not photo or not photo.filename:
+        return jsonify({'error': 'Photo is required'}), 400
+    photo_bytes = photo.read()
+    if len(photo_bytes) > 8 * 1024 * 1024:
+        return jsonify({'error': 'Photo too large for estimation'}), 400
+
+    user_id = g.user['user_id']
+    today, blocked = _consume_ai_use_or_429(user_id)
+    if blocked:
+        return blocked
+    result, err = ai.estimate_photo(photo_bytes)
+    if err:
+        return _ai_error_response(user_id, today, err)
+    return jsonify(result)
 
 
 # --- Review ------------------------------------------------------------------

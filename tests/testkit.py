@@ -32,6 +32,7 @@ import app as app_module  # noqa: E402
 
 app = app_module.app
 app.config['TESTING'] = True
+limiter = app_module.limiter  # tests may .reset() between sections
 
 BASE_URL = 'https://ndiro.test'  # https so the Secure session cookie flows
 
