@@ -47,3 +47,5 @@ AI_DAILY_LIMIT=10
 
 # --- Serving ---
 PORT=8000
+# Optional: in-process photo cache budget in MB (default 64)
+#PHOTO_CACHE_MB=64

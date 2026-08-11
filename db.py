@@ -592,8 +592,13 @@ def photo_key(user_id, date_str, meal_id):
     return f'users/{user_id}/meals/{date_str}/{meal_id}.jpg'
 
 
-def get_photo_bytes(key, owner_user_id, version=''):
+def get_photo_bytes(key, owner_user_id, version):
     """Photo bytes via the LRU cache, or None when absent/refused.
+
+    version MUST be the app's _photo_version for the owning meal — it is the
+    cache key's second half, and a caller inventing its own (or passing '')
+    would cache bytes no photo replace ever invalidates. Deliberately no
+    default: every new caller has to make that decision consciously.
 
     Defense in depth: refuses any key outside the resolved owner's
     users/{user_id}/ prefix, even if a bad key somehow reached a caller.
@@ -632,17 +637,26 @@ def put_photo(file_storage, key):
         Body=jpeg_bytes,
         ContentType='image/jpeg',
     )
+    # Every byte-mutation site must touch the LRU: if the caller's row write
+    # fails after this overwrite, the old version would otherwise keep
+    # serving the OLD bytes from cache while S3 holds the new ones.
+    _photo_cache.drop_prefix(key)
 
 
 def delete_photo(key):
-    """Best-effort delete (never raises)."""
+    """Best-effort delete (never raises).
+
+    Cache purge AFTER the S3 delete: purging first would let an in-flight
+    get_photo_bytes (no lock held across S3 I/O) repopulate the LRU with the
+    just-deleted bytes."""
     if not key or not config.S3_BUCKET:
         return
-    _photo_cache.drop_prefix(key)
     try:
         _s3_client().delete_object(Bucket=config.S3_BUCKET, Key=key)
     except Exception as e:
         print(f"Error deleting photo object: {type(e).__name__}")
+    finally:
+        _photo_cache.drop_prefix(key)
 
 
 def delete_user_photos(user_id):
@@ -657,19 +671,24 @@ def delete_user_photos(user_id):
         return 0
     deleted = 0
     prefix = f'users/{user_id}/'
-    _photo_cache.drop_prefix(prefix)  # deleted users' bytes must not linger
     kwargs = {'Bucket': config.S3_BUCKET, 'Prefix': prefix}
-    while True:
-        resp = _s3_client().list_objects_v2(**kwargs)
-        objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
-        if objs:
-            result = _s3_client().delete_objects(
-                Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
-            errors = result.get('Errors') or []
-            if errors:
-                raise RuntimeError(f'{len(errors)} S3 object(s) failed to delete')
-            deleted += len(objs)
-        if not resp.get('IsTruncated'):
-            break
-        kwargs['ContinuationToken'] = resp['NextContinuationToken']
+    try:
+        while True:
+            resp = _s3_client().list_objects_v2(**kwargs)
+            objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
+            if objs:
+                result = _s3_client().delete_objects(
+                    Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
+                errors = result.get('Errors') or []
+                if errors:
+                    raise RuntimeError(f'{len(errors)} S3 object(s) failed to delete')
+                deleted += len(objs)
+            if not resp.get('IsTruncated'):
+                break
+            kwargs['ContinuationToken'] = resp['NextContinuationToken']
+    finally:
+        # AFTER the S3 wipe (even a partial one): purging first would let an
+        # in-flight read repopulate the LRU with a deleted user's bytes,
+        # which nothing would ever purge again.
+        _photo_cache.drop_prefix(prefix)
     return deleted

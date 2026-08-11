@@ -30,6 +30,7 @@ resp = tk.post(alice, '/api/meals', data={
     'photo': (io.BytesIO(tk.TINY_JPEG), 'photo.jpg'),
 }, content_type='multipart/form-data')
 assert resp.status_code == 201, resp.get_json()
+meal_id = resp.get_json()['meal_id']
 
 tk.check('review page renders for approved user', tk.get(alice, '/review').status_code == 200)
 tk.check('review page blocked for anonymous', tk.get(tk.client(), '/review').status_code == 302)
@@ -129,6 +130,12 @@ tk.check('photo endpoint failure modes identical too (dead tokens + missing phot
          tk.get(anon, f'/s/nope/photo/{DAY}/anything').data ==
          tk.get(anon, f'/s/{token_never}/photo/{DAY}/no-such-meal').data ==
          tk.get(anon, f'/s/{token}/meals').data)
+# The load-bearing case: a REVOKED token against a photo that EXISTS must be
+# the dead-token 404, proving _resolve_share gates the photo route itself.
+revoked_photo = tk.get(anon, f'/s/{token}/photo/{DAY}/{meal_id}')
+tk.check('revoked token cannot fetch an existing photo',
+         revoked_photo.status_code == 404 and
+         revoked_photo.data == tk.get(anon, f'/s/nope/meals').data)
 
 tk.check('revoked/expired rows are kept', len(db.list_user_shares('sub-alice')) == 2)
 

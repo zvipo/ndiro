@@ -91,7 +91,7 @@ raises without it (tests set their own).
   `nutrients` is a Map of Decimals (`fiber_g` = viscous soluble fiber; add
   `protein_g` later by extending `_nutrients_from_form` only). A month view is
   ONE Query (`begins_with('YYYY-MM-')`); N-day windows use
-  `between(f'{start}#', f'{end}#~')`. There is NO caching layer — per-user
+  `between(f'{start}#', f'{end}#~')`. There is NO meal-data caching layer (the only cache is the photo byte LRU) — per-user
   Queries are cheap; do not port the old tracker's cache/thread machinery.
 - **shares** — PK `share_token` = `token_urlsafe(24)` (192 bits). `user_id`,
   `created_at`, `expires_at?` (epoch; absent = never), `revoked`, `label?`.
@@ -140,7 +140,7 @@ delete_photo/delete_user_photos purge the LRU.
    relative paths (no `//`, no `\`).
 6. Rate limits (Flask-Limiter, `memory://` — valid ONLY with one gunicorn
    worker, which the Dockerfile pins): login/callback 10/min, `/s/*` and
-   `/i/*` 30/min, photo proxy routes 120/min, invite creation 10/min,
+   `/i/*` 30/min, photo proxy routes 600/min, invite creation 10/min,
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
    race-safe two-call conditional counter in db.py (increment BEFORE the
    OpenAI call; refund on upstream failure only).

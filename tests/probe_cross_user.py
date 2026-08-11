@@ -48,8 +48,10 @@ tk.check('owner fetches her photo through the proxy',
          resp.data == tk.FIXTURES.s3.objects[f'users/sub-alice/meals/{DAY}/{meal_id}.jpg'])
 tk.check("bob fetching alice's photo path is 404 (his own namespace)",
          tk.get(bob, f'/photo/{DAY}/{meal_id}').status_code == 404)
-tk.check('anonymous photo fetch redirects to login',
-         tk.get(tk.client(), f'/photo/{DAY}/{meal_id}').status_code == 302)
+# A plain 404, never a login redirect: an expired-session <img> bouncing
+# into /login would rewrite oauth_state and could break an in-flight sign-in.
+tk.check('anonymous photo fetch is a plain 404',
+         tk.get(tk.client(), f'/photo/{DAY}/{meal_id}').status_code == 404)
 
 resp = tk.get(alice, f'/api/meals?date={DAY}')
 data = resp.get_json()
@@ -98,7 +100,7 @@ tk.check('forged user_id/sk form fields ignored (meal lands under bob)',
 # Bob cannot read Alice's photo bytes through any payload: the byte-fetch
 # helper refuses keys outside the resolved owner's prefix outright.
 tk.check('photo byte fetch refuses foreign-prefix key',
-         db.get_photo_bytes(f'users/sub-alice/meals/{DAY}/{meal_id}.jpg', 'sub-bob') is None)
+         db.get_photo_bytes(f'users/sub-alice/meals/{DAY}/{meal_id}.jpg', 'sub-bob', 'v') is None)
 
 # --- Alice's data survived all probes intact ---------------------------------
 row = db.get_meal('sub-alice', DAY, meal_id)

@@ -425,8 +425,13 @@ def _read_meal_form(form, nutrient_key):
 
 
 def _assemble_meal_item(user_id, date_str, meal_id, description, context,
-                        nutrients, photo_key, created_at, form):
-    """Build a meal item dict (shared by add/edit)."""
+                        nutrients, photo_key, created_at, form,
+                        photo_changed=False, prev_photo_v=None):
+    """Build a meal item dict (shared by add/edit).
+
+    photo_v stamps WHEN the photo bytes last changed — it drives the photo
+    proxy's cache version, so it must move only on upload/replace
+    (photo_changed), never on text edits (prev_photo_v carries over)."""
     now_iso = datetime.now(timezone.utc).isoformat()
     item = {
         'user_id': user_id,
@@ -444,14 +449,21 @@ def _assemble_meal_item(user_id, date_str, meal_id, description, context,
         item['ai_assisted'] = True
     if photo_key:
         item['photo_key'] = photo_key
+        if photo_changed:
+            item['photo_v'] = now_iso
+        elif prev_photo_v:
+            item['photo_v'] = prev_photo_v
     return item
 
 
 def _photo_version(item):
-    """Photo cache/ETag version: digest of the meal's updated_at, which bumps
-    on every write — so a photo replace (same S3 key) yields a new URL and the
-    browser + LRU caches can treat each version as immutable."""
-    return hashlib.sha1((item.get('updated_at') or '').encode()).hexdigest()[:16]
+    """Photo cache/ETag version: digest of photo_v — a timestamp written ONLY
+    when the photo bytes change (upload/replace), so text-only meal edits do
+    NOT bust browser/LRU caches. Legacy rows (pre-photo_v) fall back to
+    created_at, which is equally stable across edits; their next photo
+    replace writes photo_v and takes over."""
+    stamp = item.get('photo_v') or item.get('created_at') or ''
+    return hashlib.sha1(stamp.encode()).hexdigest()[:16]
 
 
 def _meal_to_json(item, photo_base='/photo'):
@@ -471,8 +483,11 @@ def _meal_to_json(item, photo_base='/photo'):
         'ai_assisted': bool(item.get('ai_assisted')),
         'nutrients': {k: float(v) for k, v in (item.get('nutrients') or {}).items()},
         'has_photo': bool(photo_key),
+        # No URL without a bucket: the proxy could never resolve it, and a
+        # broken-image icon per meal is worse than no image (S3_BUCKET is
+        # documented as optional).
         'photo_url': (f"{photo_base}/{item['date']}/{meal_id}?v={_photo_version(item)}"
-                      if photo_key else None),
+                      if photo_key and config.S3_BUCKET else None),
         'created_at': item.get('created_at'),
         'updated_at': item.get('updated_at'),
     }
@@ -625,7 +640,8 @@ def add_meal():
             return jsonify({'error': 'Photo upload failed'}), 502
 
     item = _assemble_meal_item(user_id, date_str, meal_id, description, context,
-                               nutrients, photo_key, None, request.form)
+                               nutrients, photo_key, None, request.form,
+                               photo_changed=bool(photo_key))
 
     try:
         db.put_meal(item)
@@ -697,7 +713,9 @@ def update_meal(date_str, meal_id):
 
     item = _assemble_meal_item(user_id, date_str, meal_id, description, context,
                                nutrients, photo_key, existing.get('created_at'),
-                               request.form)
+                               request.form,
+                               photo_changed=bool(photo and photo.filename),
+                               prev_photo_v=existing.get('photo_v'))
 
     try:
         db.put_meal(item)
@@ -744,8 +762,9 @@ def delete_meal(date_str, meal_id):
 def _serve_photo(owner_user_id, date_str, meal_id, not_found, cache_control):
     """Shared photo responder. not_found: zero-arg callable returning the
     audience's exact 404 (owner vs share bodies differ; each audience's dead
-    states are byte-identical). ?v= is never read — the version/ETag is
-    re-derived from the meal row that also proves authorization."""
+    states are byte-identical). The version/ETag is re-derived from the meal
+    row that also proves authorization; a ?v= that DISAGREES with it 404s —
+    an immutable URL must never serve bytes other than its own version."""
     if not _valid_date(date_str):
         return not_found()
     try:
@@ -756,7 +775,12 @@ def _serve_photo(owner_user_id, date_str, meal_id, not_found, cache_control):
     if not item or not item.get('photo_key'):
         return not_found()
     etag = _photo_version(item)
-    if request.if_none_match.contains(etag):
+    if request.args.get('v') not in (None, '', etag):
+        return not_found()  # stale version URL: dead, never "the current bytes"
+    # Weak comparison per RFC 7232: intermediaries (Cloudflare fronts this
+    # app) may downgrade ETags to W/"..." and clients echo that form back;
+    # strong contains() would miss and re-send the full image every day.
+    if request.if_none_match.contains_weak(etag):
         resp = app.response_class(status=304)  # no S3, no cache touch
     else:
         key = db.photo_key(owner_user_id, date_str, meal_id)
@@ -774,10 +798,16 @@ def _serve_photo(owner_user_id, date_str, meal_id, not_found, cache_control):
 
 
 @app.route('/photo/<date_str>/<meal_id>')
-@limiter.limit('120 per minute')  # a 31-photo month first-load fits; repeats are browser-cached
-@auth.approved_required
+@limiter.limit('600 per minute')  # per-image route: photo-heavy month views (100+ imgs) + shared-NAT households must fit
 def photo(date_str, meal_id):
-    return _serve_photo(g.user['user_id'], date_str, meal_id,
+    """Owner photo proxy. Auth is inline (NOT approved_required): its redirect
+    would send a background <img> from an expired session into /login, where
+    it rewrites oauth_state/login_next and can break an in-flight sign-in.
+    An image request gets a plain 404 instead — nothing to enumerate."""
+    user = auth.current_user()  # fresh row read, like the decorator
+    if not user or user.get('status') not in auth.APPROVED_STATUSES:
+        return jsonify({'error': 'Not found'}), 404
+    return _serve_photo(user['user_id'], date_str, meal_id,
                         lambda: (jsonify({'error': 'Not found'}), 404),
                         'private, max-age=31536000, immutable')
 
@@ -974,7 +1004,7 @@ def share_meals(token):
 
 
 @app.route('/s/<token>/photo/<date_str>/<meal_id>')
-@limiter.limit('120 per minute')  # per-image; the page/data routes stay at 30
+@limiter.limit('600 per minute')  # per-image; the page/data routes stay at 30
 def share_photo(token, date_str, meal_id):
     """Token-scoped photo proxy: owner comes from the token row, the session
     is never consulted. max-age is ONE DAY (not the owner route's year) so a

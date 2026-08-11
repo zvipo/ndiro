@@ -52,12 +52,34 @@ resp = tk.get(alice, url_v1, headers={'If-None-Match': etag})
 tk.check('If-None-Match returns 304 with an empty body',
          resp.status_code == 304 and resp.data == b'' and
          tk.FIXTURES.s3.get_calls == calls_before)
+# Weak validators (Cloudflare downgrades ETags to W/"..." when transforming)
+# must ALSO 304, or every daily share revalidation re-downloads the image.
+weak = f'W/{etag}'
+resp = tk.get(alice, url_v1, headers={'If-None-Match': weak})
+tk.check('weak If-None-Match also returns 304', resp.status_code == 304)
+
+# --- Stale-version URLs are dead, never "current bytes" -------------------------
+resp = tk.get(alice, url_v1.split('?')[0] + '?v=deadbeefdeadbeef')
+tk.check('mismatched ?v= is 404 (immutable URLs never serve other bytes)',
+         resp.status_code == 404)
+tk.check('version-less URL still serves (legacy/manual fetches)',
+         tk.get(alice, url_v1.split('?')[0]).status_code == 200)
 
 # --- HEAD ----------------------------------------------------------------------
 resp = alice.head(url_v1, base_url=tk.BASE_URL)
 tk.check('HEAD returns headers with an empty body',
          resp.status_code == 200 and resp.data == b'' and
          'private' in resp.headers.get('Cache-Control', ''))
+
+# --- Text-only edits do NOT bust the photo version ------------------------------
+resp = tk.put(alice, f'/api/meals/{DAY}/{meal_id}', data={
+    'description': 'Oats with berries and a typo fix', 'fiber_g': '4.0'})
+tk.check('text-only edit keeps the SAME photo URL (photo_v stable)',
+         resp.status_code == 200 and resp.get_json()['photo_url'] == url_v1)
+calls_before = tk.FIXTURES.s3.get_calls
+tk.get(alice, url_v1)
+tk.check('text-only edit did not evict the cached bytes',
+         tk.FIXTURES.s3.get_calls == calls_before)
 
 # --- Replace busts the version --------------------------------------------------
 NEW_JPEG = tk.TINY_JPEG + b'\x00'  # distinct bytes, still parseable tail-junk JPEG
@@ -140,9 +162,23 @@ c.drop_prefix('users/u/')
 tk.check('drop_prefix clears the subtree and its accounting',
          c.get('users/u/a.jpg', 'v2') is None and c._size == 0)
 
+# --- No bucket => no photo_url (S3_BUCKET is documented optional) ----------------
+import config
+resp = tk.post(alice, '/api/meals', data={
+    'description': 'Dinner', 'date': DAY, 'time': '19:00',
+    'photo': (io.BytesIO(tk.TINY_JPEG), 'p.jpg')}, content_type='multipart/form-data')
+meal3_id = resp.get_json()['meal_id']
+_bucket = config.S3_BUCKET
+config.S3_BUCKET = None
+resp = tk.get(alice, f'/api/meals?date={DAY}&anchor={DAY}')
+m = [x for d in resp.get_json()['days'] for x in d['meals'] if x['meal_id'] == meal3_id][0]
+tk.check('bucketless deploys emit has_photo but NO unresolvable photo_url',
+         m['has_photo'] is True and m['photo_url'] is None)
+config.S3_BUCKET = _bucket
+
 # --- Rate limit -------------------------------------------------------------------
 tk.limiter.reset()
-statuses = [tk.get(alice, f'/photo/{DAY}/{meal_id}').status_code for _ in range(130)]
-tk.check('photo route rate limit kicks in past 120/min', 429 in statuses)
+statuses = [tk.get(alice, f'/photo/{DAY}/{meal_id}').status_code for _ in range(610)]
+tk.check('photo route rate limit kicks in past 600/min', 429 in statuses)
 
 tk.finish('M8 photo proxy + cache')
