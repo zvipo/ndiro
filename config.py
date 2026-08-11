@@ -153,6 +153,8 @@ NUTRIENT_CATALOG = [
      'goal': 30, 'direction': 'at_least'},
     {'key': 'protein_g', 'label': 'protein', 'unit': 'g',
      'goal': 90, 'direction': 'at_least'},
+    {'key': 'calories_kcal', 'label': 'calories', 'unit': 'kcal',
+     'goal': 2000, 'direction': 'at_most'},
     {'key': 'added_sugar_g', 'label': 'added sugar', 'unit': 'g',
      'goal': 25, 'direction': 'at_most'},
     {'key': 'sodium_mg', 'label': 'sodium', 'unit': 'mg',
