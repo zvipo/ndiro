@@ -75,8 +75,12 @@ resp = tk.get(anon, f'/s/{token}/meals?month={DAY[:7]}&anchor={DAY}')
 data = resp.get_json()
 meals = [m for d in data['days'] for m in d['meals']]
 tk.check('share data returns alice meals', resp.status_code == 200 and len(meals) == 1)
-tk.check('share photo presigned under ALICE prefix',
-         'users/sub-alice/' in (meals[0]['photo_url'] or ''))
+tk.check('share photo_url is the token-scoped proxy path',
+         meals[0]['photo_url'].startswith(f'/s/{token}/photo/{DAY}/') and
+         '?v=' in meals[0]['photo_url'])
+photo_resp = tk.get(anon, meals[0]['photo_url'])
+tk.check('anon fetches the share photo through the proxy',
+         photo_resp.status_code == 200 and photo_resp.mimetype == 'image/jpeg')
 tk.check('share meals endpoint rejects POST (read-only)',
          tk.post(anon, f'/s/{token}/meals').status_code == 405)
 
@@ -118,8 +122,13 @@ tk.check('missing/revoked/expired pages byte-identical',
          missing_page.data == revoked_page.data == expired_page.data)
 tk.check('data endpoint failure modes identical too',
          tk.get(anon, f'/s/{token}/meals').data ==
-         tk.get(anon, '/s/nope/meals').data ==
+         tk.get(anon, f'/s/nope/meals').data ==
          tk.get(anon, f'/s/{token_never}/meals').data)
+tk.check('photo endpoint failure modes identical too (dead tokens + missing photo)',
+         tk.get(anon, f'/s/{token}/photo/{DAY}/anything').data ==
+         tk.get(anon, f'/s/nope/photo/{DAY}/anything').data ==
+         tk.get(anon, f'/s/{token_never}/photo/{DAY}/no-such-meal').data ==
+         tk.get(anon, f'/s/{token}/meals').data)
 
 tk.check('revoked/expired rows are kept', len(db.list_user_shares('sub-alice')) == 2)
 

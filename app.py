@@ -7,6 +7,7 @@ auth.py (OAuth + guards), ai.py (nutrient estimators). All routes live at
 root so the Google redirect URI and root-absolute template paths never change.
 """
 import calendar
+import hashlib
 import re
 import secrets
 import time
@@ -446,10 +447,18 @@ def _assemble_meal_item(user_id, date_str, meal_id, description, context,
     return item
 
 
-def _meal_to_json(item, owner_user_id):
+def _photo_version(item):
+    """Photo cache/ETag version: digest of the meal's updated_at, which bumps
+    on every write — so a photo replace (same S3 key) yields a new URL and the
+    browser + LRU caches can treat each version as immutable."""
+    return hashlib.sha1((item.get('updated_at') or '').encode()).hexdigest()[:16]
+
+
+def _meal_to_json(item, photo_base='/photo'):
     """DynamoDB meal item -> JSON-safe dict (Decimals become floats).
-    Photo URLs are re-signed fresh on every response, only ever under the
-    resolved owner's users/{user_id}/ prefix."""
+    Photo URLs point at the authenticated proxy (photo_base picks the
+    audience: '/photo' for the owner, '/s/<token>/photo' for share views);
+    ?v= is a cache-buster only — the route re-derives it server-side."""
     photo_key = item.get('photo_key')
     meal_id = item['meal_id']
     return {
@@ -462,7 +471,8 @@ def _meal_to_json(item, owner_user_id):
         'ai_assisted': bool(item.get('ai_assisted')),
         'nutrients': {k: float(v) for k, v in (item.get('nutrients') or {}).items()},
         'has_photo': bool(photo_key),
-        'photo_url': db.presign_photo(photo_key, owner_user_id),
+        'photo_url': (f"{photo_base}/{item['date']}/{meal_id}?v={_photo_version(item)}"
+                      if photo_key else None),
         'created_at': item.get('created_at'),
         'updated_at': item.get('updated_at'),
     }
@@ -477,9 +487,10 @@ def _day_totals(meals_json):
     return totals
 
 
-def _meals_payload(user_id, args):
+def _meals_payload(user_id, args, photo_base='/photo'):
     """Build the meals payload for one user: a single date (?date=), a month
     (?month=YYYY-MM), or the last N days (?days=N, default 7, max 31).
+    photo_base picks the photo-proxy audience ('/photo' or '/s/<token>/photo').
 
     ?anchor=YYYY-MM-DD is the CLIENT's local today — it bounds future-month
     validation and sets the payload's `today`. The server clock (UTC) is never
@@ -539,7 +550,7 @@ def _meals_payload(user_id, args):
 
     days = []
     for d in dates:
-        meals = [_meal_to_json(item, user_id) for item in by_date[d]]
+        meals = [_meal_to_json(item, photo_base) for item in by_date[d]]
         days.append({'date': d, 'totals': _day_totals(meals), 'meals': meals})
 
     payload = {'today': today.isoformat(), 'days': days}
@@ -624,7 +635,7 @@ def add_meal():
             db.delete_photo(photo_key)  # don't orphan the just-uploaded object
         return jsonify({'error': 'Failed to save meal'}), 500
 
-    return jsonify(_meal_to_json(item, user_id)), 201
+    return jsonify(_meal_to_json(item)), 201
 
 
 @app.route('/api/meals/<date_str>/<meal_id>', methods=['PUT'])
@@ -696,7 +707,7 @@ def update_meal(date_str, meal_id):
 
     if delete_after_commit:
         db.delete_photo(delete_after_commit)  # best-effort, post-commit
-    return jsonify(_meal_to_json(item, user_id))
+    return jsonify(_meal_to_json(item))
 
 
 @app.route('/api/meals/<date_str>/<meal_id>', methods=['DELETE'])
@@ -722,6 +733,53 @@ def delete_meal(date_str, meal_id):
 
     db.delete_photo(existing.get('photo_key'))  # best-effort, post-commit
     return jsonify({'deleted': True, 'date': date_str, 'meal_id': meal_id})
+
+
+# --- Photo proxy -------------------------------------------------------------
+# Photos are served THROUGH the app (in-process LRU + browser caching via
+# versioned URLs) instead of presigned S3 links. Auth is the meal-row read:
+# owner routes key on the session user_id, share routes on the token row —
+# the S3 key is rebuilt server-side either way, never taken from URL or row.
+
+def _serve_photo(owner_user_id, date_str, meal_id, not_found, cache_control):
+    """Shared photo responder. not_found: zero-arg callable returning the
+    audience's exact 404 (owner vs share bodies differ; each audience's dead
+    states are byte-identical). ?v= is never read — the version/ETag is
+    re-derived from the meal row that also proves authorization."""
+    if not _valid_date(date_str):
+        return not_found()
+    try:
+        item = db.get_meal(owner_user_id, date_str, meal_id)
+    except Exception as e:
+        print(f"Error fetching meal for photo (user {owner_user_id}): {type(e).__name__}")
+        return jsonify({'error': 'Photo unavailable'}), 502
+    if not item or not item.get('photo_key'):
+        return not_found()
+    etag = _photo_version(item)
+    if request.if_none_match.contains(etag):
+        resp = app.response_class(status=304)  # no S3, no cache touch
+    else:
+        key = db.photo_key(owner_user_id, date_str, meal_id)
+        try:
+            data = db.get_photo_bytes(key, owner_user_id, etag)
+        except Exception as e:
+            print(f"Error fetching photo bytes (user {owner_user_id}): {type(e).__name__}")
+            return jsonify({'error': 'Photo unavailable'}), 502
+        if data is None:
+            return not_found()
+        resp = app.response_class(data, mimetype='image/jpeg')
+    resp.set_etag(etag)
+    resp.headers['Cache-Control'] = cache_control
+    return resp
+
+
+@app.route('/photo/<date_str>/<meal_id>')
+@limiter.limit('120 per minute')  # a 31-photo month first-load fits; repeats are browser-cached
+@auth.approved_required
+def photo(date_str, meal_id):
+    return _serve_photo(g.user['user_id'], date_str, meal_id,
+                        lambda: (jsonify({'error': 'Not found'}), 404),
+                        'private, max-age=31536000, immutable')
 
 
 # --- AI estimators -----------------------------------------------------------
@@ -889,12 +947,18 @@ def share_view(token):
                            meals_url=f'/s/{token}/meals')
 
 
+def _share_404():
+    """The ONE dead-share JSON body: every share data/photo failure mode
+    (dead token, missing meal, missing photo) must be byte-identical."""
+    return jsonify({'error': 'This link has expired or is no longer available'}), 404
+
+
 @app.route('/s/<token>/meals')
 @limiter.limit('30 per minute')
 def share_meals(token):
     share = _resolve_share(token)
     if share is None:
-        return jsonify({'error': 'This link has expired or is no longer available'}), 404
+        return _share_404()
     # Month reads only — the minimal surface the share page needs.
     args = {'anchor': request.args.get('anchor')}
     month = request.args.get('month')
@@ -904,8 +968,22 @@ def share_meals(token):
         anchor = args['anchor']
         args['month'] = anchor[:7] if anchor and _valid_date(anchor) \
             else datetime.now(timezone.utc).strftime('%Y-%m')
-    payload, status = _meals_payload(share['user_id'], args)
+    payload, status = _meals_payload(share['user_id'], args,
+                                     photo_base=f'/s/{token}/photo')
     return jsonify(payload), status
+
+
+@app.route('/s/<token>/photo/<date_str>/<meal_id>')
+@limiter.limit('120 per minute')  # per-image; the page/data routes stay at 30
+def share_photo(token, date_str, meal_id):
+    """Token-scoped photo proxy: owner comes from the token row, the session
+    is never consulted. max-age is ONE DAY (not the owner route's year) so a
+    revoked recipient's browser cache ages out quickly."""
+    share = _resolve_share(token)
+    if share is None:
+        return _share_404()
+    return _serve_photo(share['user_id'], date_str, meal_id, _share_404,
+                        'private, max-age=86400')
 
 
 def _share_to_json(row):

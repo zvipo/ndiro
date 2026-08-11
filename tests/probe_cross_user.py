@@ -40,7 +40,16 @@ meal_id = meal['meal_id']
 tk.check('meal time derived from client time', meal['time'] == '12:30')
 tk.check('photo stored under users/sub-alice/ prefix',
          list(tk.FIXTURES.s3.objects) == [f'users/sub-alice/meals/{DAY}/{meal_id}.jpg'])
-tk.check('photo_url presigned for owner', bool(meal['photo_url']))
+tk.check('photo_url is the versioned owner proxy path',
+         meal['photo_url'].startswith(f'/photo/{DAY}/') and '?v=' in meal['photo_url'])
+resp = tk.get(alice, meal['photo_url'])
+tk.check('owner fetches her photo through the proxy',
+         resp.status_code == 200 and resp.mimetype == 'image/jpeg' and
+         resp.data == tk.FIXTURES.s3.objects[f'users/sub-alice/meals/{DAY}/{meal_id}.jpg'])
+tk.check("bob fetching alice's photo path is 404 (his own namespace)",
+         tk.get(bob, f'/photo/{DAY}/{meal_id}').status_code == 404)
+tk.check('anonymous photo fetch redirects to login',
+         tk.get(tk.client(), f'/photo/{DAY}/{meal_id}').status_code == 302)
 
 resp = tk.get(alice, f'/api/meals?date={DAY}')
 data = resp.get_json()
