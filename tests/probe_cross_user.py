@@ -2,7 +2,7 @@
 
 Proves tenant isolation: user B's session cannot read, edit, or delete user
 A's meals through ANY API path, forged form fields included; photos live only
-under users/{user_id}/ and are presigned only for their owner.
+under users/{user_id}/ and are readable only through the owner-scoped proxy.
 
 Run:  python tests/probe_cross_user.py
 """
@@ -95,10 +95,10 @@ tk.check('forged user_id/sk form fields ignored (meal lands under bob)',
          db.get_meal('sub-bob', DAY, resp.get_json()['meal_id']) is not None and
          len(db.query_meals_day('sub-alice', DAY)) == 1)
 
-# Bob cannot presign Alice's photo through his own payloads: his meals carry
-# no photo, and the defensive presigner refuses foreign prefixes outright.
-tk.check('presign refuses foreign-prefix key',
-         db.presign_photo(f'users/sub-alice/meals/{DAY}/{meal_id}.jpg', 'sub-bob') is None)
+# Bob cannot read Alice's photo bytes through any payload: the byte-fetch
+# helper refuses keys outside the resolved owner's prefix outright.
+tk.check('photo byte fetch refuses foreign-prefix key',
+         db.get_photo_bytes(f'users/sub-alice/meals/{DAY}/{meal_id}.jpg', 'sub-bob') is None)
 
 # --- Alice's data survived all probes intact ---------------------------------
 row = db.get_meal('sub-alice', DAY, meal_id)

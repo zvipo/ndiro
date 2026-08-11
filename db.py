@@ -645,28 +645,6 @@ def delete_photo(key):
         print(f"Error deleting photo object: {type(e).__name__}")
 
 
-def presign_photo(key, owner_user_id):
-    """Presigned GET URL for a photo, or None.
-
-    Defense in depth: refuses to sign any key outside the resolved owner's
-    users/{user_id}/ prefix, even if a bad key somehow reached the table.
-    """
-    if not key or not config.S3_BUCKET:
-        return None
-    if not key.startswith(f'users/{owner_user_id}/'):
-        print(f"REFUSED to presign key outside user prefix (user {owner_user_id})")
-        return None
-    try:
-        return _s3_client().generate_presigned_url(
-            'get_object',
-            Params={'Bucket': config.S3_BUCKET, 'Key': key},
-            ExpiresIn=config.PHOTO_URL_TTL,
-        )
-    except Exception as e:
-        print(f"Error presigning photo URL: {type(e).__name__}")
-        return None
-
-
 def delete_user_photos(user_id):
     """Delete the whole users/{user_id}/ S3 prefix (account deletion).
 

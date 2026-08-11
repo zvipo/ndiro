@@ -187,9 +187,6 @@ class FakeS3:
         self.objects.pop(Key, None)
         return {}
 
-    def generate_presigned_url(self, operation, Params, ExpiresIn):
-        return f'https://fake-s3.invalid/{Params["Bucket"]}/{Params["Key"]}?sig=stub'
-
     def list_objects_v2(self, Bucket, Prefix='', **kwargs):
         contents = [{'Key': k} for k in sorted(self.objects) if k.startswith(Prefix)]
         resp = {'IsTruncated': False}

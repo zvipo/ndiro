@@ -28,6 +28,7 @@ python tests/test_m3_shares.py       # shares, identical 404s, account deletion
 python tests/test_m4_ai.py           # AI caps/refunds/rate limits
 python tests/test_m6_nutrient.py     # per-user tracked micro (settings/gating)
 python tests/test_m7_invites.py      # invite links (auto-approve, single-use)
+python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -103,18 +104,27 @@ raises without it (tests set their own).
   scan; capped at `MAX_ACTIVE_INVITES` active per user.
 
 S3: photos at `users/{user_id}/meals/{date}/{meal_id}.jpg` in a private bucket;
-keys built **server-side only** in db.py; presigned GETs (1h) re-signed every
-response; `presign_photo` refuses keys outside the owner's prefix; replacement
-reuses the same key (no orphans).
+keys built **server-side only** in db.py; served THROUGH the app (never
+presigned): `/photo/<date>/<meal_id>` (owner session) and
+`/s/<token>/photo/...` (token-scoped), both 120/min, backed by a
+byte-budgeted in-process LRU (`PHOTO_CACHE_MB`, default 64 — valid because
+of the single gunicorn worker) with `?v=sha1(updated_at)` versioned URLs +
+ETag/304 so browsers cache too (`Cache-Control: private`; owner max-age 1y
+immutable, share max-age 1 day so revoked recipients' caches age out).
+`get_photo_bytes` refuses keys outside the owner's prefix; replacement
+reuses the same key (no orphans; the version bump busts caches);
+delete_photo/delete_user_photos purge the LRU.
 
 ## Security invariants (breaking any of these is a P0 — re-verify after changes)
 
 1. Every meal read/write keys on `user_id = session['user_id']` — user_id
    NEVER comes from URL/query/form. `tests/probe_cross_user.py` enforces this.
-2. `/s/<token>` + `/s/<token>/meals`: read-only, scoped to the token row's
-   user_id; the session is read ONLY for menu chrome on the page, never for
-   data access (`/s/<token>/meals` stays fully session-independent); the
-   nutrient config shown comes from the token row's OWNER, never the viewer;
+2. `/s/<token>` + `/s/<token>/meals` + `/s/<token>/photo/...`: read-only,
+   scoped to the token row's user_id; the session is read ONLY for menu
+   chrome on the page, never for data access (the data and photo routes stay
+   fully session-independent); the nutrient config shown comes from the token
+   row's OWNER, never the viewer; share photo dead states (dead token,
+   missing meal, missing photo) share ONE byte-identical 404 (`_share_404`);
    missing/revoked/expired tokens are byte-identical 404s (no enumeration
    oracle — the share 404 pins `login_next='/'` so the token path never
    lands in the page).
@@ -130,7 +140,7 @@ reuses the same key (no orphans).
    relative paths (no `//`, no `\`).
 6. Rate limits (Flask-Limiter, `memory://` — valid ONLY with one gunicorn
    worker, which the Dockerfile pins): login/callback 10/min, `/s/*` and
-   `/i/*` 30/min, invite creation 10/min,
+   `/i/*` 30/min, photo proxy routes 120/min, invite creation 10/min,
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
    race-safe two-call conditional counter in db.py (increment BEFORE the
    OpenAI call; refund on upstream failure only).
@@ -161,7 +171,5 @@ reuses the same key (no orphans).
   first — it sets env vars and installs the fakes before app import. Fakes
   implement the exact boto3 surface db.py uses; if you add a new condition
   expression shape, extend `tests/fakes.py`.
-- Photo URLs expire after 1h — a page left open longer shows broken thumbnails
-  until refresh; known PoC tradeoff.
 - Account deletion order: photos → meals → shares → invites → user row LAST
   (retryable).
