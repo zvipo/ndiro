@@ -6,6 +6,7 @@ ConditionExpressions used by the AI counter and share revocation. No AWS
 credentials or network access required.
 """
 from copy import deepcopy
+from io import BytesIO
 from types import SimpleNamespace
 
 from boto3.dynamodb.conditions import AttributeBase, ConditionBase
@@ -167,10 +168,20 @@ class FakeTable:
 class FakeS3:
     def __init__(self):
         self.objects = {}
+        self.get_calls = 0  # lets tests assert cache hits vs S3 round-trips
 
     def put_object(self, Bucket, Key, Body, ContentType=None):
         self.objects[Key] = Body.read() if hasattr(Body, 'read') else Body
         return {}
+
+    def get_object(self, Bucket, Key):
+        self.get_calls += 1
+        if Key not in self.objects:
+            raise ClientError(
+                {'Error': {'Code': 'NoSuchKey', 'Message': 'The specified key '
+                                                           'does not exist.'}},
+                'GetObject')
+        return {'Body': BytesIO(self.objects[Key])}
 
     def delete_object(self, Bucket, Key):
         self.objects.pop(Key, None)

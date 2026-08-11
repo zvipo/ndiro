@@ -37,6 +37,9 @@ INVITES_TABLE = os.getenv('INVITES_TABLE', 'ndiro-invites')
 # clear message and text-only meals still work.
 S3_BUCKET = os.getenv('S3_BUCKET')
 PHOTO_URL_TTL = 3600  # presigned GET expiry (seconds); every response re-signs
+# In-process LRU for proxied photo bytes (single gunicorn worker — see the
+# rate limiter's memory:// rationale). Shrink on RAM-tight hosts.
+PHOTO_CACHE_MB = int(os.getenv('PHOTO_CACHE_MB', '64'))
 
 # Uploads are client-side downscaled to ~200-400KB JPEGs; 16MB is the backstop.
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024
