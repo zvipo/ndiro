@@ -11,7 +11,9 @@ users; the scans below are commented where they'd be wrong at larger scale):
   shares: PK share_token
 """
 import secrets
+import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -536,8 +538,89 @@ def delete_user_invites(user_id):
 # Keys are built HERE ONLY, from the resolved user_id + validated date +
 # server-generated meal_id — never from client input.
 
+class _PhotoCache:
+    """Byte-budgeted LRU for proxied photo bytes, keyed (s3_key, version).
+
+    Valid because gunicorn runs ONE worker (same rationale as the memory://
+    rate limiter); the lock covers the 8 request threads. It guards only the
+    dict/size bookkeeping — never held across S3 I/O. Versioned keys mean a
+    photo replace (same S3 key, new meal updated_at) misses naturally; stale
+    versions are dropped on put or age out via LRU. No stats and no logging:
+    photo activity is meal data (invariant #8)."""
+
+    def __init__(self, max_bytes):
+        self.max_bytes = max_bytes
+        self._items = OrderedDict()  # (s3_key, version) -> bytes
+        self._size = 0
+        self._lock = threading.Lock()
+
+    def get(self, s3_key, version):
+        with self._lock:
+            data = self._items.get((s3_key, version))
+            if data is not None:
+                self._items.move_to_end((s3_key, version))
+            return data
+
+    def put(self, s3_key, version, data):
+        if len(data) > self.max_bytes:
+            return  # never let one object own the whole budget
+        with self._lock:
+            # Older versions of the same key are dead weight — drop them.
+            for k in [k for k in self._items if k[0] == s3_key and k[1] != version]:
+                self._size -= len(self._items.pop(k))
+            old = self._items.pop((s3_key, version), None)
+            if old is not None:
+                self._size -= len(old)
+            self._items[(s3_key, version)] = data
+            self._size += len(data)
+            while self._size > self.max_bytes and self._items:
+                _, evicted = self._items.popitem(last=False)
+                self._size -= len(evicted)
+
+    def drop_prefix(self, prefix):
+        """Drop every entry whose s3_key starts with prefix (exact key or a
+        whole users/{user_id}/ subtree — deleted photos must not linger)."""
+        with self._lock:
+            for k in [k for k in self._items if k[0].startswith(prefix)]:
+                self._size -= len(self._items.pop(k))
+
+
+_photo_cache = _PhotoCache(config.PHOTO_CACHE_MB * 1024 * 1024)
+
+
 def photo_key(user_id, date_str, meal_id):
     return f'users/{user_id}/meals/{date_str}/{meal_id}.jpg'
+
+
+def get_photo_bytes(key, owner_user_id, version):
+    """Photo bytes via the LRU cache, or None when absent/refused.
+
+    version MUST be the app's _photo_version for the owning meal — it is the
+    cache key's second half, and a caller inventing its own (or passing '')
+    would cache bytes no photo replace ever invalidates. Deliberately no
+    default: every new caller has to make that decision consciously.
+
+    Defense in depth: refuses any key outside the resolved owner's
+    users/{user_id}/ prefix, even if a bad key somehow reached a caller.
+    Missing S3 object -> None; infrastructure failures RAISE so routes can
+    answer 502 instead of a misleading 404."""
+    if not key or not config.S3_BUCKET:
+        return None
+    if not key.startswith(f'users/{owner_user_id}/'):
+        print(f"REFUSED photo read outside user prefix (user {owner_user_id})")
+        return None
+    data = _photo_cache.get(key, version)
+    if data is not None:
+        return data
+    try:
+        resp = _s3_client().get_object(Bucket=config.S3_BUCKET, Key=key)
+    except ClientError as e:
+        if e.response['Error']['Code'] in ('NoSuchKey', '404'):
+            return None
+        raise
+    data = resp['Body'].read()
+    _photo_cache.put(key, version, data)
+    return data
 
 
 def put_photo(file_storage, key):
@@ -554,38 +637,26 @@ def put_photo(file_storage, key):
         Body=jpeg_bytes,
         ContentType='image/jpeg',
     )
+    # Every byte-mutation site must touch the LRU: if the caller's row write
+    # fails after this overwrite, the old version would otherwise keep
+    # serving the OLD bytes from cache while S3 holds the new ones.
+    _photo_cache.drop_prefix(key)
 
 
 def delete_photo(key):
-    """Best-effort delete (never raises)."""
+    """Best-effort delete (never raises).
+
+    Cache purge AFTER the S3 delete: purging first would let an in-flight
+    get_photo_bytes (no lock held across S3 I/O) repopulate the LRU with the
+    just-deleted bytes."""
     if not key or not config.S3_BUCKET:
         return
     try:
         _s3_client().delete_object(Bucket=config.S3_BUCKET, Key=key)
     except Exception as e:
         print(f"Error deleting photo object: {type(e).__name__}")
-
-
-def presign_photo(key, owner_user_id):
-    """Presigned GET URL for a photo, or None.
-
-    Defense in depth: refuses to sign any key outside the resolved owner's
-    users/{user_id}/ prefix, even if a bad key somehow reached the table.
-    """
-    if not key or not config.S3_BUCKET:
-        return None
-    if not key.startswith(f'users/{owner_user_id}/'):
-        print(f"REFUSED to presign key outside user prefix (user {owner_user_id})")
-        return None
-    try:
-        return _s3_client().generate_presigned_url(
-            'get_object',
-            Params={'Bucket': config.S3_BUCKET, 'Key': key},
-            ExpiresIn=config.PHOTO_URL_TTL,
-        )
-    except Exception as e:
-        print(f"Error presigning photo URL: {type(e).__name__}")
-        return None
+    finally:
+        _photo_cache.drop_prefix(key)
 
 
 def delete_user_photos(user_id):
@@ -601,17 +672,23 @@ def delete_user_photos(user_id):
     deleted = 0
     prefix = f'users/{user_id}/'
     kwargs = {'Bucket': config.S3_BUCKET, 'Prefix': prefix}
-    while True:
-        resp = _s3_client().list_objects_v2(**kwargs)
-        objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
-        if objs:
-            result = _s3_client().delete_objects(
-                Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
-            errors = result.get('Errors') or []
-            if errors:
-                raise RuntimeError(f'{len(errors)} S3 object(s) failed to delete')
-            deleted += len(objs)
-        if not resp.get('IsTruncated'):
-            break
-        kwargs['ContinuationToken'] = resp['NextContinuationToken']
+    try:
+        while True:
+            resp = _s3_client().list_objects_v2(**kwargs)
+            objs = [{'Key': o['Key']} for o in resp.get('Contents', [])]
+            if objs:
+                result = _s3_client().delete_objects(
+                    Bucket=config.S3_BUCKET, Delete={'Objects': objs, 'Quiet': True})
+                errors = result.get('Errors') or []
+                if errors:
+                    raise RuntimeError(f'{len(errors)} S3 object(s) failed to delete')
+                deleted += len(objs)
+            if not resp.get('IsTruncated'):
+                break
+            kwargs['ContinuationToken'] = resp['NextContinuationToken']
+    finally:
+        # AFTER the S3 wipe (even a partial one): purging first would let an
+        # in-flight read repopulate the LRU with a deleted user's bytes,
+        # which nothing would ever purge again.
+        _photo_cache.drop_prefix(prefix)
     return deleted

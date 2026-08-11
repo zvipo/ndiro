@@ -2,7 +2,7 @@
 
 Proves tenant isolation: user B's session cannot read, edit, or delete user
 A's meals through ANY API path, forged form fields included; photos live only
-under users/{user_id}/ and are presigned only for their owner.
+under users/{user_id}/ and are readable only through the owner-scoped proxy.
 
 Run:  python tests/probe_cross_user.py
 """
@@ -40,7 +40,18 @@ meal_id = meal['meal_id']
 tk.check('meal time derived from client time', meal['time'] == '12:30')
 tk.check('photo stored under users/sub-alice/ prefix',
          list(tk.FIXTURES.s3.objects) == [f'users/sub-alice/meals/{DAY}/{meal_id}.jpg'])
-tk.check('photo_url presigned for owner', bool(meal['photo_url']))
+tk.check('photo_url is the versioned owner proxy path',
+         meal['photo_url'].startswith(f'/photo/{DAY}/') and '?v=' in meal['photo_url'])
+resp = tk.get(alice, meal['photo_url'])
+tk.check('owner fetches her photo through the proxy',
+         resp.status_code == 200 and resp.mimetype == 'image/jpeg' and
+         resp.data == tk.FIXTURES.s3.objects[f'users/sub-alice/meals/{DAY}/{meal_id}.jpg'])
+tk.check("bob fetching alice's photo path is 404 (his own namespace)",
+         tk.get(bob, f'/photo/{DAY}/{meal_id}').status_code == 404)
+# A plain 404, never a login redirect: an expired-session <img> bouncing
+# into /login would rewrite oauth_state and could break an in-flight sign-in.
+tk.check('anonymous photo fetch is a plain 404',
+         tk.get(tk.client(), f'/photo/{DAY}/{meal_id}').status_code == 404)
 
 resp = tk.get(alice, f'/api/meals?date={DAY}')
 data = resp.get_json()
@@ -86,10 +97,10 @@ tk.check('forged user_id/sk form fields ignored (meal lands under bob)',
          db.get_meal('sub-bob', DAY, resp.get_json()['meal_id']) is not None and
          len(db.query_meals_day('sub-alice', DAY)) == 1)
 
-# Bob cannot presign Alice's photo through his own payloads: his meals carry
-# no photo, and the defensive presigner refuses foreign prefixes outright.
-tk.check('presign refuses foreign-prefix key',
-         db.presign_photo(f'users/sub-alice/meals/{DAY}/{meal_id}.jpg', 'sub-bob') is None)
+# Bob cannot read Alice's photo bytes through any payload: the byte-fetch
+# helper refuses keys outside the resolved owner's prefix outright.
+tk.check('photo byte fetch refuses foreign-prefix key',
+         db.get_photo_bytes(f'users/sub-alice/meals/{DAY}/{meal_id}.jpg', 'sub-bob', 'v') is None)
 
 # --- Alice's data survived all probes intact ---------------------------------
 row = db.get_meal('sub-alice', DAY, meal_id)

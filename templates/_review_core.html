@@ -25,8 +25,8 @@
         <div class="page-note" id="pageNote" style="display:none"></div>
 
     <script>
-        // Read-only monthly review. Note: photo URLs are presigned (1h) — a tab
-        // left open past that shows broken thumbnails until refresh.
+        // Read-only monthly review. Photo URLs are app-proxied and versioned
+        // (?v= bumps on every meal edit), so browsers cache them indefinitely.
         const MEALS_URL = {{ meals_url|tojson }};
         // The tracked micro (the owner's on the share view): {key, label, unit,
         // goal, direction, is_default} from config.resolve_nutrient.

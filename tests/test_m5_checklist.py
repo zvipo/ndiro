@@ -44,10 +44,12 @@ for rule in tk.app.url_map.iter_rules():
     fn = tk.app.view_functions[rule.endpoint]
     lim = getattr(tk.limiter, 'limit_manager', None)
     route_limits[rule.rule] = rule.endpoint
-tk.check('login/callback/share/AI endpoints registered',
+tk.check('login/callback/share/AI/photo endpoints registered',
          all(r in route_limits for r in
              ['/login', '/callback', '/s/<token>', '/s/<token>/meals',
-              '/api/estimate-fiber', '/api/estimate-photo']))
+              '/api/estimate-fiber', '/api/estimate-photo',
+              '/photo/<date_str>/<meal_id>',
+              '/s/<token>/photo/<date_str>/<meal_id>']))
 
 # --- Dockerfile invariants ----------------------------------------------------
 with open(os.path.join(REPO, 'Dockerfile')) as f:
