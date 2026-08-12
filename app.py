@@ -818,14 +818,17 @@ def photo(date_str, meal_id):
 # (AI_DAILY_LIMIT per UTC day, race-safe conditional counter in db.py).
 # The use is consumed BEFORE the OpenAI call; upstream failures refund it.
 
-def _consume_ai_use_or_429(user_id):
+def _consume_ai_use_or_429(user_id, route):
     """Returns (today_str, None) when a use was consumed, else (None, response)."""
     today = _utc_today_str()
     try:
         allowed = db.try_consume_ai_use(user_id, today, config.AI_DAILY_LIMIT)
     except Exception as e:
-        print(f"AI-cap check failed for user {user_id}: {type(e).__name__}")
-        return None, (jsonify({'error': 'AI estimate unavailable right now'}), 503)
+        ref = ai.log_failure('cap', {'route': route, 'user': user_id,
+                                     'error': type(e).__name__, 'detail': str(e)})
+        return None, (jsonify({
+            'error': f'AI estimate unavailable right now [ref {ref}]',
+            'ref': ref}), 503)
     if not allowed:
         return None, (jsonify({
             'error': f'Daily AI limit reached ({config.AI_DAILY_LIMIT} estimates '
@@ -834,10 +837,12 @@ def _consume_ai_use_or_429(user_id):
 
 
 def _ai_error_response(user_id, today, err):
-    message, status, refundable = err
+    """The user-facing half of a logged failure: the ref shown here is the ref
+    in the AI_ERROR log line, so a bug report points straight at the record."""
+    message, status, refundable, ref = err
     if refundable:
         db.refund_ai_use(user_id, today)  # best-effort
-    return jsonify({'error': message}), status
+    return jsonify({'error': f'{message} [ref {ref}]', 'ref': ref}), status
 
 
 @app.route('/api/estimate-fiber', methods=['POST'])
@@ -856,10 +861,12 @@ def estimate_fiber():
         return jsonify({'error': 'Description too long (max 500 characters)'}), 400
 
     user_id = g.user['user_id']
-    today, blocked = _consume_ai_use_or_429(user_id)
+    today, blocked = _consume_ai_use_or_429(user_id, 'estimate-fiber')
     if blocked:
         return blocked
-    result, err = ai.estimate_text(description, config.resolve_nutrient(g.user))
+    result, err = ai.estimate_text(description, config.resolve_nutrient(g.user),
+                                   log_context={'user': user_id,
+                                                'route': 'estimate-fiber'})
     if err:
         return _ai_error_response(user_id, today, err)
     return jsonify(result)
@@ -880,14 +887,24 @@ def estimate_photo():
         return jsonify({'error': 'Photo too large for estimation'}), 400
     try:
         photo_bytes = imaging.to_jpeg(photo_bytes)  # HEIC/any -> JPEG for the vision API
-    except ValueError:
-        return jsonify({'error': "Couldn't read that image — try a JPEG or PNG"}), 400
+    except ValueError as e:
+        # Logged like an upstream failure: "couldn't read that image" is a
+        # common report, and the decoder's reason is the whole diagnosis.
+        ref = ai.log_failure('image', {
+            'route': 'estimate-photo', 'user': g.user['user_id'], 'mode': 'photo',
+            'error': type(e).__name__, 'detail': str(e),
+            'photo_kb': len(photo_bytes) // 1024})
+        return jsonify({
+            'error': f"Couldn't read that image — try a JPEG or PNG [ref {ref}]",
+            'ref': ref}), 400
 
     user_id = g.user['user_id']
-    today, blocked = _consume_ai_use_or_429(user_id)
+    today, blocked = _consume_ai_use_or_429(user_id, 'estimate-photo')
     if blocked:
         return blocked
-    result, err = ai.estimate_photo(photo_bytes, config.resolve_nutrient(g.user))
+    result, err = ai.estimate_photo(photo_bytes, config.resolve_nutrient(g.user),
+                                    log_context={'user': user_id,
+                                                 'route': 'estimate-photo'})
     if err:
         return _ai_error_response(user_id, today, err)
     return jsonify(result)

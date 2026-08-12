@@ -754,6 +754,9 @@
                 }
                 renderEstimate(result);
             } catch (e) {
+                // Never reached the server, so there is no AI_ERROR record to
+                // pair with — the console is the only diagnosis available.
+                console.error('Ndiro: text estimate request failed', e);
                 showAiError('Network error — estimate failed.');
             } finally {
                 estimating = false;
@@ -792,6 +795,7 @@
                 }
                 renderEstimate(result);
             } catch (e) {
+                console.error('Ndiro: photo estimate request failed', e);
                 showAiError('Network error — estimate failed.');
             } finally {
                 estimating = false;

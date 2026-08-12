@@ -50,6 +50,35 @@ buttons don't render). `AI_DAILY_LIMIT` caps estimates per user per UTC day.
 
 Never commit `.env` — it is gitignored and dockerignored on purpose.
 
+### Diagnosing AI estimate failures
+
+When "Estimate from description" or "Describe & estimate from photo" fails, the
+user sees the reason plus a short ref (`… [ref 3f9a2c11]`), and the server logs
+one JSON line for it on stdout:
+
+```bash
+docker logs ndiro | grep AI_ERROR
+docker logs ndiro | grep 3f9a2c11        # the exact failure a user reported
+```
+
+```
+AI_ERROR {"ts":"2026-08-12T09:14:02Z","ref":"3f9a2c11","stage":"http",
+          "model":"gpt-5-mini","mode":"photo","user":"1078…","route":"estimate-photo",
+          "photo_kb":180,"status":429,"type":"insufficient_quota","elapsed_ms":412}
+```
+
+`stage` says where it died: `request` (never reached OpenAI — DNS, TLS,
+timeout; check `elapsed_ms` against `timeout_s`), `http` (OpenAI said no — read
+`status` + `type`/`code`/`message`), `parse` (a 200 we couldn't use — read
+`finish_reason`, `refusal`, `expected_key` vs `got_keys`), `image` (the upload
+wouldn't decode), `cap` (the DynamoDB use-counter failed). Set `AI_ERROR_LOG` to
+a path on a mounted volume to also append these records to a file that survives
+container rebuilds.
+
+Records carry the call's metadata and OpenAI's own error fields only — never
+the meal description, the photo, or the model's description of it (sizes and
+lengths stand in for them).
+
 ### Tests
 
 Stub-based tests (in-memory DynamoDB/S3 fakes, stubbed Google/OpenAI — no

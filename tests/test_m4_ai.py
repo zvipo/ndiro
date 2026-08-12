@@ -1,11 +1,15 @@
 """M4 exit test (stubbed AWS + Google + OpenAI): estimator endpoints, the
 race-safe per-user daily cap, refunds on upstream failure, day rollover,
-per-IP rate limits, and unset-key degradation.
+per-IP rate limits, unset-key degradation, and the AI_ERROR failure log.
 
 Run:  python tests/test_m4_ai.py
 """
+import contextlib
 import io
 import json
+import os
+import re
+import tempfile
 
 import testkit as tk
 
@@ -39,24 +43,31 @@ captured = {}
 
 
 class FakeResp:
-    def __init__(self, status, body):
+    def __init__(self, status, body, headers=None):
         self.status_code = status
         self._body = body
         self.text = json.dumps(body)
+        self.headers = headers or {}
 
     def json(self):
         return self._body
 
 
-def stub_openai(result_content=None, status=200, exc=None):
+def stub_openai(result_content=None, status=200, exc=None, body=None,
+                resp_headers=None):
+    """Stub the OpenAI call. `body` replaces the whole response body (for
+    error payloads and malformed 200s); otherwise result_content is wrapped
+    in the normal choices/message envelope."""
     def fake_post(url, headers=None, json=None, timeout=None):
         captured['url'] = url
         captured['payload'] = json
         captured['timeout'] = timeout
         if exc:
             raise exc
-        return FakeResp(status, {
-            'choices': [{'message': {'content': result_content}}]})
+        return FakeResp(status,
+                        body if body is not None
+                        else {'choices': [{'message': {'content': result_content}}]},
+                        resp_headers)
     ai.requests.post = fake_post
 
 
@@ -152,6 +163,9 @@ stub_openai(exc=ai.requests.exceptions.ConnectTimeout('boom'))
 resp = tk.post(admin, '/api/estimate-fiber', json={'description': 'oats'})
 tk.check('upstream timeout => 502', resp.status_code == 502)
 tk.check('timeout refunded the use', int(db.get_user(UID)['ai_uses_today']) == 2)
+tk.check('client error carries the log ref',
+         re.fullmatch(r'[0-9a-f]{8}', resp.get_json().get('ref', '') or '') is not None
+         and f"[ref {resp.get_json()['ref']}]" in resp.get_json()['error'])
 
 stub_openai('irrelevant', status=500)
 resp = tk.post(admin, '/api/estimate-fiber', json={'description': 'oats'})
@@ -242,5 +256,91 @@ tk.check('hostile response clamped',
          and len(result['items'][0]['food']) == 100
          and len(result['items'][0]['serving']) == 50
          and len(result['note']) == 300)
+
+# --- Failure logging (direct calls — no endpoint, no counters) ---------------
+# Every failure leaves ONE AI_ERROR record naming what broke, carrying the ref
+# the user is shown — and never the meal description (invariant 8).
+LOG_PATH = os.path.join(tempfile.mkdtemp(), 'ai_errors.log')
+config.AI_ERROR_LOG = LOG_PATH
+SECRET_DESC = 'zzsecretmeal of halloumi'
+LOG_CTX = {'user': UID, 'route': 'estimate-fiber'}
+
+
+def failing_estimate(**stub):
+    """Run one stubbed-failure estimate; return (err_tuple, parsed record)."""
+    stub_openai(**stub)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _, err = ai.estimate_text(SECRET_DESC, cfg, log_context=LOG_CTX)
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.startswith('AI_ERROR ')]
+    return err, json.loads(lines[0][len('AI_ERROR '):]) if len(lines) == 1 else {}
+
+
+err, rec = failing_estimate(status=429, resp_headers={'x-request-id': 'req_abc123'}, body={
+    'error': {'message': 'You exceeded your current quota',
+              'type': 'insufficient_quota', 'code': 'insufficient_quota'}})
+tk.check('upstream error logs status + provider error fields + request id',
+         rec.get('stage') == 'http' and rec['status'] == 429 and
+         rec['type'] == 'insufficient_quota' and rec['code'] == 'insufficient_quota' and
+         'exceeded your current quota' in rec['message'] and
+         rec['request_id'] == 'req_abc123')
+tk.check('record carries user/route/mode/model and the ref the user sees',
+         rec['user'] == UID and rec['route'] == 'estimate-fiber' and
+         rec['mode'] == 'text' and rec['model'] == config.OPENAI_MODEL and
+         rec['nutrient'] == 'fiber_g' and err[3] == rec['ref'] and len(rec['ref']) == 8)
+
+err, rec = failing_estimate(status=502, body='<html>Bad Gateway</html>')
+tk.check('non-JSON upstream body logged as a bounded snippet',
+         rec.get('stage') == 'http' and 'Bad Gateway' in rec['body'])
+
+err, rec = failing_estimate(exc=ai.requests.exceptions.ReadTimeout('read timed out'))
+tk.check('transport failure logs exception type, detail and the timeouts used',
+         rec.get('stage') == 'request' and rec['error'] == 'ReadTimeout' and
+         'read timed out' in rec['detail'] and rec['timeout_s'] == [5, 20] and
+         'elapsed_ms' in rec)
+
+err, rec = failing_estimate(body={'id': 'chatcmpl-xyz', 'choices': [
+    {'finish_reason': 'content_filter',
+     'message': {'content': None, 'refusal': 'I will not identify people in photos'}}]})
+tk.check('refused 200 logs finish_reason, refusal and the upstream id',
+         rec.get('stage') == 'parse' and rec['finish_reason'] == 'content_filter' and
+         'identify people' in rec['refusal'] and rec['upstream_id'] == 'chatcmpl-xyz' and
+         err[2] is False)  # billed: not refundable
+
+err, rec = failing_estimate(result_content=json.dumps(
+    {'fiber_g': 3.0, 'items': [], 'note': ''}))
+tk.check('wrong-shape 200 logs expected vs returned keys',
+         rec.get('stage') == 'parse' and rec['error'] == 'KeyError' and
+         rec['expected_key'] == 'viscous_fiber_g' and
+         rec['got_keys'] == ['fiber_g', 'items', 'note'])
+
+# Photo failures carry the mode and upload size, never the image.
+stub_openai(status=500, body={'error': {'message': 'server had an error',
+                                        'type': 'server_error'}})
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ai.estimate_photo(tk.TINY_JPEG * 500, cfg,
+                      log_context={'user': UID, 'route': 'estimate-photo'})
+photo_rec = json.loads(buf.getvalue().split('AI_ERROR ', 1)[1])
+tk.check('photo failure logs mode + upload size',
+         photo_rec['mode'] == 'photo' and photo_rec['route'] == 'estimate-photo' and
+         photo_rec['photo_kb'] == len(tk.TINY_JPEG * 500) // 1024)
+
+with open(LOG_PATH, encoding='utf-8') as fh:
+    file_lines = [json.loads(ln) for ln in fh]
+tk.check('AI_ERROR_LOG file holds one timestamped JSON record per failure',
+         len(file_lines) == 6 and file_lines[-1]['ref'] == photo_rec['ref'] and
+         all(r['ts'].endswith('Z') for r in file_lines))
+with open(LOG_PATH, encoding='utf-8') as fh:
+    logged = fh.read()
+tk.check('no meal description in any record (only its length)',
+         'zzsecretmeal' not in logged and 'halloumi' not in logged and
+         rec['desc_len'] == len(SECRET_DESC))
+
+# An unwritable log path must never break an estimate.
+config.AI_ERROR_LOG = os.path.join(LOG_PATH, 'not-a-directory', 'x.log')
+err, _ = failing_estimate(exc=ai.requests.exceptions.ConnectTimeout('boom'))
+tk.check('unwritable log path degrades to stdout only', err[1] == 502 and len(err[3]) == 8)
+config.AI_ERROR_LOG = None
 
 tk.finish('M4 AI estimators + caps')

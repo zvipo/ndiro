@@ -69,6 +69,12 @@ OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-5-mini')
 OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions'
 AI_DAILY_LIMIT = int(os.getenv('AI_DAILY_LIMIT', '10'))  # per user per UTC day
 
+# Optional path for the AI failure log (see ai.log_failure). Failures ALWAYS
+# print one `AI_ERROR {json}` line on stdout (docker logs); setting this also
+# appends the same JSON to a file, so the operator can read them offline —
+# point it at a mounted volume or the log is lost with the container.
+AI_ERROR_LOG = os.getenv('AI_ERROR_LOG') or None
+
 # --- Viscous soluble fiber guide (dietician's handout) -----------------------
 # Grams of viscous SOLUBLE fiber per serving; star = >=3g/serving. Single source
 # of truth: injected into log.html for the tap-to-add lookup AND embedded in
