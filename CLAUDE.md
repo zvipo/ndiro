@@ -62,6 +62,12 @@ raises without it (tests set their own).
   the curated guide prompt + historical `viscous_fiber_g` schema; a custom
   micro gets a generic label/unit prompt with the schema keyed by its
   `nutrient_key`. Client responses are normalized to `amount` on both paths.
+  `log_failure(stage, fields)` is the ONE place a failure is recorded: it
+  prints `AI_ERROR {json}` on stdout (plus an append to `AI_ERROR_LOG` when
+  set) and returns a short `ref` that rides back in the error tuple
+  `(message, status, refundable, ref)` — app.py shows it to the user, so a
+  report maps to one log line. `stage` ∈ `request|http|parse` here, plus
+  `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
 - **`templates/`** — `base.html` holds the shared skin: 14-token gruvbox
   dark/light `:root` blocks, pre-paint `localStorage('theme')` script, ☀️/🌙
   toggle (dispatches `ndiro-theme-change`; the review chart re-renders from CSS
@@ -147,7 +153,12 @@ delete_photo/delete_user_photos purge the LRU.
 7. Admin surfaces show account metadata ONLY — no route or template lets an
    admin see another user's meals or photos.
 8. Server logs carry user IDs and error types only — never meal descriptions,
-   contexts, or photo bytes.
+   contexts, or photo bytes. The AI_ERROR records add call metadata (stage,
+   model, sizes, timings) and the PROVIDER's own error fields (status, request
+   id, error type/code/param/message, finish_reason, refusal) — things that
+   describe the API call, not the meal. Lengths/sizes (`desc_len`,
+   `photo_kb`, `content_len`) and key NAMES (`got_keys`) stand in for content;
+   never log the description, the model's `content`, or the photo.
 9. `MAX_USERS` enforced server-side at account creation — including invited
    signups (the gate runs BEFORE invite logic; a full instance never consumes
    an invite).

@@ -40,6 +40,11 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
 # Max AI estimates per user per UTC day.
 AI_DAILY_LIMIT=10
+# Optional: also append AI failures (one JSON object per line) to this file, to
+# read them offline. Failures always print an `AI_ERROR {...}` line on stdout
+# (`docker logs`); a file inside the container is lost on rebuild unless the
+# path is on a mounted volume.
+#AI_ERROR_LOG=/var/log/ndiro/ai_errors.log
 
 # Local dev over plain http only (Safari rejects Secure cookies on localhost).
 # NEVER set this in production.
