@@ -13,9 +13,9 @@
             <div class="chart-caption">
                 <span class="label">Daily {{ nutrient.label }} ({{ nutrient.unit }}) · stacked by meal</span>
                 {% if nutrient.direction == 'at_most' %}
-                <span class="hint"><span class="limit">―</span> {{ nutrient.goal }} {{ nutrient.unit }} limit · <span class="dot">●</span> context note</span>
+                <span class="hint"><span class="limit">―</span> {{ nutrient.goal }} {{ nutrient.unit }} limit</span>
                 {% else %}
-                <span class="hint"><span class="goal">―</span> {{ nutrient.goal }} {{ nutrient.unit }} goal · <span class="dot">●</span> context note</span>
+                <span class="hint"><span class="goal">―</span> {{ nutrient.goal }} {{ nutrient.unit }} goal</span>
                 {% endif %}
             </div>
             <div id="fiberChart"></div>
@@ -135,8 +135,8 @@
             }
         }
 
-        // ------- Chart: one stacked bar per day (a segment per meal that
-        // contributed), purple dot = context note -------
+        // ------- Chart: one stacked bar per day, a segment per meal that
+        // contributed, the day's total labelled on the cap -------
         function renderChart(days) {
             // Draw at 1 SVG unit ≈ 1 CSS px of the card's current width, so the
             // chart fills the container at any browser size (redrawn on resize).
@@ -172,9 +172,10 @@
                 bar: css.getPropertyValue('--gold').trim(),
                 grid: css.getPropertyValue('--border').trim(),
                 text: css.getPropertyValue('--muted').trim(),
+                ink: css.getPropertyValue('--text').trim(),
+                surface: css.getPropertyValue('--card').trim(),
                 goal: css.getPropertyValue('--green').trim(),
                 limit: css.getPropertyValue('--red').trim(),
-                dot: css.getPropertyValue('--purple').trim(),
             };
             const goalColor = AT_MOST ? PAL.limit : PAL.goal;
 
@@ -238,6 +239,16 @@
             const SEG_GAP = 2;
             const SCALE = PLOT_H / niceMax;
 
+            // Precision for the on-bar totals follows the goal's magnitude
+            // (whole numbers at a goal of 20 g, tenths at 2 g), and a logged day
+            // never rounds down to a bare "0". The exact value stays in the
+            // tooltip and the day heading below.
+            const VAL_DP = GOAL_G >= 10 ? 0 : GOAL_G >= 1 ? 1 : 2;
+            function totalLabel(v) {
+                const rounded = parseFloat(v.toFixed(VAL_DP));
+                return String(rounded || parseFloat(v.toFixed(VAL_DP + 2)) || rounded);
+            }
+
             function mealLine(meal, value) {
                 const bits = [];
                 if (meal.time) bits.push(formatTime(meal.time));
@@ -246,6 +257,11 @@
                 return '• ' + bits.join(' · ') +
                        (desc ? ' — ' + (desc.length > 40 ? desc.slice(0, 39) + '…' : desc) : '');
             }
+
+            // Filled in as the bars are drawn, placed once the SVG is live —
+            // see placeTotals().
+            const totals = [];
+            const obstacles = [];
 
             days.forEach((day, i) => {
                 const x = GUTTER + i * SLOT + (SLOT - BAR_W) / 2;
@@ -300,13 +316,11 @@
                             formatDay(day.date).replace('Today — ', '') + '\n' + mealLine(seg.meal, seg.value);
                         yBottom = yTop;
                     });
+                    obstacles.push({ x: x, y: BASE - barH, width: BAR_W, height: barH });
+                    totals.push({ i: i, value: fiber, cx: x + BAR_W / 2, y: BASE - barH - 5 });
                 } else {
                     // Stub so every day visibly exists (zero fiber or nothing logged).
                     el('rect', { x: x, y: BASE - 2, width: BAR_W, height: 2, fill: PAL.grid }, g);
-                }
-
-                if (hasContext) {
-                    el('circle', { cx: x + BAR_W / 2, cy: BASE - barH - 6, r: 2.5, fill: PAL.dot }, g);
                 }
 
                 if ([1, 5, 10, 15, 20, 25, 30].includes(dayNum)) {
@@ -322,8 +336,35 @@
                 svg.appendChild(g);
             });
 
+            // The day's total on the cap of its stack, in ink (never the bar's
+            // colour). Placed only where it truly fits — measured on the live
+            // DOM against the bars, the goal label and the labels already
+            // placed, biggest day first — so a narrow month sheds labels
+            // instead of colliding, and none is ever drawn over a bar.
+            function placeTotals() {
+                const boxes = obstacles.concat([goalLabel.getBBox()]);
+                const clear = b => !boxes.some(o =>
+                    b.x < o.x + o.width + 2 && o.x < b.x + b.width + 2 &&
+                    b.y < o.y + o.height + 1 && o.y < b.y + b.height + 1);
+                [...totals].sort((a, b) => b.value - a.value || a.i - b.i).forEach(t => {
+                    const node = text(totalLabel(t.value), t.cx, t.y);
+                    node.setAttribute('fill', PAL.ink);
+                    node.setAttribute('font-size', '8');
+                    // A ring of card surface keeps the number legible where it
+                    // crosses a gridline or the goal line.
+                    node.setAttribute('stroke', PAL.surface);
+                    node.setAttribute('stroke-width', '2.5');
+                    node.setAttribute('paint-order', 'stroke');
+                    // Never steal hover from the day hit target underneath.
+                    node.setAttribute('pointer-events', 'none');
+                    const box = node.getBBox();
+                    if (clear(box)) boxes.push(box); else node.remove();
+                });
+            }
+
             holder.innerHTML = '';
             holder.appendChild(svg);
+            placeTotals();
         }
 
 
