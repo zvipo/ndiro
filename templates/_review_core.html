@@ -11,7 +11,7 @@
 
         <div class="card">
             <div class="chart-caption">
-                <span class="label">Daily {{ nutrient.label }} ({{ nutrient.unit }})</span>
+                <span class="label">Daily {{ nutrient.label }} ({{ nutrient.unit }}) · stacked by meal</span>
                 {% if nutrient.direction == 'at_most' %}
                 <span class="hint"><span class="limit">―</span> {{ nutrient.goal }} {{ nutrient.unit }} limit · <span class="dot">●</span> context note</span>
                 {% else %}
@@ -135,7 +135,8 @@
             }
         }
 
-        // ------- Chart: one gold bar per day, purple dot = context note -------
+        // ------- Chart: one stacked bar per day (a segment per meal that
+        // contributed), purple dot = context note -------
         function renderChart(days) {
             // Draw at 1 SVG unit ≈ 1 CSS px of the card's current width, so the
             // chart fills the container at any browser size (redrawn on resize).
@@ -219,13 +220,31 @@
             // X-axis title, centered under the day numbers.
             text('day of month', GUTTER + (W - GUTTER) / 2, H - 4);
 
-            // Bar with rounded top only (square at the baseline).
-            function barPath(x, h) {
-                const r = Math.min(3, h / 2);
-                const top = BASE - h;
-                return `M${x},${BASE} L${x},${top + r} Q${x},${top} ${x + r},${top} ` +
+            // One stack segment: rounded top only on the topmost one, square
+            // everywhere else (the baseline and every interior boundary).
+            function segPath(x, top, h, roundTop) {
+                const r = roundTop ? Math.min(3, BAR_W / 2, h / 2) : 0;
+                const bottom = top + h;
+                if (!r) {
+                    return `M${x},${bottom} L${x},${top} L${x + BAR_W},${top} L${x + BAR_W},${bottom} Z`;
+                }
+                return `M${x},${bottom} L${x},${top + r} Q${x},${top} ${x + r},${top} ` +
                        `L${x + BAR_W - r},${top} Q${x + BAR_W},${top} ${x + BAR_W},${top + r} ` +
-                       `L${x + BAR_W},${BASE} Z`;
+                       `L${x + BAR_W},${bottom} Z`;
+            }
+
+            // A 2-unit (≈2px) gap of card surface separates touching segments —
+            // the separator is the gap, never a stroke around the fill.
+            const SEG_GAP = 2;
+            const SCALE = PLOT_H / niceMax;
+
+            function mealLine(meal, value) {
+                const bits = [];
+                if (meal.time) bits.push(formatTime(meal.time));
+                bits.push(value + ' ' + NUTRIENT.unit);
+                const desc = (meal.description || '').replace(/\s+/g, ' ').trim();
+                return '• ' + bits.join(' · ') +
+                       (desc ? ' — ' + (desc.length > 40 ? desc.slice(0, 39) + '…' : desc) : '');
             }
 
             days.forEach((day, i) => {
@@ -235,18 +254,58 @@
                 const overLimit = AT_MOST && fiber > GOAL_G;
                 const hasContext = day.meals.some(m => m.context);
                 const hasMeals = day.meals.length > 0;
+                // One segment per contributing meal, earliest at the baseline
+                // (the feed's order). Every segment wears the same hue: a day's
+                // meals are not a series with identity across days, so no legend
+                // could exist and colouring by position would encode nothing —
+                // the surface gaps and the tooltip do the separating.
+                const segs = day.meals
+                    .map(m => ({ meal: m, value: m.nutrients[NUTRIENT.key] || 0 }))
+                    .filter(s => s.value > 0);
                 const g = el('g', { cursor: hasMeals ? 'pointer' : 'default' });
+                // Tiny days keep the historical 3-unit floor, applied to the
+                // whole stack so the segments stay in proportion.
+                const trueH = fiber * SCALE;
+                const boost = trueH > 0 && trueH < 3 ? 3 / trueH : 1;
+                const barH = fiber > 0 ? Math.max(3, trueH) : 2;
 
-                if (fiber > 0) {
-                    const h = Math.max(3, (fiber / niceMax) * PLOT_H);
-                    el('path', { d: barPath(x, h), fill: overLimit ? PAL.limit : PAL.bar }, g);
+                // Invisible full-height hit target, added BEFORE the bar so each
+                // segment keeps its own tooltip; this one summarises the day.
+                const hit = el('rect', { x: GUTTER + i * SLOT, y: BASE - PLOT_H - 10, width: SLOT, height: PLOT_H + 12, fill: 'transparent' }, g);
+                const lines = [formatDay(day.date).replace('Today — ', '') + ' — ' +
+                    (hasMeals ? fiber + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label +
+                        (overLimit ? ' · over limit' : '') + (hasContext ? ' · context note' : '')
+                     : 'nothing logged')];
+                segs.slice(0, 8).forEach(s => lines.push(mealLine(s.meal, s.value)));
+                if (segs.length > 8) lines.push('• +' + (segs.length - 8) + ' more');
+                el('title', {}, hit).textContent = lines.join('\n');
+
+                if (segs.length) {
+                    const fill = overLimit ? PAL.limit : PAL.bar;
+                    // Segment tops come off the running total, and the gap is
+                    // carved from the top of the LOWER segment only, so the tip
+                    // of the stack still lands on the day's true total.
+                    let yBottom = BASE;
+                    segs.forEach((seg, si) => {
+                        const isTop = si === segs.length - 1;
+                        const segH = seg.value * SCALE * boost;
+                        const yTop = yBottom - segH;
+                        // A segment thinner than gap+hairline gives up part of
+                        // its gap rather than eating into the meal above it —
+                        // segments never overlap, whatever the mix of sizes.
+                        const gap = isTop ? 0 : Math.min(SEG_GAP, Math.max(0, segH - 1));
+                        const h = segH - gap;
+                        const path = el('path', { d: segPath(x, yBottom - h, h, isTop), fill: fill }, g);
+                        el('title', {}, path).textContent =
+                            formatDay(day.date).replace('Today — ', '') + '\n' + mealLine(seg.meal, seg.value);
+                        yBottom = yTop;
+                    });
                 } else {
                     // Stub so every day visibly exists (zero fiber or nothing logged).
                     el('rect', { x: x, y: BASE - 2, width: BAR_W, height: 2, fill: PAL.grid }, g);
                 }
 
                 if (hasContext) {
-                    const barH = fiber > 0 ? Math.max(3, (fiber / niceMax) * PLOT_H) : 2;
                     el('circle', { cx: x + BAR_W / 2, cy: BASE - barH - 6, r: 2.5, fill: PAL.dot }, g);
                 }
 
@@ -254,13 +313,6 @@
                     text(String(dayNum), x + BAR_W / 2, BASE + 14);
                 }
 
-                // Invisible full-height hit target with a native tooltip.
-                const hit = el('rect', { x: GUTTER + i * SLOT, y: BASE - PLOT_H - 10, width: SLOT, height: PLOT_H + 12, fill: 'transparent' }, g);
-                const label = formatDay(day.date).replace('Today — ', '') + ' — ' +
-                    (hasMeals ? fiber + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label +
-                        (overLimit ? ' · over limit' : '') + (hasContext ? ' · context note' : '')
-                     : 'nothing logged');
-                el('title', {}, hit).textContent = label;
                 if (hasMeals) {
                     g.addEventListener('click', () => {
                         const section = document.getElementById('day-' + day.date);
