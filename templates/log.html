@@ -626,6 +626,11 @@
             });
             document.getElementById('saveBtn').addEventListener('click', saveMeal);
             document.getElementById('cancelEditBtn').addEventListener('click', resetForm);
+            // Any edit to a validated field clears the last error — the user
+            // is visibly fixing it; a still-wrong value re-errors on Save.
+            for (const id of ['descInput', 'contextInput', 'fiberInput']) {
+                document.getElementById(id).addEventListener('input', () => showFormError(null));
+            }
             initGuideLookup();
             const estBtn = document.getElementById('estimateBtn');
             if (estBtn) estBtn.addEventListener('click', estimateFiber);
