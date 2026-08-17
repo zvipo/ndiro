@@ -414,8 +414,14 @@
                 '<div class="page-note"><span class="spin">🥦</span> loading…</div>';
         }
 
-        async function loadMeals() {
-            showLoading();
+        // opts.keepScroll: leave the days already on screen in place and put the
+        // viewport back where it was after the re-render. Blanking the container
+        // collapses the page, which makes the browser clamp the scroll to the
+        // top — so "load 7 more days" would jump away from the new days.
+        async function loadMeals(opts) {
+            const keepScroll = opts && opts.keepScroll;
+            const scrollY = window.scrollY;
+            if (!keepScroll) showLoading();
             let data;
             try {
                 const resp = await fetch('/api/meals?days=' + daysShown + '&anchor=' + currentDateLocal());
@@ -425,12 +431,15 @@
                 }
                 data = await resp.json();
             } catch (e) {
-                document.getElementById('daysContainer').innerHTML = '';
+                if (!keepScroll) document.getElementById('daysContainer').innerHTML = '';
                 showNote('Could not load meals.');
                 return;
             }
             serverToday = data.today;
             renderDays(data);
+            // Day heights are stable (photos are fixed-size in CSS), so the days
+            // that were already rendered land back at the same offsets.
+            if (keepScroll) window.scrollTo(0, scrollY);
             if (data.error) {
                 showNote('Meals unavailable — try again later.');
             } else {
@@ -992,9 +1001,15 @@
             }
         }
 
-        document.getElementById('loadMoreBtn').addEventListener('click', () => {
+        document.getElementById('loadMoreBtn').addEventListener('click', async (ev) => {
+            const btn = ev.currentTarget;
+            setBusy(btn, 'Loading…');
             daysShown = Math.min(daysShown + 7, 31);
-            loadMeals();
+            try {
+                await loadMeals({ keepScroll: true });
+            } finally {
+                restoreBtn(btn, 'Load 7 more days');
+            }
         });
 
         initForm();
