@@ -89,6 +89,7 @@ python tests/test_m1_auth.py       # sign-in, statuses, approval, MAX_USERS
 python tests/probe_cross_user.py   # tenant isolation: cross-user probe
 python tests/test_m3_shares.py     # share links, identical 404s, account deletion
 python tests/test_m4_ai.py         # AI caps, refunds, rate limits
+python tests/test_m9_status.py     # /status build stamp (and that it leaks no config)
 ```
 
 ## Deploying
@@ -96,7 +97,11 @@ python tests/test_m4_ai.py         # AI caps, refunds, rate limits
 Build the container:
 
 ```bash
-docker build -t ndiro .
+# ./build.sh is `docker build` plus the commit stamp, so /status can report
+# what is deployed. .git is dockerignored, so the hash can ONLY get in this
+# way — a plain `docker build -t ndiro .` builds fine but /status then says
+# "unknown". Extra flags pass through: ./build.sh ndiro --build-arg INSTALL_HEIC=0
+./build.sh                      # == docker build -t ndiro . --build-arg GIT_COMMIT=…
 # LOCAL testing only — bound to loopback, never all interfaces:
 docker run -d --name ndiro --restart unless-stopped \
     --env-file /path/to/.env -p 127.0.0.1:8000:8000 ndiro
@@ -118,6 +123,15 @@ Notes that matter:
   dates; the server never stamps user-local dates from its own clock.
 - Secrets are injected at run time (`--env-file`); nothing is baked into the
   image.
+- **Which version is live?** `/status` shows the running commit (linked to the
+  commit on GitHub), the branch, build/boot times, and whether the optional AI
+  and photo integrations are configured — no configuration values, so it is
+  safe to leave public. `/health` returns the same `commit`/`branch` as JSON,
+  so a deploy can be verified with `curl -s https://.../health`. Where the hash
+  comes from, in order: the `GIT_COMMIT` env var (what `./build.sh` bakes in),
+  Render's `RENDER_GIT_COMMIT`, then a `.git` read — which covers running
+  `python app.py` straight from a checkout, but never a container, because
+  `.git` is dockerignored. None of them = `unknown`, which is a normal state.
 
 ### Raspberry Pi (or any small host) behind Caddy
 
@@ -134,8 +148,20 @@ your.domain.example {
 Caddy terminates TLS; the app's `ProxyFix(x_proto, x_host)` trusts the
 forwarded scheme/host so OAuth redirects and the `Secure` session cookie work.
 Set `GOOGLE_REDIRECT_URI=https://your.domain.example/callback` (and add it to
-the Google client). Deploys are git-based: pull, `docker build`, recreate the
-container **keeping the `--env-file` flag**.
+the Google client). Deploys are git-based: pull, `./build.sh`, recreate the
+container **keeping the `--env-file` flag**:
+
+```bash
+git pull && ./build.sh && \
+    docker rm -f ndiro && \
+    docker run -d --name ndiro --restart unless-stopped \
+        --network <caddy-network> --env-file /path/to/.env ndiro
+# then open https://your.domain.example/status — it should show the commit
+# you just pulled (or curl the same host's /health for the JSON).
+```
+
+Use `./build.sh` rather than a bare `docker build` here — it is what carries
+the commit into the image, so `/status` reflects the pull you just did.
 
 ### Render.com
 
@@ -148,6 +174,9 @@ the start command.
 3. Environment: add every variable from `env_template.txt` with real values
    (`GOOGLE_REDIRECT_URI=https://<your-service>.onrender.com/callback`).
 4. Health check path: `/health`.
+
+Render exports `RENDER_GIT_COMMIT`/`RENDER_GIT_BRANCH` into the service, so
+`/status` shows the deployed commit with no build args to set.
 
 Add the Render URL as an authorized redirect URI on the Google client.
 

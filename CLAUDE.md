@@ -21,6 +21,9 @@ pip install -r requirements.txt
 python app.py                        # dev server, port 5000 (needs .env with SECRET_KEY)
 gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --no-control-socket --preload app:app
 
+./build.sh                           # docker build + the GIT_COMMIT/GIT_BRANCH/BUILD_TIME
+                                     # stamp /status needs (.git never enters the image)
+
 # Stub tests — no credentials or network needed; run ALL of these after changes:
 python tests/test_m1_auth.py         # auth/approval/MAX_USERS
 python tests/probe_cross_user.py     # tenant isolation (THE security test)
@@ -29,6 +32,7 @@ python tests/test_m4_ai.py           # AI caps/refunds/rate limits
 python tests/test_m6_nutrient.py     # per-user tracked micro (settings/gating)
 python tests/test_m7_invites.py      # invite links (auto-approve, single-use)
 python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)
+python tests/test_m9_status.py       # /status build stamp (public page leaks no config)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -44,7 +48,11 @@ raises without it (tests set their own).
   `NUTRIENT_CATALOG` (the closed set of selectable micros — key/label/unit/
   default goal/direction; keys are hand-chosen because they double as form
   field names, nutrients map keys, and AI schema properties, so NEVER let
-  user input become a key), and `resolve_nutrient(user_row)` — the single
+  user input become a key), the build stamp (`GIT_COMMIT`/`GIT_BRANCH`/
+  `BUILD_TIME`/`GITHUB_REPO_URL` → the `/status` page and `/health`: env first
+  — including Render's `RENDER_GIT_*` — then a `.git` read for dev servers,
+  every value regex-validated because the hash and repo URL end up in an
+  `href`; unknown is a normal state), and `resolve_nutrient(user_row)` — the single
   source of truth for the user's tracked micro
   `{key,label,unit,goal,direction,is_default}`; absent attrs or
   `nutrient_key='fiber_g'` fall back to the fiber default (no migration;
@@ -68,7 +76,9 @@ raises without it (tests set their own).
   `(message, status, refundable, ref)` — app.py shows it to the user, so a
   report maps to one log line. `stage` ∈ `request|http|parse` here, plus
   `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
-- **`templates/`** — `base.html` holds the shared skin: 14-token gruvbox
+- **`templates/`** — `base.html` holds the shared skin (its menu also carries
+  the running short commit next to the Status entry, injected by app.py's
+  `inject_build` context processor): 14-token gruvbox
   dark/light `:root` blocks, pre-paint `localStorage('theme')` script, ☀️/🌙
   toggle (dispatches `ndiro-theme-change`; the review chart re-renders from CSS
   tokens on it). `_review_core.html`/`_review_styles.html` are shared by
@@ -171,6 +181,10 @@ delete_photo/delete_user_photos purge the LRU.
 10. Server clock (TZ=UTC) is never used for user-local dates: meal `date` is
     required from the client (400 without it); UTC is a fallback for the time
     component only. Reads take `?anchor=` (client's local today).
+11. `/status` is PUBLIC (like `/privacy` and `/health`): it shows the build
+    stamp, uptime, and BOOLEANS for the optional integrations — never a
+    configuration value (no bucket, model, host, or email). A new field there
+    needs a matching entry in `tests/test_m9_status.py`'s leak check.
 
 ## Gotchas
 

@@ -63,6 +63,13 @@ limiter = Limiter(
 db.ensure_tables()
 
 
+@app.context_processor
+def inject_build():
+    """Running commit for base.html's menu — the version is visible from any
+    page, and /status has the detail."""
+    return {'build_commit_short': config.GIT_COMMIT_SHORT}
+
+
 def _utc_today_str():
     """UTC date for server-side bookkeeping (AI caps). NEVER used as a
     user-local meal date — clients send their own dates."""
@@ -113,8 +120,52 @@ def admin_page():
 
 @app.route('/health')
 def health():
+    """Liveness probe. Carries the running commit so a deploy can be verified
+    with one curl; /status is the same facts for humans."""
     return jsonify({'status': 'healthy',
-                    'timestamp': datetime.now(timezone.utc).isoformat()}), 200
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'commit': config.GIT_COMMIT_SHORT,
+                    'branch': config.GIT_BRANCH}), 200
+
+
+def _uptime_str(seconds):
+    """Coarse, human uptime: 3d 4h / 4h 12m / 12m / 40s."""
+    seconds = int(max(seconds, 0))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f'{days}d {hours}h'
+    if hours:
+        return f'{hours}h {minutes}m'
+    if minutes:
+        return f'{minutes}m'
+    return f'{seconds}s'
+
+
+@app.route('/status')
+@limiter.limit('30 per minute')
+def status_page():
+    """What is running right now: the deployed commit (linked to the public
+    repo) plus which optional integrations are configured. Public on purpose —
+    the source is public, and it must be checkable without signing in. It shows
+    NO configuration values: only whether a feature is on, never the bucket,
+    the model key, or any host."""
+    return render_template(
+        'status.html',
+        user=auth.current_user(),
+        commit=config.GIT_COMMIT,
+        commit_short=config.GIT_COMMIT_SHORT,
+        commit_url=config.commit_url(),
+        branch=config.GIT_BRANCH,
+        build_time=config.BUILD_TIME,
+        repo_url=config.GITHUB_REPO_URL,
+        uptime=_uptime_str(time.time() - config.STARTED_AT),
+        started_at=datetime.fromtimestamp(config.STARTED_AT, timezone.utc)
+                           .strftime('%Y-%m-%d %H:%M UTC'),
+        server_time=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
+        ai_enabled=bool(config.OPENAI_API_KEY),
+        photos_enabled=bool(config.S3_BUCKET))
 
 
 # --- OAuth flow --------------------------------------------------------------

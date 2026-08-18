@@ -14,6 +14,7 @@ __pycache__/
 venv/
 .pytest_cache/
 tests/
+build.sh
 NDIRO_BRIEF.md
 reference/
 README.md

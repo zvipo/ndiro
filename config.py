@@ -1,11 +1,14 @@
 """Ndiro configuration: env loading, hard-fail checks, and app constants.
 
 Everything configurable comes from the environment (.env via python-dotenv).
-No secrets, bucket names, hostnames, or emails are ever hardcoded here.
+No secrets, bucket names, deployment hostnames, or emails are ever hardcoded
+here (the app's own public source-repo URL, shown at /status, is the one
+literal URL — and it too is env-overridable).
 """
 import math
 import os
 import re
+import time
 
 from dotenv import load_dotenv
 
@@ -74,6 +77,81 @@ AI_DAILY_LIMIT = int(os.getenv('AI_DAILY_LIMIT', '10'))  # per user per UTC day
 # appends the same JSON to a file, so the operator can read them offline —
 # point it at a mounted volume or the log is lost with the container.
 AI_ERROR_LOG = os.getenv('AI_ERROR_LOG') or None
+
+# --- Build / version (surfaced at /status and /health) -----------------------
+# What commit is this container actually running? The image carries no .git
+# (dockerignored), so the hash is baked in at build time
+#   docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) ...
+# or supplied by the host at run time (Render exports RENDER_GIT_COMMIT /
+# RENDER_GIT_BRANCH). Reading .git is the dev-server fallback. "Unknown" is a
+# normal state, never an error — nothing in the app depends on knowing.
+_SHA_RE = re.compile(r'^[0-9a-f]{7,40}$')
+_REF_RE = re.compile(r'^[\w][\w./-]{0,119}$')
+_STAMP_RE = re.compile(r'^[0-9A-Za-z:+. -]{1,40}$')
+# Plain https URL only: this value is rendered as an href, so a malformed or
+# javascript: value is dropped rather than linked.
+_REPO_RE = re.compile(r'^https://[\w.-]+(?:/[\w.-]+)*$')
+
+
+def _clean(value, pattern):
+    value = (value or '').strip()
+    return value if pattern.match(value) else None
+
+
+def _git_from_disk():
+    """(commit, branch) read straight out of .git — dev servers only."""
+    git_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.git')
+    try:
+        with open(os.path.join(git_dir, 'HEAD')) as f:
+            head = f.read().strip()
+    except OSError:
+        return None, None
+    if not head.startswith('ref:'):
+        return head, None  # detached HEAD
+    ref = head[4:].strip()
+    branch = ref.rsplit('/', 1)[-1]
+    try:
+        with open(os.path.join(git_dir, ref)) as f:
+            return f.read().strip(), branch
+    except OSError:
+        pass
+    # Packed refs: a fresh clone keeps most refs here rather than as loose files.
+    try:
+        with open(os.path.join(git_dir, 'packed-refs')) as f:
+            for line in f:
+                sha, _, name = line.strip().partition(' ')
+                if name == ref:
+                    return sha, branch
+    except OSError:
+        pass
+    return None, branch
+
+
+_disk_commit, _disk_branch = _git_from_disk()
+
+GIT_COMMIT = (_clean((os.getenv('GIT_COMMIT') or os.getenv('RENDER_GIT_COMMIT') or '').lower(), _SHA_RE)
+              or _clean((_disk_commit or '').lower(), _SHA_RE))
+GIT_COMMIT_SHORT = GIT_COMMIT[:7] if GIT_COMMIT else None
+GIT_BRANCH = (_clean(os.getenv('GIT_BRANCH') or os.getenv('RENDER_GIT_BRANCH'), _REF_RE)
+              or _clean(_disk_branch, _REF_RE))
+# Free-form build stamp (e.g. 2026-08-18T09:12:00Z) baked in alongside the hash.
+BUILD_TIME = _clean(os.getenv('BUILD_TIME'), _STAMP_RE)
+# Process boot, for the uptime line. UTC because TZ=UTC everywhere.
+STARTED_AT = time.time()
+
+# The project's own PUBLIC source repository (this is an open-source app; the
+# link is the point). A fork can repoint it; an empty value hides every link.
+GITHUB_REPO_URL = (os.getenv('GITHUB_REPO_URL', 'https://github.com/zvipo/ndiro') or '').strip().rstrip('/')
+if not _REPO_RE.match(GITHUB_REPO_URL):
+    GITHUB_REPO_URL = ''
+
+
+def commit_url():
+    """Link to the running commit on the public repo, or None."""
+    if GITHUB_REPO_URL and GIT_COMMIT:
+        return f'{GITHUB_REPO_URL}/commit/{GIT_COMMIT}'
+    return None
+
 
 # --- Viscous soluble fiber guide (dietician's handout) -----------------------
 # Grams of viscous SOLUBLE fiber per serving; star = >=3g/serving. Single source

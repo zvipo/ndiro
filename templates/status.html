@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Status{% endblock %}
+{% block favicon %}🩺{% endblock %}
+
+{% block styles %}
+        .commit {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .commit-hash {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--gold);
+            text-decoration: none;
+            letter-spacing: 0.5px;
+        }
+
+        .commit-hash:hover {
+            text-decoration: underline;
+        }
+
+        .commit-full {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.72rem;
+            color: var(--dim);
+            word-break: break-all;
+        }
+
+        .facts {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px 16px;
+            font-size: 0.9rem;
+        }
+
+        .facts dt {
+            color: var(--muted);
+        }
+
+        .facts dd {
+            margin: 0;
+        }
+
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+
+        .dot {
+            font-size: 0.75rem;
+            vertical-align: 1px;
+        }
+
+        .dot.on { color: var(--green); }
+        .dot.off { color: var(--dim); }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🩺 Status</h1>
+            <span class="subtitle">What this instance is running</span>
+        </div>
+
+        <div class="card">
+            <div class="commit">
+                {% if commit %}
+                    {% if commit_url %}
+                    <a class="commit-hash" href="{{ commit_url }}" target="_blank" rel="noopener noreferrer">{{ commit_short }}</a>
+                    {% else %}
+                    <span class="commit-hash">{{ commit_short }}</span>
+                    {% endif %}
+                    {% if branch %}<span class="muted">on <span class="mono">{{ branch }}</span></span>{% endif %}
+                {% else %}
+                    <span class="commit-hash">unknown</span>
+                    <span class="muted">build not stamped</span>
+                {% endif %}
+            </div>
+            {% if commit %}<div class="commit-full">{{ commit }}</div>{% endif %}
+
+            {% if repo_url %}
+            <p style="margin-top:14px;">
+                <a class="btn subtle" href="{{ repo_url }}" target="_blank" rel="noopener noreferrer">↗ Source on GitHub</a>
+            </p>
+            {% endif %}
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+            <dl class="facts">
+                {% if build_time %}
+                <dt>Built</dt><dd class="mono">{{ build_time }}</dd>
+                {% endif %}
+                <dt>Started</dt><dd class="mono">{{ started_at }} <span class="muted">({{ uptime }} ago)</span></dd>
+                <dt>Server time</dt><dd class="mono">{{ server_time }}</dd>
+                <dt>AI estimates</dt>
+                <dd><span class="dot {{ 'on' if ai_enabled else 'off' }}">●</span>
+                    {{ 'enabled' if ai_enabled else 'disabled' }}</dd>
+                <dt>Meal photos</dt>
+                <dd><span class="dot {{ 'on' if photos_enabled else 'off' }}">●</span>
+                    {{ 'enabled' if photos_enabled else 'disabled' }}</dd>
+            </dl>
+        </div>
+
+        <div class="page-note">
+            The same facts in JSON: <a href="/health" class="muted">/health</a>.
+            {% if not commit %}Stamp a build with <span class="mono">GIT_COMMIT</span> to see its hash here.{% endif %}
+        </div>
+{% endblock %}
