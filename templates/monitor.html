@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Monitor{% endblock %}
+{% block favicon %}📈{% endblock %}
+{% block container_class %}wide{% endblock %}
+
+{% block styles %}
+        .tiles {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .tile {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px 16px;
+            box-shadow: 0 6px 18px var(--shadow);
+        }
+
+        .tile .label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted);
+        }
+
+        .tile .value {
+            font-size: 1.7rem;
+            font-weight: 700;
+            color: var(--gold);
+            line-height: 1.3;
+        }
+
+        .tile .value.off { color: var(--dim); }
+
+        .tile .sub,
+        table.usage .sub {
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+
+        .section-title {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--muted);
+            margin: 22px 0 10px;
+        }
+
+        .facts {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 6px 16px;
+            font-size: 0.85rem;
+        }
+
+        .facts dt { color: var(--muted); }
+        .facts dd { margin: 0; }
+
+        /* Wide table: the card scrolls, never the page (small screens). */
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table.usage {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 0.82rem;
+            white-space: nowrap;
+        }
+
+        table.usage th {
+            text-align: right;
+            font-weight: 600;
+            color: var(--muted);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        table.usage td {
+            text-align: right;
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--bg-soft);
+        }
+
+        table.usage th:first-child,
+        table.usage td:first-child {
+            text-align: left;
+            white-space: normal;
+            min-width: 150px;
+        }
+
+        table.usage tr:last-child td { border-bottom: none; }
+        table.usage td.zero { color: var(--dim); }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.62rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 6px;
+            padding: 1px 6px;
+            border: 1px solid var(--border);
+        }
+
+        .badge.pending { color: var(--gold); border-color: var(--gold); }
+        .badge.approved { color: var(--green); border-color: var(--green); }
+        .badge.rejected { color: var(--red); border-color: var(--red); }
+        .badge.admin { color: var(--purple); border-color: var(--purple); }
+
+        .warn {
+            color: var(--red);
+            font-size: 0.8rem;
+            margin-top: 8px;
+        }
+
+        .header-actions {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>📈 Monitor</h1>
+            <span class="subtitle" id="stamp"></span>
+            <span class="header-actions">
+                <a class="btn subtle" href="/admin">🛡 Admin</a>
+                <button type="button" class="btn subtle" id="refreshBtn">↻ Refresh</button>
+            </span>
+        </div>
+
+        {# Counts and account metadata ONLY — like /admin, no surface here shows
+           a user's meals or photos. The server never even loads them: the meals
+           scan is projected to (user_id, date) and photos are counted from S3
+           key listings. #}
+        <div id="body"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        const $ = (id) => document.getElementById(id);
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s == null ? '' : String(s);
+            return d.innerHTML;
+        }
+
+        function fmtBytes(n) {
+            if (!n) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+            return (n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)) + ' ' + units[i];
+        }
+
+        function fmtDay(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso + (iso.length === 10 ? 'T00:00:00' : ''));
+            return isNaN(d) ? iso : d.toLocaleDateString(undefined,
+                { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        const STATUSES = ['pending', 'approved', 'rejected', 'admin'];
+
+        function statusClass(s) {
+            // esc() is text-node escaping: safe between tags, NOT inside an
+            // attribute (it leaves quotes alone). Whitelist anything that
+            // becomes one.
+            return STATUSES.indexOf(s) === -1 ? '' : s;
+        }
+
+        function tile(label, value, sub, off) {
+            return '<div class="tile"><div class="label">' + esc(label) + '</div>' +
+                   '<div class="value' + (off ? ' off' : '') + '">' + esc(value) + '</div>' +
+                   (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') + '</div>';
+        }
+
+        function render(d) {
+            $('stamp').textContent = 'as of ' + new Date(d.generated_at).toLocaleString();
+
+            const a = d.accounts, m = d.meals, p = d.photos;
+            let html = '';
+
+            // --- Headline counts ---
+            html += '<div class="tiles">';
+            html += tile('Accounts', a.total + ' / ' + a.max,
+                         (a.by_status.pending || 0) + ' pending · ' +
+                         (a.by_status.rejected || 0) + ' rejected');
+            html += m ? tile('Meals logged', m.total,
+                             m.days_logged + ' user-days · ' + m.logging_accounts + ' accounts')
+                      : tile('Meals logged', '—', 'unavailable', true);
+            if (p && p.enabled) {
+                html += tile('Photos', p.total, fmtBytes(p.bytes) + ' in S3');
+            } else if (p) {
+                html += tile('Photos', 'off', 'no bucket configured', true);
+            } else {
+                html += tile('Photos', '—', 'unavailable', true);
+            }
+            html += tile('AI estimates today', d.instance.ai_enabled ? a.ai_uses_today : 'off',
+                         d.instance.ai_enabled
+                             ? a.ai_users_today + ' users · ' + a.ai_at_cap + ' at the ' +
+                               d.instance.ai_daily_limit + '/day cap'
+                             : 'no API key configured',
+                         !d.instance.ai_enabled);
+            html += '</div>';
+
+            // --- Activity ---
+            html += '<div class="section-title">Activity · ' + esc(d.anchor) + ' and back</div>';
+            html += '<div class="tiles">';
+            html += m ? tile('Meals last 7 days', m.logged_7d, m.active_7d + ' active accounts')
+                      : tile('Meals last 7 days', '—', 'unavailable', true);
+            html += m ? tile('Meals last 30 days', m.logged_30d, m.active_30d + ' active accounts')
+                      : tile('Meals last 30 days', '—', 'unavailable', true);
+            html += tile('New accounts 7d', a.new_7d, a.new_30d + ' in 30 days');
+            html += tile('Invited signups', a.invited, 'of ' + a.total + ' accounts');
+            html += '</div>';
+
+            // --- Links + instance ---
+            html += '<div class="section-title">Links &amp; instance</div>';
+            html += '<div class="tiles">';
+            html += d.shares
+                ? tile('Share links', d.shares.active + ' active',
+                       d.shares.total + ' ever · ' + d.shares.revoked + ' revoked · ' +
+                       d.shares.expired + ' expired')
+                : tile('Share links', '—', 'unavailable', true);
+            html += d.invites
+                ? tile('Invite links', d.invites.open + ' open',
+                       d.invites.total + ' ever · ' + d.invites.used + ' used · ' +
+                       d.invites.revoked + ' revoked · ' + d.invites.expired + ' expired')
+                : tile('Invite links', '—', 'unavailable', true);
+            html += tile('Uptime', d.instance.uptime,
+                         (d.instance.commit || 'unstamped build') +
+                         (d.instance.branch ? ' · ' + d.instance.branch : ''));
+            html += '</div>';
+
+            // --- Warnings that need an admin's eyes ---
+            const warnings = [];
+            if (m && m.truncated) warnings.push('The meals scan hit its page cap — meal figures are a floor, not a total.');
+            if (p && p.truncated) warnings.push('The photo listing hit its page cap — photo figures are a floor, not a total.');
+            if (d.orphans && (d.orphans.meals || d.orphans.photos)) {
+                warnings.push('Orphaned data: ' + d.orphans.meals + ' meal rows and ' +
+                              d.orphans.photos + ' photo objects belong to no account — ' +
+                              'an account deletion likely stopped part-way.');
+            }
+            if (a.total >= a.max) warnings.push('The instance is full (MAX_USERS reached) — new signups are refused.');
+            if (warnings.length) {
+                html += '<div class="card">' +
+                        warnings.map(w => '<div class="warn">⚠ ' + esc(w) + '</div>').join('') +
+                        '</div>';
+            }
+
+            // --- Per-account usage ---
+            html += '<div class="section-title">Per account</div>';
+            html += '<div class="card"><div class="table-wrap"><table class="usage"><thead><tr>' +
+                    '<th>Account</th><th>Status</th><th>Meals</th><th>Days</th>' +
+                    '<th>Photos</th><th>Storage</th><th>Shares</th><th>Invites</th>' +
+                    '<th>AI today</th><th>First</th><th>Last</th>' +
+                    '</tr></thead><tbody>';
+            for (const u of d.users) {
+                const num = (n) => '<td' + (n ? '' : ' class="zero"') + '>' + esc(n) + '</td>';
+                html += '<tr>' +
+                        '<td>' + esc(u.email) + (u.name ? '<div class="sub muted">' + esc(u.name) + '</div>' : '') + '</td>' +
+                        '<td><span class="badge ' + statusClass(u.status) + '">' + esc(u.status) + '</span></td>' +
+                        num(u.meals) + num(u.days) + num(u.photos) +
+                        '<td' + (u.photo_bytes ? '' : ' class="zero"') + '>' + esc(fmtBytes(u.photo_bytes)) + '</td>' +
+                        num(u.shares_active) + num(u.invites_open) + num(u.ai_today) +
+                        '<td class="muted">' + esc(fmtDay(u.first_logged)) + '</td>' +
+                        '<td class="muted">' + esc(fmtDay(u.last_logged)) + '</td>' +
+                        '</tr>';
+            }
+            html += '</tbody></table></div></div>';
+
+            if (!d.users.length) html += '<div class="page-note">No accounts yet.</div>';
+            html += '<div class="page-note">Counts and account metadata only — ' +
+                    'no admin surface shows a user\'s meals or photos.</div>';
+
+            $('body').innerHTML = html;
+        }
+
+        async function load() {
+            const btn = $('refreshBtn');
+            btn.disabled = true;
+            // The anchor is the ADMIN's local today: meal dates are client-local,
+            // so the 7/30-day windows must be measured against a client day.
+            const today = new Date();
+            const anchor = today.getFullYear() + '-' +
+                String(today.getMonth() + 1).padStart(2, '0') + '-' +
+                String(today.getDate()).padStart(2, '0');
+            try {
+                const resp = await fetch('/api/admin/stats?anchor=' + anchor);
+                if (resp.status === 401 || resp.status === 403) { window.location.href = '/'; return; }
+                if (!resp.ok) throw new Error('bad status');
+                render(await resp.json());
+            } catch (e) {
+                $('body').innerHTML = '<div class="page-note">Could not load instance stats.</div>';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        $('refreshBtn').addEventListener('click', load);
+        load();
+    </script>
+{% endblock %}

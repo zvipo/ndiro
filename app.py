@@ -379,6 +379,157 @@ def admin_set_status(user_id, action):
     return jsonify({'user_id': user_id, 'status': status})
 
 
+# --- Admin monitoring --------------------------------------------------------
+# Instance health in numbers: accounts, meals, photos, links. COUNTS AND
+# ACCOUNT METADATA ONLY — invariant #7 holds here exactly as it does on /admin.
+# The meals scan is projected down to (user_id, date) in db.py, so no meal
+# description, context, or nutrient value can reach this code even by accident,
+# and photos are counted from S3 key listings without fetching a single byte.
+
+@app.route('/admin/monitor')
+@auth.admin_required
+def monitor_page():
+    return render_template('monitor.html', user=g.user)
+
+
+def _window_start(anchor_str, days):
+    """Inclusive start of a days-long window ending on anchor_str.
+
+    Windows are closed at BOTH ends ([start, anchor]) because meal dates are
+    the client's own (invariant #10): an unbounded window would make
+    "last 7 days" quietly include everything logged after it. A meal dated
+    ahead of the admin's day — a user a timezone ahead — therefore sits
+    outside the window until the admin's own date catches up."""
+    return (date.fromisoformat(anchor_str) - timedelta(days=days - 1)).isoformat()
+
+
+def _section(label, fn):
+    """Run one stats collector. A failing section degrades to None so the rest
+    of the dashboard still renders — a monitoring page that 500s the moment S3
+    hiccups is exactly the page you cannot use during an incident."""
+    try:
+        return fn()
+    except Exception as e:
+        print(f"Monitor: {label} stats unavailable: {type(e).__name__}")
+        return None
+
+
+def _user_stats_row(u, meals, photos, shares, invites, utc_today):
+    """Per-account usage line: counts and account metadata, never content."""
+    user_id = u.get('user_id')
+    meal = (meals or {}).get('per_user', {}).get(user_id) or {}
+    photo = (photos or {}).get('per_user', {}).get(user_id) or {}
+    return {
+        'email': u.get('email'),
+        'name': u.get('name'),
+        'status': u.get('status'),
+        'created_at': u.get('created_at'),
+        'meals': meal.get('meals', 0),
+        'days': meal.get('days', 0),
+        'first_logged': meal.get('first'),
+        'last_logged': meal.get('last'),
+        'photos': photo.get('photos', 0),
+        'photo_bytes': photo.get('bytes', 0),
+        'shares_active': (shares or {}).get('per_user', {}).get(user_id, 0),
+        'invites_open': (invites or {}).get('per_user', {}).get(user_id, 0),
+        'ai_today': (int(u.get('ai_uses_today', 0))
+                     if u.get('ai_uses_date') == utc_today else 0),
+    }
+
+
+@app.route('/api/admin/stats')
+@limiter.limit('12 per minute')  # each call is a full scan of every table — cheap, not free
+@auth.admin_required
+def admin_stats():
+    """Instance-wide usage counters for the monitoring page.
+
+    ?anchor=YYYY-MM-DD is the admin's local today (invariant #10): meal dates
+    are client-local, so the 7/30-day windows must be measured against a
+    client-supplied day, not the server clock. UTC is the fallback.
+    """
+    anchor = _valid_date(request.args.get('anchor', '')) or _utc_today_str()
+    utc_today = _utc_today_str()
+    day7, day30 = _window_start(anchor, 7), _window_start(anchor, 30)
+    utc7, utc30 = _window_start(utc_today, 7), _window_start(utc_today, 30)
+
+    users = _section('user', db.list_users)
+    meals = _section('meal', db.scan_meal_stats)
+    photos = _section('photo', db.scan_photo_stats)
+    shares = _section('share', db.scan_share_stats)
+    invites = _section('invite', db.scan_invite_stats)
+    if users is None:
+        return jsonify({'error': 'Failed to load instance stats'}), 500
+
+    by_status = {}
+    for u in users:
+        status = u.get('status') or 'unknown'
+        by_status[status] = by_status.get(status, 0) + 1
+    ai_rows = [u for u in users if u.get('ai_uses_date') == utc_today]
+
+    accounts = {
+        'total': len(users),
+        'max': config.MAX_USERS,
+        'by_status': by_status,
+        # created_at is a SERVER UTC stamp, so its window is UTC-based — the
+        # client anchor governs meal dates only (invariant #10 cuts both ways).
+        'new_7d': sum(1 for u in users if (u.get('created_at') or '')[:10] >= utc7),
+        'new_30d': sum(1 for u in users if (u.get('created_at') or '')[:10] >= utc30),
+        'invited': sum(1 for u in users if u.get('invited_by')),
+        'ai_uses_today': sum(int(u.get('ai_uses_today', 0)) for u in ai_rows),
+        'ai_users_today': sum(1 for u in ai_rows if int(u.get('ai_uses_today', 0))),
+        'ai_at_cap': sum(1 for u in ai_rows
+                         if int(u.get('ai_uses_today', 0)) >= config.AI_DAILY_LIMIT),
+    }
+
+    meals_out = None
+    if meals is not None:
+        per_user = meals['per_user']
+        meals_out = {
+            'total': meals['total'],
+            'truncated': meals['truncated'],
+            'days_logged': sum(r['days'] for r in per_user.values()),
+            'logged_7d': sum(n for d, n in meals['by_date'].items() if day7 <= d <= anchor),
+            'logged_30d': sum(n for d, n in meals['by_date'].items() if day30 <= d <= anchor),
+            'active_7d': sum(1 for r in per_user.values() if day7 <= (r['last'] or '') <= anchor),
+            'active_30d': sum(1 for r in per_user.values() if day30 <= (r['last'] or '') <= anchor),
+            'logging_accounts': len(per_user),
+        }
+
+    # Rows keyed by a user_id with no users-table row: normally zero. A
+    # non-zero count means an account deletion stopped part-way (photos ->
+    # meals -> shares -> invites -> user row) and left data behind.
+    known = {u.get('user_id') for u in users}
+    orphans = {
+        'meals': sum(r['meals'] for uid, r in (meals or {}).get('per_user', {}).items()
+                     if uid not in known),
+        'photos': sum(r['photos'] for uid, r in (photos or {}).get('per_user', {}).items()
+                      if uid not in known),
+    } if meals is not None and photos is not None else None
+
+    rows = [_user_stats_row(u, meals, photos, shares, invites, utc_today) for u in users]
+    rows.sort(key=lambda r: (-r['meals'], (r['email'] or '').lower()))
+
+    return jsonify({
+        'anchor': anchor,
+        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'instance': {
+            'commit': config.GIT_COMMIT_SHORT,
+            'branch': config.GIT_BRANCH,
+            'uptime': _uptime_str(time.time() - config.STARTED_AT),
+            'ai_enabled': bool(config.OPENAI_API_KEY),
+            'ai_daily_limit': config.AI_DAILY_LIMIT,
+            'photos_enabled': bool(config.S3_BUCKET),
+        },
+        'accounts': accounts,
+        'meals': meals_out,
+        'photos': photos and {k: v for k, v in photos.items() if k != 'per_user'},
+        'shares': shares and {k: v for k, v in shares.items() if k != 'per_user'},
+        'invites': invites and {k: v for k, v in invites.items() if k != 'per_user'},
+        'orphans': orphans,
+        'users': rows,
+    })
+
+
 # --- Meal log ----------------------------------------------------------------
 # Tenant discipline: every handler keys on g.user['user_id'] from the session.
 # user_id NEVER comes from the URL, query string, or form.
