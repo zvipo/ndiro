@@ -326,8 +326,17 @@ def logout():
 # --- Admin API (account metadata ONLY — never another user's meals/photos) ---
 
 def _user_to_json(u, email_by_id=None):
-    """email_by_id: user_id -> email lookup so 'invited by' shows something
-    readable; a deleted inviter resolves to null (UI shows a fallback)."""
+    """Admin-facing view of a user row: ACCOUNT METADATA ONLY.
+
+    Deliberately no usage figures — not meal or photo counts, and not the AI
+    daily counter either. What one person did is theirs; /privacy promises an
+    admin sees who has an account, not what they do with it. Instance-wide AI
+    use (and how many accounts are at the cap) is on /admin/monitor, where it
+    names nobody.
+
+    email_by_id: user_id -> email lookup so 'invited by' shows something
+    readable; a deleted inviter resolves to null (UI shows a fallback).
+    """
     return {
         'user_id': u.get('user_id'),
         'email': u.get('email'),
@@ -337,8 +346,6 @@ def _user_to_json(u, email_by_id=None):
         'approved_at': u.get('approved_at'),
         'invited_by': u.get('invited_by'),
         'invited_by_email': (email_by_id or {}).get(u.get('invited_by')),
-        'ai_uses_date': u.get('ai_uses_date'),
-        'ai_uses_today': int(u.get('ai_uses_today', 0)),
     }
 
 

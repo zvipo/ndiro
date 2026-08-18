@@ -29,6 +29,7 @@ python tests/test_m1_auth.py         # auth/approval/MAX_USERS
 python tests/probe_cross_user.py     # tenant isolation (THE security test)
 python tests/test_m3_shares.py       # shares, identical 404s, account deletion
 python tests/test_m4_ai.py           # AI caps/refunds/rate limits
+python tests/test_m5_checklist.py    # security-checklist re-verification (admin payload, cookies)
 python tests/test_m6_nutrient.py     # per-user tracked micro (settings/gating)
 python tests/test_m7_invites.py      # invite links (auto-approve, single-use)
 python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)

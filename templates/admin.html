@@ -60,7 +60,8 @@
         </div>
 
         {# Account metadata only, by design: no admin surface anywhere shows a
-           user's meals or photos. #}
+           user's meals or photos — nor how much of anything one account has
+           logged. Instance-wide totals live on /admin/monitor. #}
         <div id="usersContainer"><div class="page-note"><span class="spin">🥦</span> loading…</div></div>
         <div class="page-note" id="pageNote" style="display:none"></div>
 {% endblock %}
@@ -129,7 +130,6 @@
             const bits = ['joined ' + fmtDate(u.created_at)];
             if (u.approved_at) bits.push('approved ' + fmtDate(u.approved_at));
             if (u.invited_by) bits.push('invited by ' + (u.invited_by_email || 'a deleted account'));
-            if (u.ai_uses_today) bits.push('AI today: ' + u.ai_uses_today);
             meta.textContent = bits.join(' · ');
             card.appendChild(meta);
 

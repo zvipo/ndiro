@@ -95,6 +95,7 @@ python tests/test_m1_auth.py       # sign-in, statuses, approval, MAX_USERS
 python tests/probe_cross_user.py   # tenant isolation: cross-user probe
 python tests/test_m3_shares.py     # share links, identical 404s, account deletion
 python tests/test_m4_ai.py         # AI caps, refunds, rate limits
+python tests/test_m5_checklist.py  # security checklist: admin payload, cookie flags
 python tests/test_m9_status.py     # /status build stamp (and that it leaks no config)
 python tests/test_m10_monitor.py   # /admin/monitor stats (instance totals only)
 ```
