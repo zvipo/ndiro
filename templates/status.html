@@ -105,6 +105,8 @@
 
         <div class="page-note">
             The same facts in JSON: <a href="/health" class="muted">/health</a>.
-            {% if not commit %}Stamp a build with <span class="mono">GIT_COMMIT</span> to see its hash here.{% endif %}
+            {% if not commit %}This build carries no stamp — rebuild with
+            <span class="mono">./build.sh</span>, or pass
+            <span class="mono">GIT_COMMIT</span> in the environment.{% endif %}
         </div>
 {% endblock %}
