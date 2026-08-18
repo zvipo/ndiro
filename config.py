@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+import zlib
 
 from dotenv import load_dotenv
 
@@ -98,6 +99,17 @@ def _clean(value, pattern):
     return value if pattern.match(value) else None
 
 
+# Commit titles are near-free text, rendered ONLY as escaped text (never an
+# href or attribute): first line, capped at 120 chars, no control characters.
+_TITLE_RE = re.compile(r'^[^\x00-\x1f\x7f]{1,120}$')
+
+
+def _clean_title(value):
+    lines = (value or '').strip().splitlines()
+    value = lines[0].strip()[:120] if lines else ''
+    return value if _TITLE_RE.match(value) else None
+
+
 def _git_from_disk():
     """(commit, branch) read straight out of .git — dev servers only."""
     git_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.git')
@@ -127,6 +139,23 @@ def _git_from_disk():
     return None, branch
 
 
+def _git_title_from_disk(commit):
+    """Commit title (message first line) from a loose .git object — dev
+    servers only. Objects that arrived packed (clone/fetch) simply yield
+    None; like the rest of the stamp, unknown is a normal state."""
+    if not commit:
+        return None
+    obj = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       '.git', 'objects', commit[:2], commit[2:])
+    try:
+        with open(obj, 'rb') as f:
+            raw = zlib.decompress(f.read())
+    except (OSError, zlib.error):
+        return None
+    message = raw.partition(b'\n\n')[2]
+    return message.split(b'\n', 1)[0].decode('utf-8', 'replace')
+
+
 _disk_commit, _disk_branch = _git_from_disk()
 
 GIT_COMMIT = (_clean((os.getenv('GIT_COMMIT') or os.getenv('RENDER_GIT_COMMIT') or '').lower(), _SHA_RE)
@@ -134,6 +163,8 @@ GIT_COMMIT = (_clean((os.getenv('GIT_COMMIT') or os.getenv('RENDER_GIT_COMMIT') 
 GIT_COMMIT_SHORT = GIT_COMMIT[:7] if GIT_COMMIT else None
 GIT_BRANCH = (_clean(os.getenv('GIT_BRANCH') or os.getenv('RENDER_GIT_BRANCH'), _REF_RE)
               or _clean(_disk_branch, _REF_RE))
+GIT_COMMIT_TITLE = (_clean_title(os.getenv('GIT_COMMIT_TITLE'))
+                    or _clean_title(_git_title_from_disk(GIT_COMMIT)))
 # Free-form build stamp (e.g. 2026-08-18T09:12:00Z) baked in alongside the hash.
 BUILD_TIME = _clean(os.getenv('BUILD_TIME'), _STAMP_RE)
 # Process boot, for the uptime line. UTC because TZ=UTC everywhere.

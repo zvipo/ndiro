@@ -23,6 +23,11 @@
             text-decoration: underline;
         }
 
+        .commit-title {
+            margin-top: 8px;
+            font-size: 0.95rem;
+        }
+
         .commit-full {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.72rem;
@@ -78,6 +83,7 @@
                     <span class="muted">build not stamped</span>
                 {% endif %}
             </div>
+            {% if commit_title %}<div class="commit-title">{{ commit_title }}</div>{% endif %}
             {% if commit %}<div class="commit-full">{{ commit }}</div>{% endif %}
 
             {% if repo_url %}
