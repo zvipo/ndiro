@@ -24,6 +24,14 @@ tk.check('status page links the source repo', config.GITHUB_REPO_URL in body)
 tk.check('status page reports feature state, not config',
          'Meal photos' in body and 'AI estimates' in body)
 
+# The commit title renders as escaped text — never as markup.
+saved_title = config.GIT_COMMIT_TITLE
+config.GIT_COMMIT_TITLE = 'Add a build stamp <script>alert(1)</script>'
+body = tk.get(anon, '/status').get_data(as_text=True)
+tk.check('status page shows the commit title', 'Add a build stamp' in body)
+tk.check('commit title is HTML-escaped', '<script>alert(1)' not in body)
+config.GIT_COMMIT_TITLE = saved_title
+
 # --- 2. A public page must leak NO configuration -----------------------------
 # Everything below is a real value from the test environment (testkit.py).
 secrets_in_env = ['fake-test-bucket', 'test-secret-key-not-for-production',
@@ -40,15 +48,18 @@ tk.check('health carries the commit', payload.get('commit') == config.GIT_COMMIT
 tk.check('health carries the branch', payload.get('branch') == config.GIT_BRANCH)
 
 # --- 4. Unstamped builds degrade to "unknown", never to an error --------------
-saved = (config.GIT_COMMIT, config.GIT_COMMIT_SHORT, config.GIT_BRANCH, config.BUILD_TIME)
-config.GIT_COMMIT = config.GIT_COMMIT_SHORT = config.GIT_BRANCH = config.BUILD_TIME = None
+saved = (config.GIT_COMMIT, config.GIT_COMMIT_SHORT, config.GIT_BRANCH,
+         config.GIT_COMMIT_TITLE, config.BUILD_TIME)
+config.GIT_COMMIT = config.GIT_COMMIT_SHORT = config.GIT_BRANCH = None
+config.GIT_COMMIT_TITLE = config.BUILD_TIME = None
 resp = tk.get(anon, '/status')
 body = resp.get_data(as_text=True)
 tk.check('unstamped build still renders', resp.status_code == 200)
 tk.check('unstamped build says unknown', 'unknown' in body)
 tk.check('unstamped /health returns null commit',
          tk.get(anon, '/health').get_json()['commit'] is None)
-config.GIT_COMMIT, config.GIT_COMMIT_SHORT, config.GIT_BRANCH, config.BUILD_TIME = saved
+(config.GIT_COMMIT, config.GIT_COMMIT_SHORT, config.GIT_BRANCH,
+ config.GIT_COMMIT_TITLE, config.BUILD_TIME) = saved
 
 # --- 5. Env values are validated before they can reach an href ----------------
 tk.check('non-hex commit rejected', config._clean('not-a-sha', config._SHA_RE) is None)
@@ -59,6 +70,13 @@ tk.check('http repo url rejected', config._REPO_RE.match('http://example.com/x')
 tk.check('https repo url accepted',
          bool(config._REPO_RE.match('https://github.com/example/ndiro')))
 tk.check('branch with a quote rejected', config._clean('main"><script>', config._REF_RE) is None)
+tk.check('plain commit title accepted',
+         config._clean_title('Add /status page') == 'Add /status page')
+tk.check('multi-line title keeps the first line',
+         config._clean_title('subject line\n\nbody text') == 'subject line')
+tk.check('overlong title truncated to 120', config._clean_title('x' * 300) == 'x' * 120)
+tk.check('control chars in a title rejected', config._clean_title('bad\x1b[2Jtitle') is None)
+tk.check('empty title rejected', config._clean_title('   ') is None)
 
 # --- 6. Uptime formatting -----------------------------------------------------
 app_module = tk.app_module

@@ -156,6 +156,7 @@ def status_page():
         user=auth.current_user(),
         commit=config.GIT_COMMIT,
         commit_short=config.GIT_COMMIT_SHORT,
+        commit_title=config.GIT_COMMIT_TITLE,
         commit_url=config.commit_url(),
         branch=config.GIT_BRANCH,
         build_time=config.BUILD_TIME,

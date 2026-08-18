@@ -49,7 +49,7 @@ raises without it (tests set their own).
   default goal/direction; keys are hand-chosen because they double as form
   field names, nutrients map keys, and AI schema properties, so NEVER let
   user input become a key), the build stamp (`GIT_COMMIT`/`GIT_BRANCH`/
-  `BUILD_TIME`/`GITHUB_REPO_URL` → the `/status` page and `/health`: env first
+  `GIT_COMMIT_TITLE`/`BUILD_TIME`/`GITHUB_REPO_URL` → the `/status` page and `/health`: env first
   — including Render's `RENDER_GIT_*` — then a `.git` read for dev servers,
   every value regex-validated because the hash and repo URL end up in an
   `href`; unknown is a normal state), and `resolve_nutrient(user_row)` — the single

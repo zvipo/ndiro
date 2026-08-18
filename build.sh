@@ -17,6 +17,7 @@ TAG="${1:-ndiro}"
 
 COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+TITLE=$(git log -1 --format=%s 2>/dev/null || true)
 BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [ -z "$COMMIT" ]; then
@@ -31,5 +32,6 @@ set -x
 exec docker build -t "$TAG" \
     --build-arg GIT_COMMIT="$COMMIT" \
     --build-arg GIT_BRANCH="$BRANCH" \
+    --build-arg GIT_COMMIT_TITLE="$TITLE" \
     --build-arg BUILD_TIME="$BUILD_TIME" \
     "$@" .
