@@ -89,6 +89,7 @@ python tests/test_m1_auth.py       # sign-in, statuses, approval, MAX_USERS
 python tests/probe_cross_user.py   # tenant isolation: cross-user probe
 python tests/test_m3_shares.py     # share links, identical 404s, account deletion
 python tests/test_m4_ai.py         # AI caps, refunds, rate limits
+python tests/test_m9_status.py     # /status build stamp (and that it leaks no config)
 ```
 
 ## Deploying
@@ -96,7 +97,13 @@ python tests/test_m4_ai.py         # AI caps, refunds, rate limits
 Build the container:
 
 ```bash
-docker build -t ndiro .
+# The --build-arg stamps the image so /status can say what is running (the
+# image has no .git). Plain `docker build -t ndiro .` works too — /status then
+# reports "unknown".
+docker build -t ndiro \
+    --build-arg GIT_COMMIT=$(git rev-parse HEAD) \
+    --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+    --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
 # LOCAL testing only — bound to loopback, never all interfaces:
 docker run -d --name ndiro --restart unless-stopped \
     --env-file /path/to/.env -p 127.0.0.1:8000:8000 ndiro
@@ -118,6 +125,12 @@ Notes that matter:
   dates; the server never stamps user-local dates from its own clock.
 - Secrets are injected at run time (`--env-file`); nothing is baked into the
   image.
+- **Which version is live?** `/status` shows the running commit (linked to the
+  commit on GitHub), the branch, build/boot times, and whether the optional AI
+  and photo integrations are configured — no configuration values, so it is
+  safe to leave public. `/health` returns the same `commit`/`branch` as JSON,
+  so a deploy can be verified with `curl -s https://.../health`. Both need the
+  build stamp above; without it they report `unknown`/`null`.
 
 ### Raspberry Pi (or any small host) behind Caddy
 
@@ -148,6 +161,9 @@ the start command.
 3. Environment: add every variable from `env_template.txt` with real values
    (`GOOGLE_REDIRECT_URI=https://<your-service>.onrender.com/callback`).
 4. Health check path: `/health`.
+
+Render exports `RENDER_GIT_COMMIT`/`RENDER_GIT_BRANCH` into the service, so
+`/status` shows the deployed commit with no build args to set.
 
 Add the Render URL as an authorized redirect URI on the Google client.
 

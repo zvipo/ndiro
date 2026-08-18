@@ -50,6 +50,18 @@ AI_DAILY_LIMIT=10
 # NEVER set this in production.
 # COOKIE_SECURE=0
 
+# --- Build / version (all optional; shown at /status and /health) ---
+# The running commit. Normally baked into the image at build time
+# (docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD)); set it here only
+# when running the code some other way. Render's RENDER_GIT_COMMIT /
+# RENDER_GIT_BRANCH are picked up automatically, and the dev server reads .git.
+#GIT_COMMIT=
+#GIT_BRANCH=
+#BUILD_TIME=2026-01-31T12:00:00Z
+# Public source repo the /status page links to. Defaults to the upstream repo;
+# point a fork at itself, or set it empty to show no links at all.
+#GITHUB_REPO_URL=https://github.com/your-org/ndiro
+
 # --- Serving ---
 PORT=8000
 # Optional: in-process photo cache budget in MB (default 64)

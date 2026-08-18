@@ -308,6 +308,13 @@
             white-space: nowrap;
         }
 
+        /* Running commit, riding along the Status entry. */
+        .menu-build {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.74rem;
+            color: var(--dim);
+        }
+
         .menu-panel a,
         .menu-item-btn {
             display: block;
@@ -364,6 +371,7 @@
                 <div class="menu-sep"></div>
                 {% endif %}
                 <a href="/privacy">📄 Privacy</a>
+                <a href="/status">🩺 Status{% if build_commit_short %} <span class="menu-build">{{ build_commit_short }}</span>{% endif %}</a>
                 <button type="button" class="menu-item-btn" id="themeToggle">
                     <span id="themeIcon">☀️</span> <span id="themeLabel">Light mode</span>
                 </button>

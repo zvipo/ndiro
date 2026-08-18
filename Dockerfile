@@ -57,6 +57,21 @@ COPY . .
 RUN useradd --no-create-home --user-group ndiro
 USER ndiro
 
+# Which commit this image contains. .git is dockerignored, so the hash can only
+# come from the build:
+#   docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) \
+#                --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+#                --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) -t ndiro .
+# Last on purpose: they change every commit, so no layer above them is rebuilt.
+# Unset is fine — /status then says "unknown". Hosts that inject their own
+# (Render's RENDER_GIT_COMMIT) need no build arg at all.
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH=""
+ARG BUILD_TIME=""
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV BUILD_TIME=$BUILD_TIME
+
 EXPOSE $PORT
 
 # SINGLE worker is load-bearing: the rate limiter is in-memory (memory://),
