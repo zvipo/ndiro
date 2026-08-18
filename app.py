@@ -31,6 +31,7 @@ _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
 _INVITE_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')  # token_urlsafe shape
 _NUTRIENT_MAX = Decimal('100000')  # grams; anything larger is nonsense / a DynamoDB overflow
+_DATE_SLACK = timedelta(days=400)  # day arithmetic a validated date must survive (see _valid_date)
 
 app = Flask(__name__)
 
@@ -549,13 +550,20 @@ def _valid_date(date_str):
     strptime alone is lenient ('2026-8-5' parses), which would produce a sort
     key that zero-padded month queries never match (silent data loss) and 500
     when fed to date.fromisoformat as an anchor. Require the round trip.
+
+    Callers also do +/-N-day arithmetic on an accepted date (the day list in
+    _meals_payload, the windows in /api/admin/stats), which overflows within a
+    month of date.min/date.max. That is this function's job to prevent, so the
+    slack is checked here rather than at every call site.
     """
     if not isinstance(date_str, str) or not _DATE_RE.match(date_str):
         return None
     try:
-        datetime.strptime(date_str, '%Y-%m-%d')
+        parsed = datetime.strptime(date_str, '%Y-%m-%d').date()
+        parsed - _DATE_SLACK
+        parsed + _DATE_SLACK
         return date_str
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 

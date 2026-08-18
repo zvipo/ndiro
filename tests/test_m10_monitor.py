@@ -130,6 +130,15 @@ old_anchor = stats(anchor='2026-06-02').get_json()['meals']
 tk.check('an earlier anchor catches the old meal', old_anchor['logged_7d'] == 1)
 tk.check('a junk anchor falls back to UTC today rather than 400ing',
          stats(anchor='not-a-date').status_code == 200)
+# A date within a month of date.min/date.max overflows the window arithmetic —
+# _valid_date rejects it so no caller has to (the meals API 400s on the same).
+tk.check('date.min/date.max anchors are rejected, not 500s',
+         tk.app_module._valid_date('0001-01-01') is None
+         and tk.app_module._valid_date('9999-12-31') is None
+         and tk.app_module._valid_date('2026-08-18') == '2026-08-18')
+tk.check('an unrepresentable anchor degrades to UTC today',
+         stats(anchor='0001-01-01').status_code == 200
+         and stats(anchor='9999-12-31').status_code == 200)
 
 # --- 5. Per-account usage rows ----------------------------------------------
 rows = {r['email']: r for r in d['users']}
