@@ -97,13 +97,11 @@ python tests/test_m9_status.py     # /status build stamp (and that it leaks no c
 Build the container:
 
 ```bash
-# The --build-arg stamps the image so /status can say what is running (the
-# image has no .git). Plain `docker build -t ndiro .` works too — /status then
-# reports "unknown".
-docker build -t ndiro \
-    --build-arg GIT_COMMIT=$(git rev-parse HEAD) \
-    --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
-    --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+# ./build.sh is `docker build` plus the commit stamp, so /status can report
+# what is deployed. .git is dockerignored, so the hash can ONLY get in this
+# way — a plain `docker build -t ndiro .` builds fine but /status then says
+# "unknown". Extra flags pass through: ./build.sh ndiro --build-arg INSTALL_HEIC=0
+./build.sh                      # == docker build -t ndiro . --build-arg GIT_COMMIT=…
 # LOCAL testing only — bound to loopback, never all interfaces:
 docker run -d --name ndiro --restart unless-stopped \
     --env-file /path/to/.env -p 127.0.0.1:8000:8000 ndiro
@@ -129,8 +127,11 @@ Notes that matter:
   commit on GitHub), the branch, build/boot times, and whether the optional AI
   and photo integrations are configured — no configuration values, so it is
   safe to leave public. `/health` returns the same `commit`/`branch` as JSON,
-  so a deploy can be verified with `curl -s https://.../health`. Both need the
-  build stamp above; without it they report `unknown`/`null`.
+  so a deploy can be verified with `curl -s https://.../health`. Where the hash
+  comes from, in order: the `GIT_COMMIT` env var (what `./build.sh` bakes in),
+  Render's `RENDER_GIT_COMMIT`, then a `.git` read — which covers running
+  `python app.py` straight from a checkout, but never a container, because
+  `.git` is dockerignored. None of them = `unknown`, which is a normal state.
 
 ### Raspberry Pi (or any small host) behind Caddy
 
@@ -147,8 +148,20 @@ your.domain.example {
 Caddy terminates TLS; the app's `ProxyFix(x_proto, x_host)` trusts the
 forwarded scheme/host so OAuth redirects and the `Secure` session cookie work.
 Set `GOOGLE_REDIRECT_URI=https://your.domain.example/callback` (and add it to
-the Google client). Deploys are git-based: pull, `docker build`, recreate the
-container **keeping the `--env-file` flag**.
+the Google client). Deploys are git-based: pull, `./build.sh`, recreate the
+container **keeping the `--env-file` flag**:
+
+```bash
+git pull && ./build.sh && \
+    docker rm -f ndiro && \
+    docker run -d --name ndiro --restart unless-stopped \
+        --network <caddy-network> --env-file /path/to/.env ndiro
+# then open https://your.domain.example/status — it should show the commit
+# you just pulled (or curl the same host's /health for the JSON).
+```
+
+Use `./build.sh` rather than a bare `docker build` here — it is what carries
+the commit into the image, so `/status` reflects the pull you just did.
 
 ### Render.com
 

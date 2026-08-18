@@ -21,6 +21,9 @@ pip install -r requirements.txt
 python app.py                        # dev server, port 5000 (needs .env with SECRET_KEY)
 gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --no-control-socket --preload app:app
 
+./build.sh                           # docker build + the GIT_COMMIT/GIT_BRANCH/BUILD_TIME
+                                     # stamp /status needs (.git never enters the image)
+
 # Stub tests — no credentials or network needed; run ALL of these after changes:
 python tests/test_m1_auth.py         # auth/approval/MAX_USERS
 python tests/probe_cross_user.py     # tenant isolation (THE security test)
