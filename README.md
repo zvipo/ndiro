@@ -16,14 +16,15 @@ Anyone can sign in with Google. A first sign-in creates a **pending** account an
 lands on a waiting page; an admin approves or rejects it at `/admin`. Emails
 listed in `ADMIN_EMAILS` become admins automatically on their first sign-in.
 `MAX_USERS` (default 100) caps account creation server-side. `/admin/monitor` is
-the instance dashboard: accounts, meals logged, photos and storage, share and
-invite links, AI use, and a per-account usage table.
+the instance dashboard: accounts by status, meals logged, photos and storage,
+share and invite links, and AI use — all instance-wide totals.
 
-Everything a user logs is private to them. Admins see account metadata and
-**counts** only — there is no admin view of anyone's meals or photos, and the
-monitoring scan behind `/admin/monitor` never even loads them (it projects meal
-rows down to `user_id` + `date`, and counts photos from S3 key listings without
-fetching a byte). Users can delete their
+Everything a user logs is private to them. Admins see account metadata only —
+there is no admin view of anyone's meals or photos, and no per-account usage
+figures either: the dashboard reports totals for the instance, never a line
+attributable to one person. The scan behind it never even loads meal content
+(it projects meal rows down to `user_id` + `date`, and counts photos from S3
+key listings without fetching a byte). Users can delete their
 account (and every trace of their data) themselves in Settings. See `/privacy`.
 
 ## Local development
@@ -95,7 +96,7 @@ python tests/probe_cross_user.py   # tenant isolation: cross-user probe
 python tests/test_m3_shares.py     # share links, identical 404s, account deletion
 python tests/test_m4_ai.py         # AI caps, refunds, rate limits
 python tests/test_m9_status.py     # /status build stamp (and that it leaks no config)
-python tests/test_m10_monitor.py   # /admin/monitor stats (counts only, never meal content)
+python tests/test_m10_monitor.py   # /admin/monitor stats (instance totals only)
 ```
 
 ## Deploying

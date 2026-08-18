@@ -62,7 +62,8 @@ raises without it (tests set their own).
   users/meals/shares/invites accessors, S3 photo helpers, the AI daily-use
   counter, and the `scan_*_stats` collectors behind `/admin/monitor` (full
   scans, page-capped, reporting `truncated` rather than lying; the meals one
-  is projected to `user_id`+`date` — see invariant #7).
+  is projected to `user_id`+`date`; the `per_user` maps are internal
+  intermediates, never serialized — see invariant #7).
   Table handles are functions (`users_table()` etc.) so tests swap in fakes.
 - **`auth.py`** — Google OAuth (server-side code exchange via `requests`, no
   JWT lib; token trusted because it comes from Google over TLS), `current_user()`,
@@ -80,8 +81,9 @@ raises without it (tests set their own).
   report maps to one log line. `stage` ∈ `request|http|parse` here, plus
   `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
 - **`templates/`** — `admin.html` (accounts + approve/reject) and
-  `monitor.html` (the instance dashboard: tiles from `/api/admin/stats`, plus a
-  per-account usage table) are the two admin surfaces; `base.html` holds the
+  `monitor.html` (the instance dashboard: aggregate tiles from
+  `/api/admin/stats`, deliberately with no per-account table) are the two admin
+  surfaces; `base.html` holds the
   shared skin (its menu also carries
   the running short commit next to the Status entry, injected by app.py's
   `inject_build` context processor): 14-token gruvbox
@@ -167,14 +169,19 @@ delete_photo/delete_user_photos purge the LRU.
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
    race-safe two-call conditional counter in db.py (increment BEFORE the
    OpenAI call; refund on upstream failure only).
-7. Admin surfaces show account metadata and COUNTS ONLY — no route or template
-   lets an admin see another user's meals or photos. `/admin/monitor` +
-   `/api/admin/stats` are held to this structurally, not by convention:
+7. Admin surfaces show account metadata ONLY — no route or template lets an
+   admin see another user's meals or photos. `/admin` shows the user rows
+   (email/name/status); `/admin/monitor` + `/api/admin/stats` add INSTANCE-WIDE
+   AGGREGATES and nothing else — no per-account row, id, count, or date, so the
+   dashboard adds nothing to what `/privacy` already promises. Two mechanisms
+   hold it there, and both are asserted by `tests/test_m10_monitor.py`:
    `db.scan_meal_stats` scans with `ProjectionExpression='user_id, #d'` so
    descriptions/contexts/nutrient values never enter the process, and
    `db.scan_photo_stats` counts S3 keys/sizes without a single `get_object`.
-   Never widen that projection, and never add a per-meal field to the stats
-   payload — `tests/test_m10_monitor.py` asserts both.
+   The `per_user` maps those two return are INTERMEDIATES — they exist so the
+   route can compute cardinalities (`logging_accounts`, `active_7d`) and detect
+   orphans; nothing keyed by user_id may be serialized. Never widen the
+   projection, and never add a per-account field to the payload.
 8. Server logs carry user IDs and error types only — never meal descriptions,
    contexts, or photo bytes. The AI_ERROR records add call metadata (stage,
    model, sizes, timings) and the PROVIDER's own error fields (status, request

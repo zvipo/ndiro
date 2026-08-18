@@ -736,6 +736,11 @@ def scan_meal_stats():
     {user_id: {'meals', 'days', 'first', 'last'}}} where days counts distinct
     logged dates. Dates are the CLIENT's local dates (invariant #10), so any
     window built from them is the users' own day, not the server's.
+
+    per_user exists so the caller can compute CARDINALITIES (how many accounts
+    have logged, how many logged this week) and spot rows belonging to no
+    account. It is an intermediate, not an output: nothing keyed by user_id may
+    be serialized to an admin — see the note above /api/admin/stats in app.py.
     """
     items, truncated = _scan_all_pages(
         meals_table(),
@@ -773,6 +778,9 @@ def scan_photo_stats():
     Keys and sizes only — no object is ever fetched, so photo bytes never
     enter the process (invariant #7). Returns enabled=False when photo storage
     is not configured, which is a normal state, not an error.
+
+    As with scan_meal_stats, per_user is an intermediate for totals and orphan
+    detection — never something an admin is shown.
     """
     if not config.S3_BUCKET:
         return {'enabled': False, 'total': 0, 'bytes': 0, 'truncated': False,
@@ -810,17 +818,17 @@ def scan_photo_stats():
 def scan_share_stats(now=None):
     """Share rows bucketed into MUTUALLY EXCLUSIVE outcomes that sum to total:
     active -> revoked -> expired. Rows are kept after revoke/expiry by design,
-    so 'total' is lifetime links minted, not live ones."""
+    so 'total' is lifetime links minted, not live ones.
+
+    Totals only — deliberately not grouped by user_id. Who holds a live share
+    link is between that user and their /shares page."""
     rows, truncated = _scan_all_pages(shares_table())
     now = now or time.time()
     stats = {'total': len(rows), 'active': 0, 'revoked': 0, 'expired': 0,
-             'truncated': truncated, 'per_user': {}}
+             'truncated': truncated}
     for row in rows:
         if share_is_active(row, now):
             stats['active'] += 1
-            user_id = row.get('user_id')
-            if user_id:
-                stats['per_user'][user_id] = stats['per_user'].get(user_id, 0) + 1
         elif row.get('revoked'):
             stats['revoked'] += 1
         else:
@@ -832,11 +840,13 @@ def scan_invite_stats(now=None):
     """Invite rows bucketed into MUTUALLY EXCLUSIVE outcomes that sum to
     total: used -> revoked -> expired -> open (still redeemable). 'open' is
     the count MAX_ACTIVE_INVITES caps, minus the used ones a cap-time
-    invite_is_active() would still include."""
+    invite_is_active() would still include.
+
+    Totals only — like shares, deliberately not grouped by user_id."""
     rows, truncated = _scan_all_pages(invites_table())
     now = now or time.time()
     stats = {'total': len(rows), 'open': 0, 'used': 0, 'revoked': 0,
-             'expired': 0, 'truncated': truncated, 'per_user': {}}
+             'expired': 0, 'truncated': truncated}
     for row in rows:
         if row.get('used_by'):
             stats['used'] += 1
@@ -846,7 +856,4 @@ def scan_invite_stats(now=None):
             stats['expired'] += 1
         else:
             stats['open'] += 1
-            user_id = row.get('user_id')
-            if user_id:
-                stats['per_user'][user_id] = stats['per_user'].get(user_id, 0) + 1
     return stats

@@ -381,11 +381,18 @@ def admin_set_status(user_id, action):
 
 
 # --- Admin monitoring --------------------------------------------------------
-# Instance health in numbers: accounts, meals, photos, links. COUNTS AND
-# ACCOUNT METADATA ONLY — invariant #7 holds here exactly as it does on /admin.
-# The meals scan is projected down to (user_id, date) in db.py, so no meal
-# description, context, or nutrient value can reach this code even by accident,
-# and photos are counted from S3 key listings without fetching a single byte.
+# Instance health in numbers: accounts, meals, photos, links. INSTANCE-WIDE
+# AGGREGATES ONLY — nothing here is attributable to an individual account.
+# /admin stays the only place a user's row is shown, and it shows the metadata
+# it always has (email, name, status); this route adds NO per-account figure to
+# that, deliberately. Two things hold it there:
+#   - db.py groups by user_id internally (orphan detection and the "how many
+#     accounts are active" counts need it), but no per-user key, count, or date
+#     is ever serialized — only sums and cardinalities.
+#   - the meals scan is projected down to (user_id, date), so no description,
+#     context, or nutrient value reaches this code even by accident, and photos
+#     are counted from S3 key listings without fetching a single byte.
+# tests/test_m10_monitor.py asserts both. Do not add a per-account field here.
 
 @app.route('/admin/monitor')
 @auth.admin_required
@@ -413,29 +420,6 @@ def _section(label, fn):
     except Exception as e:
         print(f"Monitor: {label} stats unavailable: {type(e).__name__}")
         return None
-
-
-def _user_stats_row(u, meals, photos, shares, invites, utc_today):
-    """Per-account usage line: counts and account metadata, never content."""
-    user_id = u.get('user_id')
-    meal = (meals or {}).get('per_user', {}).get(user_id) or {}
-    photo = (photos or {}).get('per_user', {}).get(user_id) or {}
-    return {
-        'email': u.get('email'),
-        'name': u.get('name'),
-        'status': u.get('status'),
-        'created_at': u.get('created_at'),
-        'meals': meal.get('meals', 0),
-        'days': meal.get('days', 0),
-        'first_logged': meal.get('first'),
-        'last_logged': meal.get('last'),
-        'photos': photo.get('photos', 0),
-        'photo_bytes': photo.get('bytes', 0),
-        'shares_active': (shares or {}).get('per_user', {}).get(user_id, 0),
-        'invites_open': (invites or {}).get('per_user', {}).get(user_id, 0),
-        'ai_today': (int(u.get('ai_uses_today', 0))
-                     if u.get('ai_uses_date') == utc_today else 0),
-    }
 
 
 @app.route('/api/admin/stats')
@@ -507,9 +491,6 @@ def admin_stats():
                       if uid not in known),
     } if meals is not None and photos is not None else None
 
-    rows = [_user_stats_row(u, meals, photos, shares, invites, utc_today) for u in users]
-    rows.sort(key=lambda r: (-r['meals'], (r['email'] or '').lower()))
-
     return jsonify({
         'anchor': anchor,
         'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
@@ -524,10 +505,9 @@ def admin_stats():
         'accounts': accounts,
         'meals': meals_out,
         'photos': photos and {k: v for k, v in photos.items() if k != 'per_user'},
-        'shares': shares and {k: v for k, v in shares.items() if k != 'per_user'},
-        'invites': invites and {k: v for k, v in invites.items() if k != 'per_user'},
+        'shares': shares,
+        'invites': invites,
         'orphans': orphans,
-        'users': rows,
     })
 
 

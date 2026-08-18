@@ -140,19 +140,34 @@ tk.check('an unrepresentable anchor degrades to UTC today',
          stats(anchor='0001-01-01').status_code == 200
          and stats(anchor='9999-12-31').status_code == 200)
 
-# --- 5. Per-account usage rows ----------------------------------------------
-rows = {r['email']: r for r in d['users']}
-tk.check('every account has a usage row', set(rows) == {
-    'admin@example.test', 'alice@example.test', 'bob@example.test', 'pat@example.test'})
-a = rows['alice@example.test']
-tk.check('per-account meals counted', a['meals'] == 4 and a['days'] == 2)
-tk.check('per-account photos counted', a['photos'] == 1 and a['photo_bytes'] == PHOTO_BYTES)
-tk.check('per-account first/last logged dates', a['first_logged'] == RECENT and a['last_logged'] == TODAY)
-tk.check('per-account active shares counted', a['shares_active'] == 1)
-tk.check('per-account open invites counted', rows['bob@example.test']['invites_open'] == 1)
-tk.check('idle accounts read zero', rows['pat@example.test']['meals'] == 0)
-tk.check('rows are sorted busiest first', d['users'][0]['email'] == 'alice@example.test')
-tk.check('usage rows carry no user_id', 'user_id' not in a)
+# --- 5. NOTHING on this page is attributable to one account ------------------
+# /privacy promises admins see account metadata and nothing more. The dashboard
+# reports instance totals, so no per-account row, id, email, or date may appear
+# — even though db.py groups by user_id internally to compute the totals.
+d = stats().get_json()
+body = stats().get_data(as_text=True)
+tk.check('payload carries no per-account rows', 'users' not in d)
+tk.check('payload carries no user ids',
+         not any(uid in body for uid in ('sub-alice', 'sub-bob', 'sub-admin', 'sub-pat')))
+tk.check('payload carries no email addresses', '@example.test' not in body)
+# The page itself only ever names the admin viewing it (base.html's menu shows
+# your own email on every page) — never another account.
+page = tk.get(admin, '/admin/monitor').get_data(as_text=True)
+tk.check('the rendered page names no account but the viewer',
+         not any(e in page for e in ('alice@example.test', 'bob@example.test',
+                                     'pat@example.test'))
+         and 'admin@example.test' in page)
+tk.check('share stats are totals, not a per-user breakdown', 'per_user' not in d['shares'])
+tk.check('invite stats are totals, not a per-user breakdown', 'per_user' not in d['invites'])
+tk.check('photo stats are totals, not a per-user breakdown', 'per_user' not in d['photos'])
+tk.check('no meal dates leak as per-account first/last',
+         not any(k in body for k in ('first_logged', 'last_logged')))
+# The internal grouping still has to exist — it is what the cardinalities and
+# the orphan check are computed from. It just must not be serialized.
+tk.check('db.py still groups internally so totals can be counted',
+         set(db.scan_meal_stats()['per_user']) == {'sub-alice', 'sub-bob'})
+tk.check('active-account counts survive without exposing who',
+         d['meals']['active_7d'] == 1 and d['meals']['logging_accounts'] == 2)
 
 # --- 6. AI use is reported for the UTC day the cap actually uses -------------
 db.users_table().update_item(
@@ -167,16 +182,19 @@ acc = stats().get_json()['accounts']
 tk.check('AI uses today summed', acc['ai_uses_today'] == config.AI_DAILY_LIMIT)
 tk.check('users at the daily cap counted', acc['ai_at_cap'] == 1)
 tk.check('AI users today counted', acc['ai_users_today'] == 1)
+# Bob's 99 uses are stamped 2000-01-01; only the current UTC day may be summed.
 tk.check("a stale ai_uses_date does not leak into today's total",
-         stats().get_json()['users'][0]['ai_today'] == config.AI_DAILY_LIMIT
-         and {r['email']: r for r in stats().get_json()['users']}['bob@example.test']['ai_today'] == 0)
+         acc['ai_uses_today'] == config.AI_DAILY_LIMIT and acc['ai_users_today'] == 1)
 
 # --- 7. Orphans: data left behind by a half-finished account deletion --------
 db.users_table().delete_item(Key={'user_id': 'sub-bob'})
 d = stats().get_json()
 tk.check('orphaned meal rows surfaced', d['orphans']['meals'] == 1)
-tk.check('a deleted account drops off the usage table',
-         'bob@example.test' not in {r['email'] for r in d['users']})
+tk.check('the orphan count names no one',
+         set(d['orphans']) == {'meals', 'photos'}
+         and all(isinstance(v, int) for v in d['orphans'].values()))
+tk.check('a deleted account drops out of the totals',
+         d['accounts']['total'] == 3 and d['meals']['logging_accounts'] == 2)
 db.create_user('sub-bob', 'bob@example.test', 'Bob', 'approved')
 
 # --- 8. One failing backend degrades its section, never the whole page -------
@@ -188,8 +206,6 @@ tk.check('a dead S3 still returns 200', resp.status_code == 200)
 tk.check('the photo section degrades to null', d['photos'] is None)
 tk.check('orphan detection degrades with it', d['orphans'] is None)
 tk.check('the other sections still report', d['meals']['total'] == 5 and d['accounts']['total'] == 4)
-tk.check('per-account rows survive a dead photo backend',
-         {r['email']: r for r in d['users']}['alice@example.test']['photos'] == 0)
 db.scan_photo_stats = saved
 
 saved_users = db.list_users
