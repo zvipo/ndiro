@@ -31,6 +31,7 @@ _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
 _INVITE_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')  # token_urlsafe shape
 _NUTRIENT_MAX = Decimal('100000')  # grams; anything larger is nonsense / a DynamoDB overflow
+_DATE_SLACK = timedelta(days=400)  # day arithmetic a validated date must survive (see _valid_date)
 
 app = Flask(__name__)
 
@@ -326,8 +327,17 @@ def logout():
 # --- Admin API (account metadata ONLY — never another user's meals/photos) ---
 
 def _user_to_json(u, email_by_id=None):
-    """email_by_id: user_id -> email lookup so 'invited by' shows something
-    readable; a deleted inviter resolves to null (UI shows a fallback)."""
+    """Admin-facing view of a user row: ACCOUNT METADATA ONLY.
+
+    Deliberately no usage figures — not meal or photo counts, and not the AI
+    daily counter either. What one person did is theirs; /privacy promises an
+    admin sees who has an account, not what they do with it. Instance-wide AI
+    use (and how many accounts are at the cap) is on /admin/monitor, where it
+    names nobody.
+
+    email_by_id: user_id -> email lookup so 'invited by' shows something
+    readable; a deleted inviter resolves to null (UI shows a fallback).
+    """
     return {
         'user_id': u.get('user_id'),
         'email': u.get('email'),
@@ -337,8 +347,6 @@ def _user_to_json(u, email_by_id=None):
         'approved_at': u.get('approved_at'),
         'invited_by': u.get('invited_by'),
         'invited_by_email': (email_by_id or {}).get(u.get('invited_by')),
-        'ai_uses_date': u.get('ai_uses_date'),
-        'ai_uses_today': int(u.get('ai_uses_today', 0)),
     }
 
 
@@ -380,6 +388,137 @@ def admin_set_status(user_id, action):
     return jsonify({'user_id': user_id, 'status': status})
 
 
+# --- Admin monitoring --------------------------------------------------------
+# Instance health in numbers: accounts, meals, photos, links. INSTANCE-WIDE
+# AGGREGATES ONLY — nothing here is attributable to an individual account.
+# /admin stays the only place a user's row is shown, and it shows the metadata
+# it always has (email, name, status); this route adds NO per-account figure to
+# that, deliberately. Two things hold it there:
+#   - db.py groups by user_id internally (orphan detection and the "how many
+#     accounts are active" counts need it), but no per-user key, count, or date
+#     is ever serialized — only sums and cardinalities.
+#   - the meals scan is projected down to (user_id, date), so no description,
+#     context, or nutrient value reaches this code even by accident, and photos
+#     are counted from S3 key listings without fetching a single byte.
+# tests/test_m10_monitor.py asserts both. Do not add a per-account field here.
+
+@app.route('/admin/monitor')
+@auth.admin_required
+def monitor_page():
+    return render_template('monitor.html', user=g.user)
+
+
+def _window_start(anchor_str, days):
+    """Inclusive start of a days-long window ending on anchor_str.
+
+    Windows are closed at BOTH ends ([start, anchor]) because meal dates are
+    the client's own (invariant #10): an unbounded window would make
+    "last 7 days" quietly include everything logged after it. A meal dated
+    ahead of the admin's day — a user a timezone ahead — therefore sits
+    outside the window until the admin's own date catches up."""
+    return (date.fromisoformat(anchor_str) - timedelta(days=days - 1)).isoformat()
+
+
+def _section(label, fn):
+    """Run one stats collector. A failing section degrades to None so the rest
+    of the dashboard still renders — a monitoring page that 500s the moment S3
+    hiccups is exactly the page you cannot use during an incident."""
+    try:
+        return fn()
+    except Exception as e:
+        print(f"Monitor: {label} stats unavailable: {type(e).__name__}")
+        return None
+
+
+@app.route('/api/admin/stats')
+@limiter.limit('12 per minute')  # each call is a full scan of every table — cheap, not free
+@auth.admin_required
+def admin_stats():
+    """Instance-wide usage counters for the monitoring page.
+
+    ?anchor=YYYY-MM-DD is the admin's local today (invariant #10): meal dates
+    are client-local, so the 7/30-day windows must be measured against a
+    client-supplied day, not the server clock. UTC is the fallback.
+    """
+    anchor = _valid_date(request.args.get('anchor', '')) or _utc_today_str()
+    utc_today = _utc_today_str()
+    day7, day30 = _window_start(anchor, 7), _window_start(anchor, 30)
+    utc7, utc30 = _window_start(utc_today, 7), _window_start(utc_today, 30)
+
+    users = _section('user', db.list_users)
+    meals = _section('meal', db.scan_meal_stats)
+    photos = _section('photo', db.scan_photo_stats)
+    shares = _section('share', db.scan_share_stats)
+    invites = _section('invite', db.scan_invite_stats)
+    if users is None:
+        return jsonify({'error': 'Failed to load instance stats'}), 500
+
+    by_status = {}
+    for u in users:
+        status = u.get('status') or 'unknown'
+        by_status[status] = by_status.get(status, 0) + 1
+    ai_rows = [u for u in users if u.get('ai_uses_date') == utc_today]
+
+    accounts = {
+        'total': len(users),
+        'max': config.MAX_USERS,
+        'by_status': by_status,
+        # created_at is a SERVER UTC stamp, so its window is UTC-based — the
+        # client anchor governs meal dates only (invariant #10 cuts both ways).
+        'new_7d': sum(1 for u in users if (u.get('created_at') or '')[:10] >= utc7),
+        'new_30d': sum(1 for u in users if (u.get('created_at') or '')[:10] >= utc30),
+        'invited': sum(1 for u in users if u.get('invited_by')),
+        'ai_uses_today': sum(int(u.get('ai_uses_today', 0)) for u in ai_rows),
+        'ai_users_today': sum(1 for u in ai_rows if int(u.get('ai_uses_today', 0))),
+        'ai_at_cap': sum(1 for u in ai_rows
+                         if int(u.get('ai_uses_today', 0)) >= config.AI_DAILY_LIMIT),
+    }
+
+    meals_out = None
+    if meals is not None:
+        per_user = meals['per_user']
+        meals_out = {
+            'total': meals['total'],
+            'truncated': meals['truncated'],
+            'days_logged': sum(r['days'] for r in per_user.values()),
+            'logged_7d': sum(n for d, n in meals['by_date'].items() if day7 <= d <= anchor),
+            'logged_30d': sum(n for d, n in meals['by_date'].items() if day30 <= d <= anchor),
+            'active_7d': sum(1 for r in per_user.values() if day7 <= (r['last'] or '') <= anchor),
+            'active_30d': sum(1 for r in per_user.values() if day30 <= (r['last'] or '') <= anchor),
+            'logging_accounts': len(per_user),
+        }
+
+    # Rows keyed by a user_id with no users-table row: normally zero. A
+    # non-zero count means an account deletion stopped part-way (photos ->
+    # meals -> shares -> invites -> user row) and left data behind.
+    known = {u.get('user_id') for u in users}
+    orphans = {
+        'meals': sum(r['meals'] for uid, r in (meals or {}).get('per_user', {}).items()
+                     if uid not in known),
+        'photos': sum(r['photos'] for uid, r in (photos or {}).get('per_user', {}).items()
+                      if uid not in known),
+    } if meals is not None and photos is not None else None
+
+    return jsonify({
+        'anchor': anchor,
+        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'instance': {
+            'commit': config.GIT_COMMIT_SHORT,
+            'branch': config.GIT_BRANCH,
+            'uptime': _uptime_str(time.time() - config.STARTED_AT),
+            'ai_enabled': bool(config.OPENAI_API_KEY),
+            'ai_daily_limit': config.AI_DAILY_LIMIT,
+            'photos_enabled': bool(config.S3_BUCKET),
+        },
+        'accounts': accounts,
+        'meals': meals_out,
+        'photos': photos and {k: v for k, v in photos.items() if k != 'per_user'},
+        'shares': shares,
+        'invites': invites,
+        'orphans': orphans,
+    })
+
+
 # --- Meal log ----------------------------------------------------------------
 # Tenant discipline: every handler keys on g.user['user_id'] from the session.
 # user_id NEVER comes from the URL, query string, or form.
@@ -399,13 +538,20 @@ def _valid_date(date_str):
     strptime alone is lenient ('2026-8-5' parses), which would produce a sort
     key that zero-padded month queries never match (silent data loss) and 500
     when fed to date.fromisoformat as an anchor. Require the round trip.
+
+    Callers also do +/-N-day arithmetic on an accepted date (the day list in
+    _meals_payload, the windows in /api/admin/stats), which overflows within a
+    month of date.min/date.max. That is this function's job to prevent, so the
+    slack is checked here rather than at every call site.
     """
     if not isinstance(date_str, str) or not _DATE_RE.match(date_str):
         return None
     try:
-        datetime.strptime(date_str, '%Y-%m-%d')
+        parsed = datetime.strptime(date_str, '%Y-%m-%d').date()
+        parsed - _DATE_SLACK
+        parsed + _DATE_SLACK
         return date_str
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 

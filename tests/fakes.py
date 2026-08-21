@@ -117,6 +117,15 @@ class FakeTable:
             items = [i for i in items if eval_condition(fe, i)]
         if kwargs.get('Select') == 'COUNT':
             return {'Count': len(items)}
+        projection = kwargs.get('ProjectionExpression')
+        if projection:
+            # Real DynamoDB drops every unlisted attribute server-side. The
+            # stats scan RELIES on that to keep meal content out of the
+            # process, so the fake must drop them too or the test would pass
+            # on data the real table never returns.
+            names = kwargs.get('ExpressionAttributeNames') or {}
+            keep = [names.get(a.strip(), a.strip()) for a in projection.split(',')]
+            items = [{k: v for k, v in i.items() if k in keep} for i in items]
         return {'Items': items, 'Count': len(items)}
 
     def query(self, **kwargs):
@@ -188,7 +197,8 @@ class FakeS3:
         return {}
 
     def list_objects_v2(self, Bucket, Prefix='', **kwargs):
-        contents = [{'Key': k} for k in sorted(self.objects) if k.startswith(Prefix)]
+        contents = [{'Key': k, 'Size': len(self.objects[k])}
+                    for k in sorted(self.objects) if k.startswith(Prefix)]
         resp = {'IsTruncated': False}
         if contents:
             resp['Contents'] = contents

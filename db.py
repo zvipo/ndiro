@@ -692,3 +692,168 @@ def delete_user_photos(user_id):
         # which nothing would ever purge again.
         _photo_cache.drop_prefix(prefix)
     return deleted
+
+
+# --- Instance stats (admin monitoring) ---------------------------------------
+# Full-table scans, deliberately: at PoC scale (<=100 users) every table is a
+# handful of pages, and the alternative — GSIs or counter items kept in sync on
+# every write — is far more machinery to get wrong. The page caps below keep one
+# refresh bounded so a runaway table can never hold the single gunicorn worker
+# past its 60s timeout; a capped run reports truncated=True rather than lying.
+
+_STATS_SCAN_PAGE_CAP = 40   # DynamoDB scan pages (~1 MB each) per table
+_STATS_LIST_PAGE_CAP = 50   # S3 listing pages (1000 keys each) => 50k objects
+
+
+def _scan_all_pages(table, **kwargs):
+    """Scan up to _STATS_SCAN_PAGE_CAP pages. Returns (items, truncated).
+
+    The cap is read from the module at call time, not bound as a default —
+    tests turn it down to prove a runaway table stops instead of spinning."""
+    items = []
+    pages = 0
+    while True:
+        resp = table.scan(**kwargs)
+        items.extend(resp.get('Items', []))
+        pages += 1
+        lek = resp.get('LastEvaluatedKey')
+        if not lek:
+            return items, False
+        if pages >= _STATS_SCAN_PAGE_CAP:
+            return items, True
+        kwargs['ExclusiveStartKey'] = lek
+
+
+def scan_meal_stats():
+    """Per-user meal counts and the first/last logged date, from ONE scan.
+
+    The ProjectionExpression is load-bearing SECURITY, not an optimization:
+    only the partition key and the date come back, so meal descriptions,
+    contexts, and nutrient values never enter the process at all — the
+    monitoring path structurally cannot see another user's meals (invariant #7).
+
+    Returns {'total', 'truncated', 'by_date': {date: count}, 'per_user':
+    {user_id: {'meals', 'days', 'first', 'last'}}} where days counts distinct
+    logged dates. Dates are the CLIENT's local dates (invariant #10), so any
+    window built from them is the users' own day, not the server's.
+
+    per_user exists so the caller can compute CARDINALITIES (how many accounts
+    have logged, how many logged this week) and spot rows belonging to no
+    account. It is an intermediate, not an output: nothing keyed by user_id may
+    be serialized to an admin — see the note above /api/admin/stats in app.py.
+    """
+    items, truncated = _scan_all_pages(
+        meals_table(),
+        ProjectionExpression='user_id, #d',
+        ExpressionAttributeNames={'#d': 'date'},
+    )
+    per_user = {}
+    by_date = {}
+    for item in items:
+        user_id = item.get('user_id')
+        if not user_id:
+            continue
+        row = per_user.setdefault(user_id, {'meals': 0, 'dates': set()})
+        row['meals'] += 1
+        date_str = item.get('date')
+        if date_str:
+            row['dates'].add(date_str)
+            by_date[date_str] = by_date.get(date_str, 0) + 1
+    out = {}
+    for user_id, row in per_user.items():
+        dates = row.pop('dates')
+        out[user_id] = {
+            'meals': row['meals'],
+            'days': len(dates),
+            'first': min(dates) if dates else None,
+            'last': max(dates) if dates else None,
+        }
+    return {'total': len(items), 'truncated': truncated, 'per_user': out,
+            'by_date': by_date}
+
+
+def scan_photo_stats():
+    """Per-user photo object counts and bytes from the S3 listing.
+
+    Keys and sizes only — no object is ever fetched, so photo bytes never
+    enter the process (invariant #7). Returns enabled=False when photo storage
+    is not configured, which is a normal state, not an error.
+
+    As with scan_meal_stats, per_user is an intermediate for totals and orphan
+    detection — never something an admin is shown.
+    """
+    if not config.S3_BUCKET:
+        return {'enabled': False, 'total': 0, 'bytes': 0, 'truncated': False,
+                'per_user': {}}
+    per_user = {}
+    total = 0
+    total_bytes = 0
+    truncated = False
+    pages = 0
+    kwargs = {'Bucket': config.S3_BUCKET, 'Prefix': 'users/'}
+    while True:
+        resp = _s3_client().list_objects_v2(**kwargs)
+        for obj in resp.get('Contents', []):
+            # Keys are built server-side as users/{user_id}/meals/{date}/{id}.jpg
+            parts = obj['Key'].split('/')
+            if len(parts) < 2 or not parts[1]:
+                continue
+            size = int(obj.get('Size', 0) or 0)
+            row = per_user.setdefault(parts[1], {'photos': 0, 'bytes': 0})
+            row['photos'] += 1
+            row['bytes'] += size
+            total += 1
+            total_bytes += size
+        pages += 1
+        if not resp.get('IsTruncated'):
+            break
+        if pages >= _STATS_LIST_PAGE_CAP:
+            truncated = True
+            break
+        kwargs['ContinuationToken'] = resp['NextContinuationToken']
+    return {'enabled': True, 'total': total, 'bytes': total_bytes,
+            'truncated': truncated, 'per_user': per_user}
+
+
+def scan_share_stats(now=None):
+    """Share rows bucketed into MUTUALLY EXCLUSIVE outcomes that sum to total:
+    active -> revoked -> expired. Rows are kept after revoke/expiry by design,
+    so 'total' is lifetime links minted, not live ones.
+
+    Totals only — deliberately not grouped by user_id. Who holds a live share
+    link is between that user and their /shares page."""
+    rows, truncated = _scan_all_pages(shares_table())
+    now = now or time.time()
+    stats = {'total': len(rows), 'active': 0, 'revoked': 0, 'expired': 0,
+             'truncated': truncated}
+    for row in rows:
+        if share_is_active(row, now):
+            stats['active'] += 1
+        elif row.get('revoked'):
+            stats['revoked'] += 1
+        else:
+            stats['expired'] += 1
+    return stats
+
+
+def scan_invite_stats(now=None):
+    """Invite rows bucketed into MUTUALLY EXCLUSIVE outcomes that sum to
+    total: used -> revoked -> expired -> open (still redeemable). 'open' is
+    the count MAX_ACTIVE_INVITES caps, minus the used ones a cap-time
+    invite_is_active() would still include.
+
+    Totals only — like shares, deliberately not grouped by user_id."""
+    rows, truncated = _scan_all_pages(invites_table())
+    now = now or time.time()
+    stats = {'total': len(rows), 'open': 0, 'used': 0, 'revoked': 0,
+             'expired': 0, 'truncated': truncated}
+    for row in rows:
+        if row.get('used_by'):
+            stats['used'] += 1
+        elif row.get('revoked'):
+            stats['revoked'] += 1
+        elif not invite_is_active(row, now):
+            stats['expired'] += 1
+        else:
+            stats['open'] += 1
+    return stats

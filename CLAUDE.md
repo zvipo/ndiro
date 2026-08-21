@@ -29,10 +29,12 @@ python tests/test_m1_auth.py         # auth/approval/MAX_USERS
 python tests/probe_cross_user.py     # tenant isolation (THE security test)
 python tests/test_m3_shares.py       # shares, identical 404s, account deletion
 python tests/test_m4_ai.py           # AI caps/refunds/rate limits
+python tests/test_m5_checklist.py    # security-checklist re-verification (admin payload, cookies)
 python tests/test_m6_nutrient.py     # per-user tracked micro (settings/gating)
 python tests/test_m7_invites.py      # invite links (auto-approve, single-use)
 python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)
 python tests/test_m9_status.py       # /status build stamp (public page leaks no config)
+python tests/test_m10_monitor.py     # /admin/monitor instance stats (counts only)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -59,7 +61,10 @@ raises without it (tests set their own).
   fiber honors a stored personalized goal).
 - **`db.py`** — boto3 setup, auto-create of the four tables on boot,
   users/meals/shares/invites accessors, S3 photo helpers, the AI daily-use
-  counter.
+  counter, and the `scan_*_stats` collectors behind `/admin/monitor` (full
+  scans, page-capped, reporting `truncated` rather than lying; the meals one
+  is projected to `user_id`+`date`; the `per_user` maps are internal
+  intermediates, never serialized — see invariant #7).
   Table handles are functions (`users_table()` etc.) so tests swap in fakes.
 - **`auth.py`** — Google OAuth (server-side code exchange via `requests`, no
   JWT lib; token trusted because it comes from Google over TLS), `current_user()`,
@@ -76,7 +81,11 @@ raises without it (tests set their own).
   `(message, status, refundable, ref)` — app.py shows it to the user, so a
   report maps to one log line. `stage` ∈ `request|http|parse` here, plus
   `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
-- **`templates/`** — `base.html` holds the shared skin (its menu also carries
+- **`templates/`** — `admin.html` (accounts + approve/reject) and
+  `monitor.html` (the instance dashboard: aggregate tiles from
+  `/api/admin/stats`, deliberately with no per-account table) are the two admin
+  surfaces; `base.html` holds the
+  shared skin (its menu also carries
   the running short commit next to the Status entry, injected by app.py's
   `inject_build` context processor): 14-token gruvbox
   dark/light `:root` blocks, pre-paint `localStorage('theme')` script, ☀️/🌙
@@ -157,11 +166,23 @@ delete_photo/delete_user_photos purge the LRU.
 6. Rate limits (Flask-Limiter, `memory://` — valid ONLY with one gunicorn
    worker, which the Dockerfile pins): login/callback 10/min, `/s/*` and
    `/i/*` 30/min, photo proxy routes 600/min, invite creation 10/min,
+   `/api/admin/stats` 12/min (a full scan of every table per call),
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
    race-safe two-call conditional counter in db.py (increment BEFORE the
    OpenAI call; refund on upstream failure only).
 7. Admin surfaces show account metadata ONLY — no route or template lets an
-   admin see another user's meals or photos.
+   admin see another user's meals or photos. `/admin` shows the user rows
+   (email/name/status); `/admin/monitor` + `/api/admin/stats` add INSTANCE-WIDE
+   AGGREGATES and nothing else — no per-account row, id, count, or date, so the
+   dashboard adds nothing to what `/privacy` already promises. Two mechanisms
+   hold it there, and both are asserted by `tests/test_m10_monitor.py`:
+   `db.scan_meal_stats` scans with `ProjectionExpression='user_id, #d'` so
+   descriptions/contexts/nutrient values never enter the process, and
+   `db.scan_photo_stats` counts S3 keys/sizes without a single `get_object`.
+   The `per_user` maps those two return are INTERMEDIATES — they exist so the
+   route can compute cardinalities (`logging_accounts`, `active_7d`) and detect
+   orphans; nothing keyed by user_id may be serialized. Never widen the
+   projection, and never add a per-account field to the payload.
 8. Server logs carry user IDs and error types only — never meal descriptions,
    contexts, or photo bytes. The AI_ERROR records add call metadata (stage,
    model, sizes, timings) and the PROVIDER's own error fields (status, request
@@ -197,4 +218,14 @@ delete_photo/delete_user_photos purge the LRU.
   implement the exact boto3 surface db.py uses; if you add a new condition
   expression shape, extend `tests/fakes.py`.
 - Account deletion order: photos → meals → shares → invites → user row LAST
-  (retryable).
+  (retryable). `/admin/monitor`'s "orphans" tile counts meal rows and photo
+  objects whose `user_id` has no users row — a non-zero value means that
+  sequence stopped part-way.
+- `/api/admin/stats` windows: meal windows are closed at BOTH ends
+  (`[anchor-N+1, anchor]`) against the admin's `?anchor=` local day, because
+  meal dates are client-local (invariant #10); signup windows use UTC, because
+  `created_at` is a server stamp. Do not "simplify" either to the server clock.
+  The route is 12/min — each call is a full scan of every table, which is cheap
+  at PoC scale but not free — and deliberately has NO cache (same reason meals
+  don't: per-user Queries and small scans are cheap; a cache is machinery to
+  get wrong).
