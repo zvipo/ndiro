@@ -437,10 +437,11 @@
                 <button type="button" class="btn subtle" id="batchStopBtn" style="display:none">Stop</button>
             </div>
             <div class="batch-note">
-                Select the day's food photos — each is logged as its own meal at the
-                time the photo was taken, with an AI description and
-                {{ nutrient.label }} estimate accepted automatically
-                (one AI estimate per photo; edit any meal afterwards).
+                Select the day's food photos — after a quick upload you can close
+                the page; each photo becomes its own meal at the time it was taken,
+                with an AI description and {{ nutrient.label }} estimate accepted
+                automatically in the background (one AI estimate per photo; edit
+                any meal afterwards).
             </div>
             <input type="file" id="batchInput" accept="image/*" multiple style="display:none">
             <div class="batch-list" id="batchList" style="display:none"></div>
@@ -1070,10 +1071,12 @@
             }
         }
 
-        // ------- Auto-add from photos (batch; EXIF times; AI auto-accepted) -------
+        // ------- Auto-add from photos (batch; EXIF times; async server-side) -------
         // Rendered only when BOTH the estimator and photo storage are configured.
-        // Sequential by design: /api/estimate-photo is rate-limited per IP and
-        // vision calls are slow, so a parallel fan-out would only trip the limiter.
+        // The page only extracts EXIF times and uploads: the AI estimate and the
+        // meal write happen in the server's background worker (autolog.py), so
+        // the page can be closed as soon as the uploads finish. Uploads run
+        // sequentially — they're quick, and it keeps the progress list honest.
 
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         let batchRunning = false;
@@ -1191,65 +1194,22 @@
             entry.statusEl.textContent = msg;
         }
 
-        // One photo -> estimate -> saved meal. Fills entry.outcome:
-        // 'added' | 'no_estimate' (saved, AI failed) | 'failed' | 'stopped'.
+        // One photo -> quick upload into the server's spool; the AI estimate
+        // and the meal write happen in the background worker after we're gone.
+        // Fills entry.outcome: 'queued' | 'failed' | 'stopped'.
         async function autoAddOne(entry) {
-            setBatchStatus(entry, '', 'Looking at the photo…');
+            setBatchStatus(entry, '', 'Uploading…');
             const blob = await downscaleImage(entry.file);
-
-            let est = null;
-            let estErr = null;
-            for (let attempt = 0; attempt < 3; attempt++) {
-                const fd = new FormData();
-                fd.append('photo', blob, 'photo.jpg');
-                let resp;
-                try {
-                    resp = await fetch('/api/estimate-photo', { method: 'POST', body: fd });
-                } catch (e) {
-                    estErr = 'network error';
-                    break;
-                }
-                if (resp.status === 401) {
-                    window.location.href = '/login?next=/log';
-                    return;
-                }
-                const body = await resp.json().catch(() => ({}));
-                if (resp.ok) {
-                    est = body;
-                    break;
-                }
-                estErr = body.error || 'estimate failed';
-                // Per-minute limiter: pause and retry. The DAILY cap (or any
-                // other error) won't clear by waiting — save without estimate.
-                if (resp.status === 429 && !/daily ai limit/i.test(estErr) && !batchStop) {
-                    setBatchStatus(entry, 'warn', 'Rate-limited — pausing…');
-                    await sleep(15000);
-                    continue;
-                }
-                break;
-            }
-
-            // Save the meal either way: on AI failure the photo + time are still
-            // logged (with a placeholder description) so the day stays complete —
-            // losing the entry entirely would defeat the low-touch batch.
-            setBatchStatus(entry, '', 'Saving…');
             const fd = new FormData();
-            const desc = (est && est.description) ? est.description
-                : 'Photo meal — description pending';
-            fd.append('description', desc);
-            fd.append('context', '');
-            fd.append('ai_assisted', est ? '1' : '');
-            fd.append('nutrient_key', NUTRIENT.key);
-            if (est) fd.append(NUTRIENT.key, est.amount);
+            fd.append('photo', blob, 'photo.jpg');
             fd.append('date', entry.date);
             fd.append('time', entry.time);
-            fd.append('photo', blob, 'photo.jpg');
             let resp;
             try {
-                resp = await fetch('/api/meals', { method: 'POST', body: fd });
+                resp = await fetch('/api/auto-log', { method: 'POST', body: fd });
             } catch (e) {
                 entry.outcome = 'failed';
-                setBatchStatus(entry, 'err', 'Network error — not saved.');
+                setBatchStatus(entry, 'err', 'Network error — not uploaded.');
                 return;
             }
             if (resp.status === 401) {
@@ -1259,17 +1219,40 @@
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({}));
                 entry.outcome = 'failed';
-                setBatchStatus(entry, 'err', 'Not saved: ' + (err.error || 'save failed'));
+                setBatchStatus(entry, 'err', 'Not uploaded: ' + (err.error || 'upload failed'));
                 return;
             }
-            if (est) {
-                entry.outcome = 'added';
-                setBatchStatus(entry, 'ok',
-                    desc + ' — ' + est.amount + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label);
-            } else {
-                entry.outcome = 'no_estimate';
-                setBatchStatus(entry, 'warn',
-                    'Saved without an estimate (' + estErr + ') — edit to fill in.');
+            entry.outcome = 'queued';
+            setBatchStatus(entry, 'ok', 'Uploaded — processing in background.');
+        }
+
+        // After the uploads: watch the server-side queue drain, refreshing the
+        // meal list as entries land. Purely cosmetic — closing the page loses
+        // nothing, the worker keeps going.
+        async function watchProcessing(summary) {
+            const deadline = Date.now() + 10 * 60 * 1000;
+            let last = Infinity;
+            while (Date.now() < deadline) {
+                await sleep(4000);
+                let pending;
+                try {
+                    const resp = await fetch('/api/auto-log/pending');
+                    if (!resp.ok) break;
+                    pending = (await resp.json()).pending;
+                } catch (e) {
+                    break; // page offline/backgrounded — the worker doesn't care
+                }
+                if (pending < last) {
+                    last = pending;
+                    await loadMeals({ keepScroll: true });
+                }
+                if (pending === 0) {
+                    summary.textContent = 'All photos processed — meals are below. ' +
+                        'Any marked "description pending" hit an AI limit; edit to fill in.';
+                    return;
+                }
+                summary.textContent = 'Processing in the background — ' + pending +
+                    ' photo' + (pending === 1 ? '' : 's') + ' remaining. Safe to close this page.';
             }
         }
 
@@ -1310,13 +1293,12 @@
                 await autoAddOne(entry);
             }
 
-            const added = entries.filter(e => e.outcome === 'added').length;
-            const noEst = entries.filter(e => e.outcome === 'no_estimate').length;
+            const queued = entries.filter(e => e.outcome === 'queued').length;
             const failed = entries.filter(e => e.outcome === 'failed').length;
             const stopped = entries.filter(e => e.outcome === 'stopped').length;
-            let msg = 'Added ' + (added + noEst) + ' of ' + entries.length + ' meals.';
-            if (noEst) msg += ' ' + noEst + ' saved without an estimate.';
-            if (failed) msg += ' ' + failed + ' failed.';
+            let msg = 'Uploaded ' + queued + ' of ' + entries.length +
+                ' photos — processing in the background. Safe to close this page.';
+            if (failed) msg += ' ' + failed + ' failed to upload.';
             if (stopped) msg += ' ' + stopped + ' skipped (stopped).';
             summary.textContent = msg;
             summary.style.display = 'block';
@@ -1324,7 +1306,7 @@
             batchRunning = false;
             stopBtn.style.display = 'none';
             restoreBtn(btn, '⚡<span class="ai-glyph">✦</span> Auto-add from photos');
-            await loadMeals({ keepScroll: true });
+            if (queued) await watchProcessing(summary);
         }
 
         function initBatch() {

@@ -24,6 +24,11 @@ os.environ['SHARES_TABLE'] = 'test-shares'
 os.environ['INVITES_TABLE'] = 'test-invites'
 os.environ.pop('OPENAI_API_KEY', None)
 
+# Auto-log spool: a per-run temp dir, and NO background thread — tests drive
+# autolog.process_once() synchronously so every assertion is deterministic.
+import tempfile  # noqa: E402
+os.environ['AUTOLOG_DIR'] = tempfile.mkdtemp(prefix='ndiro-autolog-test-')
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Hermetic tests: a developer's real .env must never alter test behavior.
@@ -37,7 +42,11 @@ import fakes  # noqa: E402
 FIXTURES = fakes.install(db)
 
 import auth  # noqa: E402
+import autolog  # noqa: E402
 import app as app_module  # noqa: E402
+
+autolog.WORKER_ENABLED = False  # no threads in tests; call process_once()
+autolog.RETRY_BASE_S = 0        # retries are immediate under test
 
 app = app_module.app
 app.config['TESTING'] = True

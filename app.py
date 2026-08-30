@@ -23,6 +23,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import ai
 import auth
+import autolog
 import config
 import imaging
 import db
@@ -526,6 +527,9 @@ def admin_stats():
 @app.route('/log')
 @auth.approved_required
 def log_page():
+    # Kick the auto-log worker: after a restart this is what resumes any
+    # spooled-but-unprocessed batch photos without waiting for a new upload.
+    autolog.ensure_worker()
     return render_template('log.html', user=g.user,
                            nutrient=config.resolve_nutrient(g.user),
                            fiber_guide=config.FIBER_GUIDE,
@@ -1110,6 +1114,72 @@ def estimate_photo():
     return jsonify(result)
 
 
+# --- Auto-log (batch "auto-add from photos"; async) --------------------------
+# The upload only validates and spools the photo on LOCAL DISK (autolog.py);
+# the AI estimate and the meal write happen later in the background worker, so
+# the client can close the page right after the uploads finish. The queue is
+# the spool directory itself — no extra metadata store.
+
+@app.route('/api/auto-log', methods=['POST'])
+@limiter.limit('60 per minute')
+@auth.approved_required
+def auto_log():
+    """Queue ONE batch photo (multipart: photo + date + time, both from the
+    client — the time normally read from the photo's EXIF)."""
+    # Needs BOTH halves: the worker's whole job is estimate + photo meal.
+    if not config.OPENAI_API_KEY or not config.S3_BUCKET:
+        return jsonify({'error': 'Auto-add is not enabled on this server'}), 400
+
+    # Same client-date discipline as add_meal (invariant #10).
+    date_str = request.form.get('date')
+    if not date_str:
+        return jsonify({'error': 'Date is required'}), 400
+    if not _valid_date(date_str):
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    if date.fromisoformat(date_str) > datetime.now(timezone.utc).date() + timedelta(days=1):
+        return jsonify({'error': "Date can't be in the future"}), 400
+    # Unlike add_meal there is no "now" fallback: by the time the worker runs,
+    # "now" is wrong — the whole point is logging at the photo's own time.
+    time_str = (request.form.get('time') or '').strip()
+    try:
+        datetime.strptime(time_str, '%H:%M')
+    except ValueError:
+        return jsonify({'error': 'Invalid time format. Use HH:MM'}), 400
+
+    user_id = g.user['user_id']
+    if autolog.pending_count(user_id) >= config.AUTOLOG_MAX_PENDING:
+        return jsonify({'error': f'Too many photos queued (max '
+                                 f'{config.AUTOLOG_MAX_PENDING}) — wait for '
+                                 'processing to catch up'}), 429
+
+    photo = request.files.get('photo')
+    if not photo or not photo.filename:
+        return jsonify({'error': 'Photo is required'}), 400
+    # Normalize NOW so an unreadable image fails while the user is still
+    # looking, and the spool holds ready-to-use JPEG bytes.
+    try:
+        jpeg_bytes = imaging.to_jpeg(photo.read())
+    except ValueError:
+        return jsonify({'error': "Couldn't read that image — try a JPEG or PNG"}), 400
+
+    try:
+        autolog.enqueue(user_id, date_str, time_str, jpeg_bytes)
+    except OSError as e:
+        print(f"Error spooling auto-log photo for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Upload failed — please try again'}), 500
+    autolog.ensure_worker()
+    return jsonify({'queued': True,
+                    'pending': autolog.pending_count(user_id)}), 202
+
+
+@app.route('/api/auto-log/pending')
+@auth.approved_required
+def auto_log_pending():
+    """The session user's queue depth (for the page's progress poll)."""
+    autolog.ensure_worker()
+    return jsonify({'pending': autolog.pending_count(g.user['user_id'])})
+
+
 # --- Review ------------------------------------------------------------------
 
 @app.route('/review')
@@ -1467,7 +1537,9 @@ def delete_account():
     try:
         # Photos first and STRICTLY: if the S3 wipe is incomplete we abort with
         # the account intact, so the user can retry rather than be left with
-        # orphaned private photos and no account.
+        # orphaned private photos and no account. The auto-log spool holds
+        # photos too (local disk), so it gets the same strict treatment.
+        autolog.drop_user(user_id)
         db.delete_user_photos(user_id)
         db.delete_all_meals(user_id)
         db.delete_user_shares(user_id)

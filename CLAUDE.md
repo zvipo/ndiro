@@ -35,6 +35,7 @@ python tests/test_m7_invites.py      # invite links (auto-approve, single-use)
 python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)
 python tests/test_m9_status.py       # /status build stamp (public page leaks no config)
 python tests/test_m10_monitor.py     # /admin/monitor instance stats (counts only)
+python tests/test_m11_autolog.py     # async auto-log spool (queue, cap, dead-letter)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -81,6 +82,20 @@ raises without it (tests set their own).
   `(message, status, refundable, ref)` — app.py shows it to the user, so a
   report maps to one log line. `stage` ∈ `request|http|parse` here, plus
   `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
+- **`autolog.py`** — the async "auto-add from photos" pipeline: `/api/auto-log`
+  spools the (already normalized) JPEG plus a tiny sidecar
+  (user_id/date/time/attempts — never meal content) on LOCAL disk
+  (`AUTOLOG_DIR`, ephemeral by default), and ONE lazily-started daemon thread
+  (`ensure_worker` — lazy because gunicorn runs `--preload`; kicked from the
+  auto-log routes and `/log` so restarts recover leftovers) estimates and
+  commits each entry: fresh user re-read (rejected/deleted accounts are
+  discarded, never logged), AI cap consumed per photo with the same
+  consume-before/refund-on-upstream-failure semantics, estimate cached on the
+  sidecar across commit retries (never re-billed), cap-hit or exhausted
+  retries degrade to a placeholder-description meal (the photo+time are never
+  lost), and poison entries dead-letter as `*.json.dead` after `MAX_ATTEMPTS`.
+  Account deletion purges the user's spool via `drop_user` (strict, before the
+  S3 wipe). Tests disable the thread and drive `process_once()` directly.
 - **`templates/`** — `admin.html` (accounts + approve/reject) and
   `monitor.html` (the instance dashboard: aggregate tiles from
   `/api/admin/stats`, deliberately with no per-account table) are the two admin
