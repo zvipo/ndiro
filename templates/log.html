@@ -437,12 +437,13 @@
                 <button type="button" class="btn subtle" id="batchStopBtn" style="display:none">Stop</button>
             </div>
             <div class="batch-note">
-                Select the day's food photos — after a quick upload you can close
-                the page; each photo becomes its own meal at the time it was taken,
-                with an AI description and {{ nutrient.label }} estimate accepted
+                Select food photos — one day's or several days' worth — and after
+                a quick upload you can close the page; each photo becomes its own
+                meal on the day and at the time it was taken, with an AI
+                description and {{ nutrient.label }} estimate accepted
                 automatically in the background (one AI estimate per photo; edit
                 any meal afterwards). Photos already logged are skipped, so
-                re-selecting the whole day is safe.
+                re-selecting them is safe.
             </div>
             <input type="file" id="batchInput" accept="image/*" multiple style="display:none">
             <div class="batch-list" id="batchList" style="display:none"></div>
