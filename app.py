@@ -1147,6 +1147,25 @@ def auto_log():
         return jsonify({'error': 'Invalid time format. Use HH:MM'}), 400
 
     user_id = g.user['user_id']
+
+    # Time-based dedup: the EXIF minute is a stable fingerprint, so re-running
+    # a batch ("did Tuesday's upload include the lunch photo?") skips photos
+    # already logged — or already queued — at that minute instead of
+    # double-logging the day. Only PHOTO meals block: a typed text-only meal
+    # at the same minute doesn't hide new photo information. Deliberately a
+    # heuristic: a second photo taken within the same minute is treated as
+    # the same meal.
+    hhmm = time_str.replace(':', '')
+    try:
+        already = any(m.get('photo_key') and str(m.get('meal_id', '')).startswith(hhmm)
+                      for m in db.query_meals_day(user_id, date_str))
+    except Exception as e:
+        print(f"Error checking auto-log duplicates for user {user_id}: {type(e).__name__}")
+        already = False  # fail open: a duplicate meal beats a lost one
+    if already or autolog.has_pending(user_id, date_str, time_str):
+        return jsonify({'queued': False, 'skipped': True,
+                        'pending': autolog.pending_count(user_id)}), 200
+
     if autolog.pending_count(user_id) >= config.AUTOLOG_MAX_PENDING:
         return jsonify({'error': f'Too many photos queued (max '
                                  f'{config.AUTOLOG_MAX_PENDING}) — wait for '

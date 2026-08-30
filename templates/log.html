@@ -441,7 +441,8 @@
                 the page; each photo becomes its own meal at the time it was taken,
                 with an AI description and {{ nutrient.label }} estimate accepted
                 automatically in the background (one AI estimate per photo; edit
-                any meal afterwards).
+                any meal afterwards). Photos already logged are skipped, so
+                re-selecting the whole day is safe.
             </div>
             <input type="file" id="batchInput" accept="image/*" multiple style="display:none">
             <div class="batch-list" id="batchList" style="display:none"></div>
@@ -1216,10 +1217,17 @@
                 window.location.href = '/login?next=/log';
                 return;
             }
+            const body = await resp.json().catch(() => ({}));
             if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
                 entry.outcome = 'failed';
-                setBatchStatus(entry, 'err', 'Not uploaded: ' + (err.error || 'upload failed'));
+                setBatchStatus(entry, 'err', 'Not uploaded: ' + (body.error || 'upload failed'));
+                return;
+            }
+            if (body.skipped) {
+                // Server-side time dedup: a photo meal (or queued photo)
+                // already exists at this minute — re-running a batch is safe.
+                entry.outcome = 'duplicate';
+                setBatchStatus(entry, 'warn', 'Skipped — already logged at this time.');
                 return;
             }
             entry.outcome = 'queued';
@@ -1294,10 +1302,12 @@
             }
 
             const queued = entries.filter(e => e.outcome === 'queued').length;
+            const dups = entries.filter(e => e.outcome === 'duplicate').length;
             const failed = entries.filter(e => e.outcome === 'failed').length;
             const stopped = entries.filter(e => e.outcome === 'stopped').length;
             let msg = 'Uploaded ' + queued + ' of ' + entries.length +
                 ' photos — processing in the background. Safe to close this page.';
+            if (dups) msg += ' ' + dups + ' skipped (already logged).';
             if (failed) msg += ' ' + failed + ' failed to upload.';
             if (stopped) msg += ' ' + stopped + ' skipped (stopped).';
             summary.textContent = msg;

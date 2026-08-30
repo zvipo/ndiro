@@ -200,12 +200,37 @@ tk.FIXTURES.users.items[(UID,)]['status'] = 'approved'
 tk.check('no meal was written for the rejected window',
          [m for m in meals_on(alice) if m['time'] == '21:00'] == [])
 
+# --- Time-based dedup: re-running a batch is idempotent ------------------------
+stub_openai(GOOD)
+resp = upload(alice, time_str='13:37')  # photo meal from the happy path exists
+tk.check('photo minute already logged: skipped, nothing spooled',
+         resp.status_code == 200 and resp.get_json()['skipped'] is True and
+         resp.get_json()['queued'] is False and spool_files() == [])
+tk.check('still only ONE 13:37 meal',
+         len([m for m in meals_on(alice) if m['time'] == '13:37']) == 1)
+tk.check('fresh minute queues normally',
+         upload(alice, time_str='23:45').status_code == 202)
+tk.check('same minute already QUEUED: second upload skipped',
+         upload(alice, time_str='23:45').get_json().get('skipped') is True and
+         tk.get(alice, '/api/auto-log/pending').get_json() == {'pending': 1})
+autolog.process_once()
+tk.check('after processing, the minute stays skipped (meal now blocks)',
+         upload(alice, time_str='23:45').get_json().get('skipped') is True)
+# A typed TEXT-ONLY meal at a minute must not block a photo of it.
+tk.post(alice, '/api/meals', data={
+    'description': 'porridge (typed)', 'date': DAY, 'time': '06:30'})
+resp = upload(alice, time_str='06:30')
+tk.check('text-only meal at the minute does not block the photo',
+         resp.status_code == 202 and resp.get_json()['queued'] is True)
+autolog.process_once()
+
 # --- Pending cap ---------------------------------------------------------------
 _cap = config.AUTOLOG_MAX_PENDING
 config.AUTOLOG_MAX_PENDING = 2
 tk.check('uploads under cap accepted',
-         upload(alice).status_code == 202 and upload(alice).status_code == 202)
-tk.check('cap reached: 429', upload(alice).status_code == 429)
+         upload(alice, time_str='22:01').status_code == 202 and
+         upload(alice, time_str='22:02').status_code == 202)
+tk.check('cap reached: 429', upload(alice, time_str='22:03').status_code == 429)
 config.AUTOLOG_MAX_PENDING = _cap
 
 # --- Account deletion purges the spool -----------------------------------------

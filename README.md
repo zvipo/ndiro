@@ -9,7 +9,8 @@ monthly chart against the 20 g/day Portfolio Diet goal. A low-touch batch mode
 wait a few seconds for the upload, and close the page — each photo becomes a
 meal at its EXIF capture time, with the AI description and estimate accepted
 automatically by a background worker (photos wait on local disk in
-`AUTOLOG_DIR` until committed to S3). Read-only share links let a dietician
+`AUTOLOG_DIR` until committed to S3). Photos already logged are skipped, so
+re-selecting the whole day is safe. Read-only share links let a dietician
 follow along without an account.
 
 Flask + DynamoDB + S3 + Google sign-in + optional OpenAI, in one Docker

@@ -97,6 +97,19 @@ def _read_meta(entry_id):
         return None
 
 
+def has_pending(user_id, date_str, time_str):
+    """Is a photo already queued for this user at this exact date+time?
+    Half of the upload-time dedup (see app.auto_log) — the other half checks
+    committed meals. Dead letters don't count: their photo never became a
+    meal, so a re-upload of one should be accepted."""
+    for entry_id in _list_entries():
+        meta = _read_meta(entry_id)
+        if meta and meta.get('user_id') == user_id and \
+                meta.get('date') == date_str and meta.get('time') == time_str:
+            return True
+    return False
+
+
 def enqueue(user_id, date_str, time_str, jpeg_bytes):
     """Spool one photo for background processing. The .jpg is written first,
     the .json sidecar last — the scanner keys on sidecars, so a crash between
