@@ -96,7 +96,11 @@ raises without it (tests set their own).
   lost), and poison entries dead-letter as `*.json.dead` after `MAX_ATTEMPTS`.
   Re-running a batch is idempotent: the upload route skips a photo whose
   date+minute already has a PHOTO meal or a queued entry (the EXIF minute is
-  the dedup fingerprint; text-only meals and dead letters don't block).
+  the dedup fingerprint; text-only meals and dead letters don't block). The
+  meal scan covers [`since`= the batch's oldest photo date (31-day cap),
+  UTC tomorrow] — not just the photo's day — so a duplicate whose date
+  drifted (clamped camera clock, EXIF-less file) is still caught; no/invalid
+  `since` = own-day only, and the spool check stays exact date+time.
   Account deletion purges the user's spool via `drop_user` (strict, before the
   S3 wipe). Tests disable the thread and drive `process_once()` directly.
 - **`templates/`** — `admin.html` (accounts + approve/reject) and

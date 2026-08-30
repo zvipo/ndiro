@@ -1155,10 +1155,28 @@ def auto_log():
     # at the same minute doesn't hide new photo information. Deliberately a
     # heuristic: a second photo taken within the same minute is treated as
     # the same meal.
+    #
+    # The MEAL scan covers a window, not just this photo's date: a duplicate
+    # can sit on a nearby day when the date was unreliable the first time (a
+    # camera clock ahead of reality gets clamped to "today"; an EXIF-less
+    # file's modified-time stamp can drift between selections). ?since= — the
+    # batch's OLDEST photo date, client-computed — anchors the window, so a
+    # habitual same-minute meal on an unrelated older day never blocks; the
+    # end is UTC tomorrow (nothing is ever logged past it). Bounded at 31
+    # days so a bogus since can't demand an unbounded range Query. The SPOOL
+    # check stays exact date+time: pending entries are this batch's own
+    # trustworthy dates, and a window there would misfire on two same-minute
+    # photos from different days of one batch.
     hhmm = time_str.replace(':', '')
+    since = request.form.get('since')
+    win_start = date_str
+    if since and _valid_date(since) and since < date_str:
+        win_start = max(since,
+                        (date.fromisoformat(date_str) - timedelta(days=31)).isoformat())
+    win_end = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
     try:
         already = any(m.get('photo_key') and str(m.get('meal_id', '')).startswith(hhmm)
-                      for m in db.query_meals_day(user_id, date_str))
+                      for m in db.query_meals_range(user_id, win_start, win_end))
     except Exception as e:
         print(f"Error checking auto-log duplicates for user {user_id}: {type(e).__name__}")
         already = False  # fail open: a duplicate meal beats a lost one

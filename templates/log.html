@@ -1198,13 +1198,17 @@
         // One photo -> quick upload into the server's spool; the AI estimate
         // and the meal write happen in the background worker after we're gone.
         // Fills entry.outcome: 'queued' | 'failed' | 'stopped'.
-        async function autoAddOne(entry) {
+        async function autoAddOne(entry, batchSince) {
             setBatchStatus(entry, '', 'Uploading…');
             const blob = await downscaleImage(entry.file);
             const fd = new FormData();
             fd.append('photo', blob, 'photo.jpg');
             fd.append('date', entry.date);
             fd.append('time', entry.time);
+            // Oldest photo date in this batch: anchors the server's duplicate
+            // scan window (a duplicate can sit on a nearby day when a clamped
+            // camera clock or an EXIF-less file drifted the date).
+            fd.append('since', batchSince);
             let resp;
             try {
                 resp = await fetch('/api/auto-log', { method: 'POST', body: fd });
@@ -1291,6 +1295,7 @@
             }
             entries.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
             for (const entry of entries) list.appendChild(batchRow(entry));
+            const batchSince = entries[0].date; // oldest — entries are sorted
 
             for (const entry of entries) {
                 if (batchStop) {
@@ -1298,7 +1303,7 @@
                     setBatchStatus(entry, '', 'Stopped.');
                     continue;
                 }
-                await autoAddOne(entry);
+                await autoAddOne(entry, batchSince);
             }
 
             const queued = entries.filter(e => e.outcome === 'queued').length;

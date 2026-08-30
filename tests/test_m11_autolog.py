@@ -20,11 +20,15 @@ import db
 DAY = '2026-08-29'
 
 
-def upload(c, time_str='13:37', date_str=DAY, photo=None):
-    return tk.post(c, '/api/auto-log', data={
+def upload(c, time_str='13:37', date_str=DAY, photo=None, since=None):
+    data = {
         'date': date_str, 'time': time_str,
         'photo': (io.BytesIO(photo if photo is not None else tk.TINY_JPEG), 'p.jpg'),
-    }, content_type='multipart/form-data')
+    }
+    if since is not None:
+        data['since'] = since
+    return tk.post(c, '/api/auto-log', data=data,
+                   content_type='multipart/form-data')
 
 
 def spool_files():
@@ -223,6 +227,23 @@ resp = upload(alice, time_str='06:30')
 tk.check('text-only meal at the minute does not block the photo',
          resp.status_code == 202 and resp.get_json()['queued'] is True)
 autolog.process_once()
+
+# --- since= window: the batch's oldest photo date anchors the duplicate scan ---
+DAY2 = '2026-08-30'
+resp = upload(alice, time_str='13:37', date_str=DAY2, since=DAY)
+tk.check('same minute on a nearby day inside the since-window: skipped',
+         resp.status_code == 200 and resp.get_json()['skipped'] is True and
+         spool_files() == [])
+resp = upload(alice, time_str='13:37', date_str=DAY2)
+tk.check('no since: only the photo\'s own day blocks — queued',
+         resp.status_code == 202 and resp.get_json()['queued'] is True)
+for f in spool_files():
+    os.remove(os.path.join(config.AUTOLOG_DIR, f))
+resp = upload(alice, time_str='13:37', date_str=DAY2, since='2026-8-1')
+tk.check('malformed since ignored (own-day behavior) — queued',
+         resp.status_code == 202)
+for f in spool_files():
+    os.remove(os.path.join(config.AUTOLOG_DIR, f))
 
 # --- Pending cap ---------------------------------------------------------------
 _cap = config.AUTOLOG_MAX_PENDING
