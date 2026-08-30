@@ -1205,10 +1205,13 @@
             fd.append('photo', blob, 'photo.jpg');
             fd.append('date', entry.date);
             fd.append('time', entry.time);
-            // Oldest photo date in this batch: anchors the server's duplicate
-            // scan window (a duplicate can sit on a nearby day when a clamped
-            // camera clock or an EXIF-less file drifted the date).
-            fd.append('since', batchSince);
+            // EXIF stamp of the oldest photo in this batch: anchors the
+            // server's duplicate scan window AT that photo (a duplicate can
+            // sit on a nearby day when a clamped camera clock or an EXIF-less
+            // file drifted the date; meals from before the batch starts can't
+            // be duplicates of it).
+            fd.append('since', batchSince.date);
+            fd.append('since_time', batchSince.time);
             let resp;
             try {
                 resp = await fetch('/api/auto-log', { method: 'POST', body: fd });
@@ -1295,7 +1298,8 @@
             }
             entries.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
             for (const entry of entries) list.appendChild(batchRow(entry));
-            const batchSince = entries[0].date; // oldest — entries are sorted
+            // Oldest photo's EXIF stamp — entries are sorted ascending.
+            const batchSince = { date: entries[0].date, time: entries[0].time };
 
             for (const entry of entries) {
                 if (batchStop) {

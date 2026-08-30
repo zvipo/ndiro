@@ -20,13 +20,16 @@ import db
 DAY = '2026-08-29'
 
 
-def upload(c, time_str='13:37', date_str=DAY, photo=None, since=None):
+def upload(c, time_str='13:37', date_str=DAY, photo=None, since=None,
+           since_time=None):
     data = {
         'date': date_str, 'time': time_str,
         'photo': (io.BytesIO(photo if photo is not None else tk.TINY_JPEG), 'p.jpg'),
     }
     if since is not None:
         data['since'] = since
+    if since_time is not None:
+        data['since_time'] = since_time
     return tk.post(c, '/api/auto-log', data=data,
                    content_type='multipart/form-data')
 
@@ -244,6 +247,23 @@ tk.check('malformed since ignored (own-day behavior) — queued',
          resp.status_code == 202)
 for f in spool_files():
     os.remove(os.path.join(config.AUTOLOG_DIR, f))
+# since_time anchors the window AT the oldest photo, not at its midnight:
+# a meal on the since day EARLIER than the batch's first photo predates the
+# batch and must not block.
+resp = upload(alice, time_str='13:37', date_str=DAY2,
+              since=DAY, since_time='14:00')
+tk.check('same-minute meal BEFORE the batch\'s oldest photo: queued',
+         resp.status_code == 202 and resp.get_json()['queued'] is True)
+for f in spool_files():
+    os.remove(os.path.join(config.AUTOLOG_DIR, f))
+resp = upload(alice, time_str='13:37', date_str=DAY2,
+              since=DAY, since_time='12:00')
+tk.check('same-minute meal AFTER the batch start: skipped',
+         resp.status_code == 200 and resp.get_json()['skipped'] is True)
+resp = upload(alice, time_str='13:37', date_str=DAY2,
+              since=DAY, since_time='25:99')
+tk.check('malformed since_time: whole since day blocks (skipped)',
+         resp.status_code == 200 and resp.get_json()['skipped'] is True)
 
 # --- Pending cap ---------------------------------------------------------------
 _cap = config.AUTOLOG_MAX_PENDING
