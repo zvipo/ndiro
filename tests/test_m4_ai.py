@@ -32,12 +32,22 @@ tk.check('no key: estimate-photo 400',
              content_type='multipart/form-data').status_code == 400)
 tk.check('no key: AI buttons not rendered on /log',
          b'id="estimateBtn"' not in tk.get(admin, '/log').data)
+tk.check('no key: auto-add-from-photos card not rendered on /log',
+         b'id="batchBtn"' not in tk.get(admin, '/log').data)
 tk.check('no key: no AI use consumed', int(db.get_user(UID).get('ai_uses_today', 0)) == 0)
 
 # --- Enable AI with a stubbed OpenAI backend ---------------------------------
 config.OPENAI_API_KEY = 'test-key-not-real'
 tk.check('key set: AI buttons rendered on /log',
          b'id="estimateBtn"' in tk.get(admin, '/log').data)
+tk.check('key set: auto-add-from-photos card rendered on /log',
+         b'id="batchBtn"' in tk.get(admin, '/log').data)
+# Auto-add saves photo meals, so it needs BOTH the estimator and the bucket.
+_bucket = config.S3_BUCKET
+config.S3_BUCKET = None
+tk.check('no bucket: auto-add card hidden even with an AI key',
+         b'id="batchBtn"' not in tk.get(admin, '/log').data)
+config.S3_BUCKET = _bucket
 
 captured = {}
 

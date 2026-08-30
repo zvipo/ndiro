@@ -529,7 +529,9 @@ def log_page():
     return render_template('log.html', user=g.user,
                            nutrient=config.resolve_nutrient(g.user),
                            fiber_guide=config.FIBER_GUIDE,
-                           ai_enabled=bool(config.OPENAI_API_KEY))
+                           ai_enabled=bool(config.OPENAI_API_KEY),
+                           # Auto-add needs BOTH the estimator and photo storage.
+                           photos_enabled=bool(config.S3_BUCKET))
 
 
 def _valid_date(date_str):

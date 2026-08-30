@@ -172,6 +172,54 @@
             display: none;
         }
 
+        /* --- Auto-add from photos (batch upload; EXIF times) --- */
+        .batch-head {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .batch-note {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-top: 8px;
+        }
+
+        .batch-list {
+            margin-top: 10px;
+            font-size: 0.82rem;
+        }
+
+        .batch-row {
+            display: flex;
+            gap: 8px;
+            align-items: baseline;
+            padding: 4px 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .batch-row .when {
+            color: var(--gold);
+            white-space: nowrap;
+        }
+
+        .batch-row .status {
+            color: var(--muted);
+            min-width: 0;
+            overflow-wrap: break-word;
+        }
+
+        .batch-row .status.ok { color: var(--green); }
+        .batch-row .status.warn { color: var(--gold); }
+        .batch-row .status.err { color: var(--red); }
+
+        .batch-summary {
+            font-size: 0.82rem;
+            color: var(--muted);
+            margin-top: 8px;
+        }
+
         .form-actions {
             display: flex;
             gap: 10px;
@@ -378,6 +426,27 @@
             </div>
             <div class="form-error" id="formError"></div>
         </div>
+
+        {% if ai_enabled and photos_enabled %}
+        {# Low-touch batch logging: pick the day's food photos at once; each
+           becomes its own meal at the photo's EXIF time, with the AI photo
+           description and estimate accepted automatically. #}
+        <div class="card" id="batchCard">
+            <div class="batch-head">
+                <button type="button" class="btn" id="batchBtn">⚡<span class="ai-glyph">✦</span> Auto-add from photos</button>
+                <button type="button" class="btn subtle" id="batchStopBtn" style="display:none">Stop</button>
+            </div>
+            <div class="batch-note">
+                Select the day's food photos — each is logged as its own meal at the
+                time the photo was taken, with an AI description and
+                {{ nutrient.label }} estimate accepted automatically
+                (one AI estimate per photo; edit any meal afterwards).
+            </div>
+            <input type="file" id="batchInput" accept="image/*" multiple style="display:none">
+            <div class="batch-list" id="batchList" style="display:none"></div>
+            <div class="batch-summary" id="batchSummary" style="display:none"></div>
+        </div>
+        {% endif %}
 
         <div id="daysContainer"></div>
 
@@ -1001,6 +1070,279 @@
             }
         }
 
+        // ------- Auto-add from photos (batch; EXIF times; AI auto-accepted) -------
+        // Rendered only when BOTH the estimator and photo storage are configured.
+        // Sequential by design: /api/estimate-photo is rate-limited per IP and
+        // vision calls are slow, so a parallel fan-out would only trip the limiter.
+
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        let batchRunning = false;
+        let batchStop = false;
+
+        // Minimal EXIF reader: capture timestamp out of a JPEG's APP1 segment.
+        // Must run on the ORIGINAL file — the canvas downscale strips EXIF.
+        // Returns {date:'YYYY-MM-DD', time:'HH:MM'} or null (non-JPEG upload,
+        // no EXIF, no date tag); the caller falls back to file.lastModified.
+        async function exifDateTime(file) {
+            try {
+                const buf = await file.slice(0, 256 * 1024).arrayBuffer();
+                const view = new DataView(buf);
+                if (view.byteLength < 4 || view.getUint16(0) !== 0xFFD8) return null;
+                let off = 2;
+                while (off + 4 <= view.byteLength) {
+                    if (view.getUint8(off) !== 0xFF) break;
+                    const marker = view.getUint8(off + 1);
+                    if (marker === 0xDA) break; // start of scan — no EXIF past here
+                    const len = view.getUint16(off + 2);
+                    if (len < 2) break;
+                    if (marker === 0xE1 && len >= 10 && off + 8 <= view.byteLength &&
+                            view.getUint32(off + 4) === 0x45786966) { // "Exif"
+                        return parseTiffDate(view, off + 10, Math.min(off + 2 + len, view.byteLength));
+                    }
+                    off += 2 + len;
+                }
+            } catch (e) {
+                console.warn('EXIF read failed:', e);
+            }
+            return null;
+        }
+
+        function parseTiffDate(view, tiff, end) {
+            if (tiff + 8 > end) return null;
+            const bom = view.getUint16(tiff);
+            if (bom !== 0x4949 && bom !== 0x4D4D) return null;
+            const le = bom === 0x4949;
+            const u16 = (o) => view.getUint16(o, le);
+            const u32 = (o) => view.getUint32(o, le);
+            if (u16(tiff + 2) !== 0x2A) return null;
+
+            // Scan one IFD for wanted tags; returns {tag: entryOffset}.
+            function scanIfd(ifd, wanted) {
+                const found = {};
+                if (ifd < tiff || ifd + 2 > end) return found;
+                const n = u16(ifd);
+                for (let i = 0; i < n; i++) {
+                    const entry = ifd + 2 + i * 12;
+                    if (entry + 12 > end) break;
+                    const tag = u16(entry);
+                    if (wanted.includes(tag)) found[tag] = entry;
+                }
+                return found;
+            }
+
+            // ASCII tag value ("YYYY:MM:DD HH:MM:SS" is 20 bytes incl. NUL,
+            // so it always lives at the entry's value OFFSET, not inline).
+            function readAscii(entry) {
+                const count = u32(entry + 4);
+                if (count < 5 || count > 64) return null;
+                const start = count <= 4 ? entry + 8 : tiff + u32(entry + 8);
+                if (start < tiff || start + count > end) return null;
+                let s = '';
+                for (let i = 0; i < count - 1; i++) s += String.fromCharCode(view.getUint8(start + i));
+                return s;
+            }
+
+            const ifd0 = scanIfd(tiff + u32(tiff + 4), [0x8769, 0x0132]);
+            let stamp = null;
+            if (ifd0[0x8769]) { // Exif sub-IFD -> DateTimeOriginal (capture time)
+                const sub = scanIfd(tiff + u32(ifd0[0x8769] + 8), [0x9003]);
+                if (sub[0x9003]) stamp = readAscii(sub[0x9003]);
+            }
+            if (!stamp && ifd0[0x0132]) stamp = readAscii(ifd0[0x0132]); // IFD0 DateTime
+            const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/.exec(stamp || '');
+            if (!m) return null;
+            // Reject placeholder/garbage stamps (e.g. "0000:00:00") that would
+            // 400 server-side; ranges only — the server re-validates strictly.
+            if (+m[2] < 1 || +m[2] > 12 || +m[3] < 1 || +m[3] > 31 ||
+                    +m[4] > 23 || +m[5] > 59) return null;
+            return { date: m[1] + '-' + m[2] + '-' + m[3], time: m[4] + ':' + m[5] };
+        }
+
+        function fileDateTime(file) {
+            // Fallback: for camera-roll files lastModified is usually the
+            // capture time; a missing stamp degrades to "now".
+            const d = file.lastModified ? new Date(file.lastModified) : new Date();
+            return {
+                date: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') +
+                      '-' + String(d.getDate()).padStart(2, '0'),
+                time: String(d.getHours()).padStart(2, '0') + ':' +
+                      String(d.getMinutes()).padStart(2, '0'),
+            };
+        }
+
+        function batchRow(entry) {
+            const row = document.createElement('div');
+            row.className = 'batch-row';
+            const when = document.createElement('span');
+            when.className = 'when';
+            when.textContent = (entry.date === currentDateLocal() ? '' : entry.date + ' ') +
+                               formatTime(entry.time);
+            row.appendChild(when);
+            const status = document.createElement('span');
+            status.className = 'status';
+            status.textContent = 'Waiting…';
+            row.appendChild(status);
+            entry.statusEl = status;
+            return row;
+        }
+
+        function setBatchStatus(entry, cls, msg) {
+            entry.statusEl.className = 'status' + (cls ? ' ' + cls : '');
+            entry.statusEl.textContent = msg;
+        }
+
+        // One photo -> estimate -> saved meal. Fills entry.outcome:
+        // 'added' | 'no_estimate' (saved, AI failed) | 'failed' | 'stopped'.
+        async function autoAddOne(entry) {
+            setBatchStatus(entry, '', 'Looking at the photo…');
+            const blob = await downscaleImage(entry.file);
+
+            let est = null;
+            let estErr = null;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const fd = new FormData();
+                fd.append('photo', blob, 'photo.jpg');
+                let resp;
+                try {
+                    resp = await fetch('/api/estimate-photo', { method: 'POST', body: fd });
+                } catch (e) {
+                    estErr = 'network error';
+                    break;
+                }
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=/log';
+                    return;
+                }
+                const body = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    est = body;
+                    break;
+                }
+                estErr = body.error || 'estimate failed';
+                // Per-minute limiter: pause and retry. The DAILY cap (or any
+                // other error) won't clear by waiting — save without estimate.
+                if (resp.status === 429 && !/daily ai limit/i.test(estErr) && !batchStop) {
+                    setBatchStatus(entry, 'warn', 'Rate-limited — pausing…');
+                    await sleep(15000);
+                    continue;
+                }
+                break;
+            }
+
+            // Save the meal either way: on AI failure the photo + time are still
+            // logged (with a placeholder description) so the day stays complete —
+            // losing the entry entirely would defeat the low-touch batch.
+            setBatchStatus(entry, '', 'Saving…');
+            const fd = new FormData();
+            const desc = (est && est.description) ? est.description
+                : 'Photo meal — description pending';
+            fd.append('description', desc);
+            fd.append('context', '');
+            fd.append('ai_assisted', est ? '1' : '');
+            fd.append('nutrient_key', NUTRIENT.key);
+            if (est) fd.append(NUTRIENT.key, est.amount);
+            fd.append('date', entry.date);
+            fd.append('time', entry.time);
+            fd.append('photo', blob, 'photo.jpg');
+            let resp;
+            try {
+                resp = await fetch('/api/meals', { method: 'POST', body: fd });
+            } catch (e) {
+                entry.outcome = 'failed';
+                setBatchStatus(entry, 'err', 'Network error — not saved.');
+                return;
+            }
+            if (resp.status === 401) {
+                window.location.href = '/login?next=/log';
+                return;
+            }
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                entry.outcome = 'failed';
+                setBatchStatus(entry, 'err', 'Not saved: ' + (err.error || 'save failed'));
+                return;
+            }
+            if (est) {
+                entry.outcome = 'added';
+                setBatchStatus(entry, 'ok',
+                    desc + ' — ' + est.amount + ' ' + NUTRIENT.unit + ' ' + NUTRIENT.label);
+            } else {
+                entry.outcome = 'no_estimate';
+                setBatchStatus(entry, 'warn',
+                    'Saved without an estimate (' + estErr + ') — edit to fill in.');
+            }
+        }
+
+        async function autoAddPhotos(files) {
+            if (batchRunning) return;
+            batchRunning = true;
+            batchStop = false;
+            const btn = document.getElementById('batchBtn');
+            const stopBtn = document.getElementById('batchStopBtn');
+            const list = document.getElementById('batchList');
+            const summary = document.getElementById('batchSummary');
+            setBusy(btn, 'Auto-adding…');
+            stopBtn.style.display = 'inline-block';
+            summary.style.display = 'none';
+            list.innerHTML = '';
+            list.style.display = 'block';
+
+            // Resolve every timestamp first (local reads — fast), then work
+            // oldest-first so the progress list reads like the day did.
+            const entries = [];
+            for (const file of files) {
+                let dt = await exifDateTime(file);
+                if (!dt) dt = fileDateTime(file);
+                // The server rejects future-dated meals (they'd vanish from
+                // every view); a camera clock ahead of us clamps to today.
+                if (dt.date > currentDateLocal()) dt.date = currentDateLocal();
+                entries.push({ file: file, date: dt.date, time: dt.time, outcome: null });
+            }
+            entries.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+            for (const entry of entries) list.appendChild(batchRow(entry));
+
+            for (const entry of entries) {
+                if (batchStop) {
+                    entry.outcome = 'stopped';
+                    setBatchStatus(entry, '', 'Stopped.');
+                    continue;
+                }
+                await autoAddOne(entry);
+            }
+
+            const added = entries.filter(e => e.outcome === 'added').length;
+            const noEst = entries.filter(e => e.outcome === 'no_estimate').length;
+            const failed = entries.filter(e => e.outcome === 'failed').length;
+            const stopped = entries.filter(e => e.outcome === 'stopped').length;
+            let msg = 'Added ' + (added + noEst) + ' of ' + entries.length + ' meals.';
+            if (noEst) msg += ' ' + noEst + ' saved without an estimate.';
+            if (failed) msg += ' ' + failed + ' failed.';
+            if (stopped) msg += ' ' + stopped + ' skipped (stopped).';
+            summary.textContent = msg;
+            summary.style.display = 'block';
+
+            batchRunning = false;
+            stopBtn.style.display = 'none';
+            restoreBtn(btn, '⚡<span class="ai-glyph">✦</span> Auto-add from photos');
+            await loadMeals({ keepScroll: true });
+        }
+
+        function initBatch() {
+            const input = document.getElementById('batchInput');
+            if (!input) return; // feature not rendered (AI or photos unconfigured)
+            document.getElementById('batchBtn').addEventListener('click', () => input.click());
+            document.getElementById('batchStopBtn').addEventListener('click', () => {
+                batchStop = true;
+                document.getElementById('batchStopBtn').disabled = true;
+            });
+            input.addEventListener('change', () => {
+                const files = Array.from(input.files);
+                input.value = ''; // File objects stay readable; allows re-picking
+                document.getElementById('batchStopBtn').disabled = false;
+                if (files.length) autoAddPhotos(files);
+            });
+        }
+
         document.getElementById('loadMoreBtn').addEventListener('click', async (ev) => {
             const btn = ev.currentTarget;
             setBusy(btn, 'Loading…');
@@ -1013,6 +1355,7 @@
         });
 
         initForm();
+        initBatch();
         loadMeals();
     </script>
 {% endblock %}
