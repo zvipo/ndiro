@@ -4,8 +4,14 @@
 **viscous soluble fiber** (the cholesterol-lowering kind, dietician-driven).
 Users log meals — description, optional context note, optional photo, fiber grams
 (typed, tap-added from a dietician's food guide, or AI-estimated) — and review a
-monthly chart against the 20 g/day Portfolio Diet goal. Read-only share links let
-a dietician follow along without an account.
+monthly chart against the 20 g/day Portfolio Diet goal. A low-touch batch mode
+("Auto-add from photos") logs a whole day at once: pick the day's food photos,
+wait a few seconds for the upload, and close the page — each photo becomes a
+meal at its EXIF capture time, with the AI description and estimate accepted
+automatically by a background worker (photos wait on local disk in
+`AUTOLOG_DIR` until committed to S3). Photos already logged are skipped, so
+re-selecting the whole day is safe. Read-only share links let a dietician
+follow along without an account.
 
 Flask + DynamoDB + S3 + Google sign-in + optional OpenAI, in one Docker
 container. Proof-of-concept scale: ~100 users.

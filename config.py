@@ -73,6 +73,17 @@ OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-5-mini')
 OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions'
 AI_DAILY_LIMIT = int(os.getenv('AI_DAILY_LIMIT', '10'))  # per user per UTC day
 
+# --- Auto-log spool (batch "auto-add from photos") ---------------------------
+# Local-disk queue for photos uploaded in a batch and processed in the
+# background (see autolog.py). The default is EPHEMERAL: a container restart
+# loses only not-yet-committed photos — point it at a mounted volume to make
+# the queue survive restarts. The directory holds users' private photos, so
+# it must never be web-served or world-readable.
+AUTOLOG_DIR = os.getenv('AUTOLOG_DIR', '/tmp/ndiro-autolog')
+# Per-user bound on queued photos: caps local disk use (~400KB each) and how
+# much AI backlog one user can park.
+AUTOLOG_MAX_PENDING = int(os.getenv('AUTOLOG_MAX_PENDING', '50'))
+
 # Optional path for the AI failure log (see ai.log_failure). Failures ALWAYS
 # print one `AI_ERROR {json}` line on stdout (docker logs); setting this also
 # appends the same JSON to a file, so the operator can read them offline —

@@ -23,6 +23,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import ai
 import auth
+import autolog
 import config
 import imaging
 import db
@@ -526,10 +527,15 @@ def admin_stats():
 @app.route('/log')
 @auth.approved_required
 def log_page():
+    # Kick the auto-log worker: after a restart this is what resumes any
+    # spooled-but-unprocessed batch photos without waiting for a new upload.
+    autolog.ensure_worker()
     return render_template('log.html', user=g.user,
                            nutrient=config.resolve_nutrient(g.user),
                            fiber_guide=config.FIBER_GUIDE,
-                           ai_enabled=bool(config.OPENAI_API_KEY))
+                           ai_enabled=bool(config.OPENAI_API_KEY),
+                           # Auto-add needs BOTH the estimator and photo storage.
+                           photos_enabled=bool(config.S3_BUCKET))
 
 
 def _valid_date(date_str):
@@ -1108,6 +1114,129 @@ def estimate_photo():
     return jsonify(result)
 
 
+# --- Auto-log (batch "auto-add from photos"; async) --------------------------
+# The upload only validates and spools the photo on LOCAL DISK (autolog.py);
+# the AI estimate and the meal write happen later in the background worker, so
+# the client can close the page right after the uploads finish. The queue is
+# the spool directory itself — no extra metadata store.
+
+@app.route('/api/auto-log', methods=['POST'])
+@limiter.limit('60 per minute')
+@auth.approved_required
+def auto_log():
+    """Queue ONE batch photo (multipart: photo + date + time, both from the
+    client — the time normally read from the photo's EXIF)."""
+    # Needs BOTH halves: the worker's whole job is estimate + photo meal.
+    if not config.OPENAI_API_KEY or not config.S3_BUCKET:
+        return jsonify({'error': 'Auto-add is not enabled on this server'}), 400
+
+    # Same client-date discipline as add_meal (invariant #10).
+    date_str = request.form.get('date')
+    if not date_str:
+        return jsonify({'error': 'Date is required'}), 400
+    if not _valid_date(date_str):
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    if date.fromisoformat(date_str) > datetime.now(timezone.utc).date() + timedelta(days=1):
+        return jsonify({'error': "Date can't be in the future"}), 400
+    # Unlike add_meal there is no "now" fallback: by the time the worker runs,
+    # "now" is wrong — the whole point is logging at the photo's own time.
+    time_str = (request.form.get('time') or '').strip()
+    try:
+        datetime.strptime(time_str, '%H:%M')
+    except ValueError:
+        return jsonify({'error': 'Invalid time format. Use HH:MM'}), 400
+
+    user_id = g.user['user_id']
+
+    # Time-based dedup: the EXIF minute is a stable fingerprint, so re-running
+    # a batch ("did Tuesday's upload include the lunch photo?") skips photos
+    # already logged — or already queued — at that minute instead of
+    # double-logging the day. Only PHOTO meals block: a typed text-only meal
+    # at the same minute doesn't hide new photo information. Deliberately a
+    # heuristic: a second photo taken within the same minute is treated as
+    # the same meal.
+    #
+    # The MEAL scan covers a window, not just this photo's date: a duplicate
+    # can sit on a nearby day when the date was unreliable the first time (a
+    # camera clock ahead of reality gets clamped to "today"; an EXIF-less
+    # file's modified-time stamp can drift between selections). ?since= +
+    # ?since_time= — the EXIF stamp of the batch's OLDEST photo,
+    # client-computed — anchor the window AT that photo (not at its
+    # midnight), so a habitual same-minute meal on an unrelated older day —
+    # or earlier on the oldest day than the batch even starts — never
+    # blocks; the end is UTC tomorrow (nothing is ever logged past it).
+    # Bounded at 31 days so a bogus since can't demand an unbounded range
+    # Query. The SPOOL check stays exact date+time: pending entries are this
+    # batch's own trustworthy dates, and a window there would misfire on two
+    # same-minute photos from different days of one batch.
+    hhmm = time_str.replace(':', '')
+    since = request.form.get('since')
+    win_start = date_str
+    since_hhmm = None  # sub-day start: set only when the window opens ON the since day
+    if since and _valid_date(since) and since < date_str:
+        win_start = max(since,
+                        (date.fromisoformat(date_str) - timedelta(days=31)).isoformat())
+        if win_start == since:
+            try:
+                datetime.strptime(request.form.get('since_time') or '', '%H:%M')
+                since_hhmm = request.form['since_time'].replace(':', '')
+            except ValueError:
+                pass  # absent/malformed: the whole since day is in the window
+
+    def _blocks(m):
+        mid = str(m.get('meal_id', ''))
+        if not m.get('photo_key') or not mid.startswith(hhmm):
+            return False
+        # A meal on the window's first day BEFORE the batch's oldest photo
+        # predates this batch — it can't be one of these photos' duplicates.
+        if since_hhmm and m.get('date') == win_start and mid[:4] < since_hhmm:
+            return False
+        return True
+
+    win_end = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
+    try:
+        already = any(_blocks(m)
+                      for m in db.query_meals_range(user_id, win_start, win_end))
+    except Exception as e:
+        print(f"Error checking auto-log duplicates for user {user_id}: {type(e).__name__}")
+        already = False  # fail open: a duplicate meal beats a lost one
+    if already or autolog.has_pending(user_id, date_str, time_str):
+        return jsonify({'queued': False, 'skipped': True,
+                        'pending': autolog.pending_count(user_id)}), 200
+
+    if autolog.pending_count(user_id) >= config.AUTOLOG_MAX_PENDING:
+        return jsonify({'error': f'Too many photos queued (max '
+                                 f'{config.AUTOLOG_MAX_PENDING}) — wait for '
+                                 'processing to catch up'}), 429
+
+    photo = request.files.get('photo')
+    if not photo or not photo.filename:
+        return jsonify({'error': 'Photo is required'}), 400
+    # Normalize NOW so an unreadable image fails while the user is still
+    # looking, and the spool holds ready-to-use JPEG bytes.
+    try:
+        jpeg_bytes = imaging.to_jpeg(photo.read())
+    except ValueError:
+        return jsonify({'error': "Couldn't read that image — try a JPEG or PNG"}), 400
+
+    try:
+        autolog.enqueue(user_id, date_str, time_str, jpeg_bytes)
+    except OSError as e:
+        print(f"Error spooling auto-log photo for user {user_id}: {type(e).__name__}")
+        return jsonify({'error': 'Upload failed — please try again'}), 500
+    autolog.ensure_worker()
+    return jsonify({'queued': True,
+                    'pending': autolog.pending_count(user_id)}), 202
+
+
+@app.route('/api/auto-log/pending')
+@auth.approved_required
+def auto_log_pending():
+    """The session user's queue depth (for the page's progress poll)."""
+    autolog.ensure_worker()
+    return jsonify({'pending': autolog.pending_count(g.user['user_id'])})
+
+
 # --- Review ------------------------------------------------------------------
 
 @app.route('/review')
@@ -1465,7 +1594,9 @@ def delete_account():
     try:
         # Photos first and STRICTLY: if the S3 wipe is incomplete we abort with
         # the account intact, so the user can retry rather than be left with
-        # orphaned private photos and no account.
+        # orphaned private photos and no account. The auto-log spool holds
+        # photos too (local disk), so it gets the same strict treatment.
+        autolog.drop_user(user_id)
         db.delete_user_photos(user_id)
         db.delete_all_meals(user_id)
         db.delete_user_shares(user_id)

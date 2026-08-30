@@ -35,6 +35,15 @@ ADMIN_EMAILS=admin@example.com
 # Max total user accounts (enforced server-side at sign-up).
 MAX_USERS=100
 
+# --- Auto-add from photos (batch upload; needs S3_BUCKET + OPENAI_API_KEY) ---
+# Local-disk spool for batch photos awaiting background processing. The
+# default is inside the container and therefore EPHEMERAL: a restart loses
+# only photos not yet committed to S3. Point it at a mounted volume to make
+# the queue survive restarts. Holds private photos — never web-serve it.
+#AUTOLOG_DIR=/tmp/ndiro-autolog
+# Max photos one user may have queued at a time.
+#AUTOLOG_MAX_PENDING=50
+
 # --- AI estimator (optional; unset key = AI buttons hidden, endpoints 400) ---
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
