@@ -22,7 +22,7 @@ tk.check('status page links the commit on the repo',
          config.commit_url() is None or config.commit_url() in body)
 tk.check('status page links the source repo', config.GITHUB_REPO_URL in body)
 tk.check('status page reports feature state, not config',
-         'Meal photos' in body and 'AI estimates' in body)
+         'Meal photos' in body and 'AI estimates' in body and 'Email' in body)
 
 # The commit title renders as escaped text — never as markup.
 saved_title = config.GIT_COMMIT_TITLE
@@ -36,7 +36,8 @@ config.GIT_COMMIT_TITLE = saved_title
 # Everything below is a real value from the test environment (testkit.py).
 secrets_in_env = ['fake-test-bucket', 'test-secret-key-not-for-production',
                   'test-client-secret', 'test-client-id.apps.googleusercontent.com',
-                  'admin@example.test', 'test-users', 'test-meals']
+                  'admin@example.test', 'test-users', 'test-meals',
+                  'ndiro@test.invalid']
 tk.check('status page leaks no config values',
          not any(s in body for s in secrets_in_env))
 

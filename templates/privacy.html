@@ -28,8 +28,12 @@
         <div class="card privacy">
             <h2 style="margin-top:0;">What Ndiro stores</h2>
             <p>Your meal descriptions, optional context notes, fiber amounts, optional
-            meal photos, and your Google account's email and name. That's it. It is all
-            stored in the operator's AWS account (DynamoDB and a private S3 bucket).</p>
+            meal photos, and your account's email and name — from Google if you sign in
+            with Google, or the ones you typed at signup (plus a salted hash of your
+            password — never the password itself) for email/password accounts. That's
+            it. It is all stored in the operator's AWS account (DynamoDB and a private
+            S3 bucket). Email/password accounts also receive the occasional
+            account email (verification and password-reset links) at their address.</p>
 
             <h2>Who can see your data</h2>
             <ul>

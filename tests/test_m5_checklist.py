@@ -46,7 +46,10 @@ for rule in tk.app.url_map.iter_rules():
     route_limits[rule.rule] = rule.endpoint
 tk.check('login/callback/share/AI/photo endpoints registered',
          all(r in route_limits for r in
-             ['/login', '/callback', '/s/<token>', '/s/<token>/meals',
+             ['/login', '/login/google', '/login/password', '/callback',
+              '/signup', '/forgot', '/reset/<token>', '/verify-email/<token>',
+              '/resend-verification',
+              '/s/<token>', '/s/<token>/meals',
               '/api/estimate-fiber', '/api/estimate-photo',
               '/photo/<date_str>/<meal_id>',
               '/s/<token>/photo/<date_str>/<meal_id>']))
@@ -87,7 +90,8 @@ resp = tk.get(c, '/api/admin/users')
 user_keys = set().union(*(set(u.keys()) for u in resp.get_json()['users']))
 tk.check('admin payload is metadata-only (no meal/photo/share fields)',
          user_keys <= {'user_id', 'email', 'name', 'status', 'created_at',
-                       'approved_at', 'invited_by', 'invited_by_email'})
+                       'approved_at', 'invited_by', 'invited_by_email',
+                       'unverified'})
 # Usage is not metadata: what one account DOES is not the admin's to see. The
 # AI daily counter used to ride along here; instance-wide AI use is on
 # /admin/monitor instead, where it names nobody.

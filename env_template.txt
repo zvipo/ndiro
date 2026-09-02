@@ -29,6 +29,19 @@ GOOGLE_CLIENT_SECRET=your-client-secret
 # Must exactly match an Authorized redirect URI on that client.
 GOOGLE_REDIRECT_URI=http://localhost:5000/callback
 
+# --- Email (Amazon SES; optional) ---
+# Sender for native (email/password) account mail: verification links,
+# password resets. Must be an SES-verified identity, and the AWS credentials
+# above need ses:SendEmail. Unset = email/password signup and password reset
+# are disabled (503) — password SIGN-IN for existing accounts still works.
+#MAIL_FROM=Ndiro <no-reply@example.com>
+# SES region, when different from AWS_REGION.
+#SES_REGION=us-east-1
+# Absolute base URL for the links inside those emails. Strongly recommended in
+# production (immune to Host-header games); unset falls back to the request
+# host, which is fine for local dev.
+#APP_BASE_URL=https://your-domain.example
+
 # --- Accounts ---
 # Comma-separated emails that bootstrap as admin on their FIRST sign-in.
 ADMIN_EMAILS=admin@example.com

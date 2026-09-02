@@ -8,7 +8,8 @@ Guidance for Claude Code when working in this repository.
 micro-nutrient per user**: **viscous soluble fiber** by default (dietician-
 driven, cholesterol-lowering), or another micro from the curated
 `NUTRIENT_CATALOG` (closed set; goal editable, direction fixed) chosen in
-settings. Backed by DynamoDB + S3 with Google sign-in and optional OpenAI
+settings. Backed by DynamoDB + S3 with Google sign-in, native email/password
+accounts (email-verified, SES-mailed reset links), and optional OpenAI
 estimators. PoC scale: ~100 users,
 one Docker container, single gunicorn worker. **This repo is public: never
 commit secrets, bucket names, hostnames, IPs, or emails.** All config is env
@@ -36,6 +37,7 @@ python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)
 python tests/test_m9_status.py       # /status build stamp (public page leaks no config)
 python tests/test_m10_monitor.py     # /admin/monitor instance stats (counts only)
 python tests/test_m11_autolog.py     # async auto-log spool (queue, cap, dead-letter)
+python tests/test_m12_native.py      # native accounts (signup/verify/reset, no-oracle)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -70,6 +72,19 @@ raises without it (tests set their own).
 - **`auth.py`** — Google OAuth (server-side code exchange via `requests`, no
   JWT lib; token trusted because it comes from Google over TLS), `current_user()`,
   `approved_required` / `admin_required`, `_safe_next`.
+- **`native_auth.py`** — native (email/password) account primitives: werkzeug
+  scrypt hashing (+ a dummy-hash verify to flatten no-such-user timing),
+  `new_user_id()` (`nat-` + random hex — never collides with a Google sub,
+  path-safe for the S3 prefix), emailed-token minting (256-bit random in the
+  link, SHA-256 hash on the row), email/password validation (8–256 chars, no
+  composition rules), lockout math (10 fails → 15 min). Pure helpers — the
+  session and DB writes stay in app.py/db.py.
+- **`mailer.py`** — Amazon SES via boto3 `sesv2` (same credential chain as
+  db.py; lazy client, 5s/10s timeouts). `MAIL_FROM` unset ⇒ `enabled()` False
+  ⇒ signup/forgot/resend 503 while password SIGN-IN keeps working.
+  `base_url()` prefers `APP_BASE_URL` over the forgeable request Host for the
+  links in emails. Failures log `MAIL_ERROR <type> <ses-code>` only — never
+  the address, body, or token. Tests monkeypatch `mailer.send`.
 - **`ai.py`** — estimator prompts/schema, `_openai_estimate` (plain requests,
   strict json_schema, timeouts (5,20) text / (5,25) vision under gunicorn's 60s).
   Every entry point takes the resolved nutrient config: the fiber default keeps
@@ -120,9 +135,17 @@ raises without it (tests set their own).
 
 ## Data model (DynamoDB, on-demand, auto-created, deliberately NO GSIs — four tables)
 
-- **users** — PK `user_id` = Google `sub` (stable; emails change). `email`,
-  `name`, `status` ∈ `pending|approved|rejected|admin`, `created_at`,
-  `approved_at?`, `ai_uses_date` (UTC day), `ai_uses_today`, and optional
+- **users** — PK `user_id` = Google `sub` (stable; emails change), or
+  `nat-{hex32}` for native accounts. `email`, `name`, `status` ∈
+  `pending|approved|rejected|admin`, `created_at`,
+  `approved_at?`, `ai_uses_date` (UTC day), `ai_uses_today`, native-account
+  attrs (`auth_provider='native'`, `password_hash`, `email_verified`,
+  `verify_token_hash`/`verify_expires_at`, `reset_token_hash`/
+  `reset_expires_at`, `failed_logins`/`locked_until`, transient
+  `pending_invite_token` — all on this ONE row so deletion/scans need no
+  extra step; email lookups are scans, no GSI, and email has NO uniqueness
+  constraint: native signup refuses duplicates by scan, a Google account may
+  legitimately coexist with a native one on the same email), and optional
   `nutrient_key/nutrient_label/nutrient_unit/nutrient_goal/nutrient_direction`
   (the tracked micro; absent on legacy rows = fiber default, resolved at read
   time by `config.resolve_nutrient` — never migrate). The meal form field name
@@ -180,20 +203,28 @@ delete_photo/delete_user_photos purge the LRU.
 3. `approved_required`/`admin_required` do a FRESH users-table read every
    request (a rejected user's live session must die immediately; never cache
    status in the cookie). `ADMIN_EMAILS` only bootstraps status at first
-   sign-in.
+   **Google** sign-in — NEVER for native accounts (typing the admin's email
+   into the signup form, even verified, must not mint an admin).
 4. Session stores only `user_id` (+ transient `oauth_state`, `login_next`,
    `invite_token` — the last popped unconditionally in /callback, never
-   surviving into the post-login session);
+   surviving into the post-login session — and `form_token`, the native-form
+   CSRF analog of oauth_state); sessions are established in exactly three
+   places — `/callback`, `POST /login/password`, `POST /verify-email/<token>`
+   — always clear-then-set, and never for an unverified native account;
    cookie is Secure/HttpOnly/SameSite=Lax, 30 days; ProxyFix(x_proto, x_host).
 5. OAuth `state` CSRF via `session.pop` comparison; `_safe_next` allows only
    relative paths (no `//`, no `\`).
 6. Rate limits (Flask-Limiter, `memory://` — valid ONLY with one gunicorn
-   worker, which the Dockerfile pins): login/callback 10/min, `/s/*` and
+   worker, which the Dockerfile pins): login page + `/login/google` +
+   `/login/password` + callback 10/min, `/signup` 5/min, `/forgot` POST +
+   `/resend-verification` 3/min (mail-sending: tightest), `/forgot` GET +
+   verify/reset routes 10/min, `/s/*` and
    `/i/*` 30/min, photo proxy routes 600/min, invite creation 10/min,
    `/api/admin/stats` 12/min (a full scan of every table per call),
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
    race-safe two-call conditional counter in db.py (increment BEFORE the
-   OpenAI call; refund on upstream failure only).
+   OpenAI call; refund on upstream failure only). Per-ACCOUNT password
+   guessing is bounded by the lockout in invariant #12, not by these.
 7. Admin surfaces show account metadata ONLY — no route or template lets an
    admin see another user's meals or photos. `/admin` shows the user rows
    (email/name/status); `/admin/monitor` + `/api/admin/stats` add INSTANCE-WIDE
@@ -216,7 +247,12 @@ delete_photo/delete_user_photos purge the LRU.
    never log the description, the model's `content`, or the photo.
 9. `MAX_USERS` enforced server-side at account creation — including invited
    signups (the gate runs BEFORE invite logic; a full instance never consumes
-   an invite).
+   an invite). Native signup keeps the same order (gate → duplicate check →
+   invite), and its invites are only VALIDATED at signup — the atomic claim
+   happens at email verification, so an abandoned signup never burns a
+   single-use invite. A native row that is unverified with an expired verify
+   token is purged by the next signup for its email (it never had a session,
+   so the row delete is the whole wipe).
 9b. Invite redemption is server-side ONLY (nothing from a URL sets status):
    `/i/<token>`'s four dead states (missing/revoked/expired/used) are
    byte-identical 404s; the inviter is freshly re-read at both view and
@@ -227,9 +263,25 @@ delete_photo/delete_user_photos purge the LRU.
     required from the client (400 without it); UTC is a fallback for the time
     component only. Reads take `?anchor=` (client's local today).
 11. `/status` is PUBLIC (like `/privacy` and `/health`): it shows the build
-    stamp, uptime, and BOOLEANS for the optional integrations — never a
-    configuration value (no bucket, model, host, or email). A new field there
-    needs a matching entry in `tests/test_m9_status.py`'s leak check.
+    stamp, uptime, and BOOLEANS for the optional integrations (AI, photos,
+    email) — never a configuration value (no bucket, model, host, or email).
+    A new field there needs a matching entry in `tests/test_m9_status.py`'s
+    leak check.
+12. Native credentials: passwords exist ONLY as werkzeug scrypt hashes;
+    emailed verify/reset tokens are 256-bit random, stored ONLY as SHA-256
+    hashes, single-use via conditional writes, and expiring (verify 24h,
+    reset 1h); raw tokens/links and email addresses never appear in logs
+    (`MAIL_ERROR` carries the exception type + SES code only). Responses are
+    uniform — one exact sign-in error for unknown/wrong/locked (locked skips
+    even the hash check; a dummy-hash verify flattens no-such-user timing),
+    one check-email page for every /signup outcome, one sent page for every
+    /forgot input, one byte-identical dead page for every dead emailed link —
+    the only sanctioned differentials are `full.html` at capacity and the
+    verify-your-email page on a CORRECT password (which proves ownership).
+    Emailed GET links never mutate (scanners prefetch) — consumption is
+    POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
+    or a completed reset. The admin payload's `unverified` boolean is derived
+    — hashes/tokens/providers never enter `_user_to_json`'s allowlist.
 
 ## Gotchas
 
@@ -239,8 +291,13 @@ delete_photo/delete_user_photos purge the LRU.
   `VISCOUS_FIBER_GOAL_G` the only definition.
 - The tests are plain scripts (no pytest); `tests/testkit.py` must be imported
   first — it sets env vars and installs the fakes before app import. Fakes
-  implement the exact boto3 surface db.py uses; if you add a new condition
-  expression shape, extend `tests/fakes.py`.
+  implement the exact boto3 surface db.py uses (update expressions may mix
+  SET/REMOVE/ADD clauses); if you add a new condition
+  expression shape, extend `tests/fakes.py`. `mailer.send` is replaced by
+  `tk.MAILER` — pull emailed links back out with `tk.extract_link`.
+- Changing a native account's password does NOT invalidate its other live
+  sessions (the cookie holds only `user_id`; there is no session-versioning
+  machinery) — accepted at PoC scale, don't bolt one on casually.
 - Account deletion order: photos → meals → shares → invites → user row LAST
   (retryable). `/admin/monitor`'s "orphans" tile counts meal rows and photo
   objects whose `user_id` has no users row — a non-zero value means that

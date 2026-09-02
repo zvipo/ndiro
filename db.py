@@ -6,7 +6,7 @@ and S3 keys are constructed here, server-side only, under users/{user_id}/.
 
 Tables (all on-demand, auto-created on boot, no GSIs — deliberate at <=100
 users; the scans below are commented where they'd be wrong at larger scale):
-  users:  PK user_id (Google sub)
+  users:  PK user_id (Google sub, or 'nat-' + random hex for native accounts)
   meals:  PK user_id, SK sk = "{YYYY-MM-DD}#{meal_id}"
   shares: PK share_token
 """
@@ -240,6 +240,151 @@ def set_user_status(user_id, status):
 
 def delete_user(user_id):
     users_table().delete_item(Key={'user_id': user_id})
+
+
+# --- Native (email/password) accounts ----------------------------------------
+# All native-account state lives on the ONE users row (auth_provider,
+# password_hash, email_verified, hashed single-use tokens, lockout counters),
+# so account deletion and the admin/monitor scans need no extra steps. Email
+# and token lookups are full scans — fine at <=100 users, same as list_users.
+
+def find_user_by_email(email, provider=None):
+    """First user row whose email matches (case-insensitive), or None.
+    provider='native' additionally requires auth_provider == 'native'."""
+    email = (email or '').strip().lower()
+    if not email:
+        return None
+    for item in list_users():
+        if (item.get('email') or '').lower() != email:
+            continue
+        if provider == 'native' and item.get('auth_provider') != 'native':
+            continue
+        return item
+    return None
+
+
+def find_user_by_token_hash(attr_name, token_hash):
+    """User row carrying this verify/reset token HASH, or None. Only hashes
+    are ever stored, so a scan can never surface a live link."""
+    if not token_hash:
+        return None
+    for item in list_users():
+        if item.get(attr_name) == token_hash:
+            return item
+    return None
+
+
+def create_native_user(user_id, email, name, password_hash,
+                       verify_token_hash, verify_expires_at,
+                       pending_invite_token=None):
+    """Create an unverified native-account row. Always status 'pending':
+    invites are validated at signup but CLAIMED only at verification (see
+    app.py), and ADMIN_EMAILS never bootstraps a native account."""
+    item = {
+        'user_id': user_id,
+        'email': email,
+        'name': name,
+        'picture': '',
+        'status': 'pending',
+        'created_at': _utc_now_iso(),
+        'auth_provider': 'native',
+        'password_hash': password_hash,
+        'email_verified': False,
+        'verify_token_hash': verify_token_hash,
+        'verify_expires_at': int(verify_expires_at),
+    }
+    if pending_invite_token:
+        item['pending_invite_token'] = pending_invite_token
+    users_table().put_item(Item=item)
+    return item
+
+
+def mark_email_verified(user_id, token_hash):
+    """Flip email_verified and clear the token — conditional on the row still
+    carrying THIS token hash, so a verification link is single-use even under
+    a double-submit race. True on success, False when the condition failed."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=('SET email_verified = :t '
+                              'REMOVE verify_token_hash, verify_expires_at, '
+                              'pending_invite_token'),
+            ConditionExpression='verify_token_hash = :h',
+            ExpressionAttributeValues={':t': True, ':h': token_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def set_verify_token(user_id, token_hash, expires_at):
+    """Re-mint the verification token (resend flow)."""
+    users_table().update_item(
+        Key={'user_id': user_id},
+        UpdateExpression='SET verify_token_hash = :h, verify_expires_at = :e',
+        ExpressionAttributeValues={':h': token_hash, ':e': int(expires_at)},
+    )
+
+
+def set_reset_token(user_id, token_hash, expires_at):
+    users_table().update_item(
+        Key={'user_id': user_id},
+        UpdateExpression='SET reset_token_hash = :h, reset_expires_at = :e',
+        ExpressionAttributeValues={':h': token_hash, ':e': int(expires_at)},
+    )
+
+
+def complete_password_reset(user_id, password_hash, token_hash):
+    """Set the new password and clear the reset token + lockout in one
+    conditional write — the token-hash condition makes the link single-use.
+    True on success, False when the condition failed (used/replaced token)."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=('SET password_hash = :p '
+                              'REMOVE reset_token_hash, reset_expires_at, '
+                              'failed_logins, locked_until'),
+            ConditionExpression='reset_token_hash = :h',
+            ExpressionAttributeValues={':p': password_hash, ':h': token_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def set_password_hash(user_id, password_hash):
+    """Signed-in password change (settings)."""
+    users_table().update_item(
+        Key={'user_id': user_id},
+        UpdateExpression='SET password_hash = :p',
+        ExpressionAttributeValues={':p': password_hash},
+    )
+
+
+def record_login_failure(user_id, count, locked_until=None):
+    """Store the consecutive-failure count (caller computes it from the row
+    it just read — read-modify-write is fine for this threat model)."""
+    expr = 'SET failed_logins = :c'
+    values = {':c': int(count)}
+    if locked_until is not None:
+        expr += ', locked_until = :t'
+        values[':t'] = int(locked_until)
+    users_table().update_item(
+        Key={'user_id': user_id},
+        UpdateExpression=expr,
+        ExpressionAttributeValues=values,
+    )
+
+
+def clear_login_failures(user_id):
+    users_table().update_item(
+        Key={'user_id': user_id},
+        UpdateExpression='REMOVE failed_logins, locked_until',
+    )
 
 
 # --- AI daily-use counter (race-safe two-call conditional pattern) -----------

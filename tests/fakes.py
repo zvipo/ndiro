@@ -5,6 +5,7 @@ db.py uses, including boto3 Key/Attr condition evaluation and the string
 ConditionExpressions used by the AI counter and share revocation. No AWS
 credentials or network access required.
 """
+import re
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -156,22 +157,45 @@ class FakeTable:
                 not _eval_str_condition(ConditionExpression, cond_item, values, resolve_name):
             raise _ccf_error()
 
+        # Clause parsing: SET / REMOVE / ADD in any combination and order
+        # (db.py mixes them, e.g. 'SET email_verified = :t REMOVE ...').
         expr = UpdateExpression.strip()
-        if expr.startswith('SET '):
-            for part in expr[4:].split(','):
-                name, val = part.split('=', 1)
-                target[resolve_name(name.strip())] = values[val.strip()]
-        elif expr.startswith('ADD '):
-            name, val = expr[4:].split()
-            name = resolve_name(name)
-            target[name] = target.get(name, 0) + values[val]
-        else:
+        parts = [p for p in re.split(r'\b(SET|REMOVE|ADD)\b', expr) if p.strip()]
+        if not parts or parts[0] not in ('SET', 'REMOVE', 'ADD'):
             raise NotImplementedError(f'update expression: {expr}')
+        for keyword, body in zip(parts[0::2], parts[1::2]):
+            if keyword == 'SET':
+                for part in body.split(','):
+                    name, val = part.split('=', 1)
+                    target[resolve_name(name.strip())] = values[val.strip()]
+            elif keyword == 'REMOVE':
+                for name in body.split(','):
+                    target.pop(resolve_name(name.strip()), None)
+            elif keyword == 'ADD':
+                name, val = body.split()
+                name = resolve_name(name)
+                target[name] = target.get(name, 0) + values[val]
+            else:
+                raise NotImplementedError(f'update expression: {expr}')
         self.items[kt] = target
         return {}
 
     def batch_writer(self):
         return FakeBatchWriter(self)
+
+
+class FakeMailer:
+    """Stands in for mailer.send: captures every message so tests can pull
+    verification/reset links out of the bodies. Set .ok = False to simulate
+    an SES outage."""
+
+    def __init__(self):
+        self.sent = []  # (to_addr, subject, body) tuples, oldest first
+        self.ok = True
+
+    def send(self, to_addr, subject, body):
+        self.sent.append((to_addr, subject, body))
+        return self.ok
 
 
 class FakeS3:

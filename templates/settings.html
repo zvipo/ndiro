@@ -66,12 +66,30 @@
 
         <div class="card">
             <p style="font-size:0.92rem;">Signed in as
-                <strong>{{ user.email }}</strong>{% if user.name %} ({{ user.name }}){% endif %}.</p>
+                <strong>{{ user.email }}</strong>{% if user.name %} ({{ user.name }}){% endif %}{% if user.auth_provider != 'native' %} <span class="muted">— via Google</span>{% endif %}.</p>
             <p class="muted" style="font-size:0.85rem; margin-top:8px;">
                 Your meals and photos are private — see the
                 <a href="/privacy">privacy &amp; terms</a>.</p>
             <p style="margin-top:12px;"><a class="btn subtle" href="/logout?next=/">Sign out</a></p>
         </div>
+
+        {% if user.auth_provider == 'native' %}
+        <div class="card nutrient-form">
+            <h2 style="font-size:1rem; margin-bottom:8px;">Change password</h2>
+            <div class="field-row">
+                <div>
+                    <label class="form-label" for="currentPassword">Current password</label>
+                    <input type="password" id="currentPassword" autocomplete="current-password" style="width:100%;">
+                </div>
+                <div>
+                    <label class="form-label" for="newPassword">New password (8+ characters)</label>
+                    <input type="password" id="newPassword" autocomplete="new-password" style="width:100%;">
+                </div>
+            </div>
+            <p style="margin-top:12px;"><button type="button" class="btn primary" id="passwordSaveBtn">Change password</button></p>
+            <div class="form-error" id="passwordError"></div>
+        </div>
+        {% endif %}
 
         <div class="card nutrient-form">
             <h2 style="font-size:1rem; margin-bottom:8px;">Tracked micro</h2>
@@ -193,6 +211,51 @@
             saveNutrientBtn.disabled = false;
             saveNutrientBtn.textContent = 'Save tracked micro';
         });
+
+        {% if user.auth_provider == 'native' %}
+        // ------- Change password (native accounts only) -------
+        const passwordSaveBtn = document.getElementById('passwordSaveBtn');
+        {
+            const showPasswordError = (msg) => {
+                const el = document.getElementById('passwordError');
+                el.style.display = msg ? 'block' : 'none';
+                el.textContent = msg || '';
+            };
+            passwordSaveBtn.addEventListener('click', async () => {
+                const current = document.getElementById('currentPassword').value;
+                const next = document.getElementById('newPassword').value;
+                if (next.length < 8) {
+                    showPasswordError('New password must be at least 8 characters.');
+                    return;
+                }
+                passwordSaveBtn.disabled = true;
+                passwordSaveBtn.innerHTML = '<span class="spin">🥦</span> Saving…';
+                showPasswordError(null);
+                try {
+                    const resp = await fetch('/api/settings/password', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ current: current, new: next }),
+                    });
+                    if (resp.ok) {
+                        document.getElementById('currentPassword').value = '';
+                        document.getElementById('newPassword').value = '';
+                        passwordSaveBtn.disabled = false;
+                        passwordSaveBtn.textContent = 'Change password';
+                        showPasswordError(null);
+                        alert('Password updated.');
+                        return;
+                    }
+                    const err = await resp.json().catch(() => ({}));
+                    showPasswordError(err.error || 'Save failed — please try again.');
+                } catch (e) {
+                    showPasswordError('Network error — please try again.');
+                }
+                passwordSaveBtn.disabled = false;
+                passwordSaveBtn.textContent = 'Change password';
+            });
+        }
+        {% endif %}
 
         // ------- Account deletion -------
         const confirmInput = document.getElementById('confirmInput');

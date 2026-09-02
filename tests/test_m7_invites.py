@@ -56,7 +56,7 @@ tk.check('corner-menu sign-in also carries the invite (no bare next=/i/ link)',
 # --- New-user redemption ------------------------------------------------------
 friend = tk.client()
 resp = tk.sign_in(friend, sub='sub-friend', email='friend@example.test', name='Friend',
-                  login_url=f'/login?invite={token}&next=/log')
+                  login_url=f'/login/google?invite={token}&next=/log')
 row = db.get_user('sub-friend')
 tk.check('invited signup lands approved on /log',
          resp.status_code == 302 and resp.headers['Location'].endswith('/log') and
@@ -77,7 +77,7 @@ tk.check('revoking an already-used invite is 404 (nothing was stopped)',
 # Same token again: next signup falls back to pending.
 second = tk.client()
 resp = tk.sign_in(second, sub='sub-second', email='second@example.test', name='Second',
-                  login_url=f'/login?invite={token}&next=/log')
+                  login_url=f'/login/google?invite={token}&next=/log')
 tk.check('second use of a single-use invite falls back to pending',
          resp.headers['Location'].endswith('/waiting') and
          db.get_user('sub-second')['status'] == 'pending')
@@ -85,7 +85,7 @@ tk.check('second use of a single-use invite falls back to pending',
 # --- Existing pending user redeems -------------------------------------------
 tok2 = tk.post(alice, '/api/invites', json={}).get_json()['token']
 resp = tk.sign_in(second, sub='sub-second', email='second@example.test', name='Second',
-                  login_url=f'/login?invite={tok2}&next=/log')
+                  login_url=f'/login/google?invite={tok2}&next=/log')
 row = db.get_user('sub-second')
 tk.check('pending user redeeming an invite becomes approved',
          resp.headers['Location'].endswith('/log') and row['status'] == 'approved'
@@ -96,7 +96,7 @@ tk.check('pending redemption consumed the invite',
 # --- Existing approved user: no-op, not consumed ------------------------------
 tok3 = tk.post(alice, '/api/invites', json={}).get_json()['token']
 tk.sign_in(friend, sub='sub-friend', email='friend@example.test', name='Friend',
-           login_url=f'/login?invite={tok3}&next=/log')
+           login_url=f'/login/google?invite={tok3}&next=/log')
 tk.check('approved user re-signing with an invite does not consume it',
          'used_by' not in db.get_invite(tok3) and
          tk.get(anon, f'/i/{tok3}').status_code == 200)
@@ -104,7 +104,7 @@ tk.check('approved user re-signing with an invite does not consume it',
 # --- Rejected user stays rejected, invite unconsumed --------------------------
 tk.post(admin, '/api/admin/users/sub-second/reject')
 resp = tk.sign_in(second, sub='sub-second', email='second@example.test', name='Second',
-                  login_url=f'/login?invite={tok3}&next=/log')
+                  login_url=f'/login/google?invite={tok3}&next=/log')
 row = db.get_user('sub-second')
 tk.check('rejected user cannot redeem an invite',
          row['status'] == 'rejected' and 'used_by' not in db.get_invite(tok3) and
@@ -132,13 +132,13 @@ def _boom(*a, **k):
 db.create_user = _boom
 crashy = tk.client()
 resp = tk.sign_in(crashy, sub='sub-crash', email='crash@example.test', name='Crash',
-                  login_url=f'/login?invite={tok_crash}&next=/log')
+                  login_url=f'/login/google?invite={tok_crash}&next=/log')
 db.create_user = _real_create_user
 tk.check('crashed redemption: 500, no row, claim held by the claimant',
          resp.status_code == 500 and db.get_user('sub-crash') is None and
          db.get_invite(tok_crash).get('used_by') == 'sub-crash')
 resp = tk.sign_in(crashy, sub='sub-crash', email='crash@example.test', name='Crash',
-                  login_url=f'/login?invite={tok_crash}&next=/log')
+                  login_url=f'/login/google?invite={tok_crash}&next=/log')
 tk.check('retry through the same link completes the approved signup',
          resp.status_code == 302 and resp.headers['Location'].endswith('/log') and
          db.get_user('sub-crash')['status'] == 'approved' and
@@ -151,7 +151,7 @@ tk.post(admin, '/api/admin/users/sub-alice/reject')
 tk.check('rejected inviter kills the /i/ page', tk.get(anon, f'/i/{tok3}').status_code == 404)
 newbie = tk.client()
 resp = tk.sign_in(newbie, sub='sub-newbie', email='newbie@example.test', name='Newbie',
-                  login_url=f'/login?invite={tok3}&next=/log')
+                  login_url=f'/login/google?invite={tok3}&next=/log')
 tk.check('rejected inviter cannot mint approved accounts',
          db.get_user('sub-newbie')['status'] == 'pending' and
          'used_by' not in db.get_invite(tok3))
@@ -162,7 +162,7 @@ tk.post(admin, '/api/admin/users/sub-newbie/approve')
 config.MAX_USERS = db.count_users()
 overflow = tk.client()
 resp = tk.sign_in(overflow, sub='sub-overflow', email='overflow@example.test',
-                  name='Overflow', login_url=f'/login?invite={tok3}&next=/log')
+                  name='Overflow', login_url=f'/login/google?invite={tok3}&next=/log')
 tk.check('full instance: 403, no row, invite unconsumed',
          resp.status_code == 403 and db.get_user('sub-overflow') is None and
          'used_by' not in db.get_invite(tok3))
@@ -206,7 +206,7 @@ config.MAX_ACTIVE_INVITES = 10
 # --- Junk invite params are harmless ------------------------------------------
 junk = tk.client()
 resp = tk.sign_in(junk, sub='sub-junk', email='junk@example.test', name='Junk',
-                  login_url='/login?invite=../../evil&next=/log')
+                  login_url='/login/google?invite=../../evil&next=/log')
 with tk.session(junk) as sess:
     tk.check('junk invite param: normal pending flow, clean session',
              db.get_user('sub-junk')['status'] == 'pending' and

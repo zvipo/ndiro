@@ -113,6 +113,15 @@
             badge.textContent = u.status;
             card.appendChild(badge);
 
+            if (u.unverified) {
+                // A native signup that never clicked its verification link —
+                // explains a stuck pending row (reject it to free the slot).
+                const uv = document.createElement('span');
+                uv.className = 'badge';
+                uv.textContent = 'unverified';
+                card.appendChild(uv);
+            }
+
             const who = document.createElement('div');
             who.className = 'who';
             const email = document.createElement('div');
