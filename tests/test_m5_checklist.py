@@ -48,7 +48,7 @@ tk.check('login/callback/share/AI/photo endpoints registered',
          all(r in route_limits for r in
              ['/login', '/login/google', '/login/password', '/callback',
               '/signup', '/forgot', '/reset/<token>', '/verify-email/<token>',
-              '/resend-verification',
+              '/resend-verification', '/api/settings/password',
               '/s/<token>', '/s/<token>/meals',
               '/api/estimate-fiber', '/api/estimate-photo',
               '/photo/<date_str>/<meal_id>',

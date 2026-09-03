@@ -112,6 +112,8 @@ c2 = tk.client()
 tk.native_signup(c2, 'bob@example.test', 'correct-horse-battery')
 bob_link = tk.extract_link(M.sent[-1][2])
 bob = db.find_user_by_email('bob@example.test')
+tk.check('a blank name stays blank (never the email local-part)',
+         bob['name'] == '')
 tk.FIXTURES.users.items[(bob['user_id'],)]['verify_expires_at'] = 1
 expired = tk.get(c2, bob_link)
 tk.check('expired verify link is dead', expired.status_code == 404)
@@ -254,8 +256,10 @@ tk.limiter.reset()
 mails_before = len(M.sent)
 tk.post(c3, '/forgot', data={'form_token': tk.form_token(c3),
                              'email': 'admin@example.test'})
-tk.check('forgot for a google email sends the google notice',
-         len(M.sent) == mails_before + 1 and 'already have' in M.sent[-1][1])
+tk.check('forgot for a google email sends the google reset notice',
+         len(M.sent) == mails_before + 1
+         and 'password reset' in M.sent[-1][1]
+         and 'signs in with Google' in M.sent[-1][2])
 mails_before = len(M.sent)
 resp = tk.post(c3, '/forgot', data={'form_token': tk.form_token(c3),
                                     'email': 'ghost@example.test'})
@@ -415,6 +419,23 @@ db.clear_login_failures('nat-ghost')
 tk.check('updates on a deleted row are dropped, never upserted',
          len(tk.FIXTURES.users.items) == rows_before)
 
+# (c) The stale-purge delete is conditional on the exact observed state: a
+# refreshed token (resend won the race) or a rejection keeps the row.
+ghost = db.create_native_user(native_auth.new_user_id('race@example.test'),
+                              'race@example.test', '', 'ph', 'th', 1)
+gid = ghost['user_id']
+tk.check('purge loses to a refreshed verify token',
+         db.delete_stale_native_signup(gid, 999) is False
+         and db.get_user(gid) is not None)
+tk.FIXTURES.users.items[(gid,)]['status'] = 'rejected'
+tk.check('purge loses to a rejection',
+         db.delete_stale_native_signup(gid, 1) is False
+         and db.get_user(gid) is not None)
+tk.FIXTURES.users.items[(gid,)]['status'] = 'pending'
+tk.check('purge wins on the exact observed stale state',
+         db.delete_stale_native_signup(gid, 1) is True
+         and db.get_user(gid) is None)
+
 # --- 13. Stale-row purge: capacity + rejection interplay ---------------------
 # A stale pending row is purged BEFORE the capacity gate, so it can never
 # squat a MAX_USERS slot even when the instance is full.
@@ -480,6 +501,30 @@ tk.check('pending user + invite approved at password sign-in',
          and dana['status'] == 'approved'
          and dana.get('invited_by') == alice['user_id']
          and tk.FIXTURES.invites.items[(tok_dana,)].get('used_by') == dana['user_id'])
+
+# --- 15b. Password change invalidates outstanding reset links ----------------
+tk.limiter.reset()
+tk.post(c3, '/forgot', data={'form_token': tk.form_token(c3),
+                             'email': 'alice@example.test'})
+stale_reset = tk.extract_link(M.sent[-1][2])
+resp = tk.post(c3, '/api/settings/password',
+               json={'current': 'changed-again-77', 'new': 'yet-another-88'})
+tk.check('password change succeeds with a reset link outstanding',
+         resp.status_code == 200)
+tk.check('outstanding reset link dead after an authenticated password change',
+         tk.post(tk.client(), stale_reset,
+                 data={'password': 'x' * 12, 'password2': 'x' * 12}).status_code == 404)
+
+# --- 15c. Login-page invite banner only for currently valid invites ----------
+tk.limiter.reset()
+resp = tk.post(c3, '/api/invites', json={})
+live_tok = resp.get_json()['token']
+body_valid = tk.get(tk.client(), f'/login?invite={live_tok}').data
+body_dead = tk.get(tk.client(), '/login?invite=deadbeefdeadbeef').data
+tk.check('login invite banner shown only for a valid invite',
+         b'approved right away' in body_valid
+         and b'approved right away' not in body_dead
+         and b'/login/password' in body_dead)  # page itself still renders
 
 # --- 16. Rate limiting -------------------------------------------------------
 tk.limiter.reset()

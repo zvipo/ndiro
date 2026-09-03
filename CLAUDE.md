@@ -224,7 +224,7 @@ delete_photo/delete_user_photos purge the LRU.
    worker, which the Dockerfile pins): login page + `/login/google` +
    `/login/password` + callback 10/min, `/signup` 5/min, `/forgot` POST +
    `/resend-verification` 3/min (mail-sending: tightest), `/forgot` GET +
-   verify/reset routes 10/min, `/s/*` and
+   verify/reset routes + `/api/settings/password` 10/min, `/s/*` and
    `/i/*` 30/min, photo proxy routes 600/min, invite creation 10/min,
    `/api/admin/stats` 12/min (a full scan of every table per call),
    AI 6/min/IP, global 300/min. AI also capped per user per UTC day via the
@@ -288,6 +288,12 @@ delete_photo/delete_user_photos purge the LRU.
     /forgot input, one byte-identical dead page for every dead emailed link —
     the only sanctioned differentials are `full.html` at capacity and the
     verify-your-email page on a CORRECT password (which proves ownership).
+    Timing is part of the no-oracle contract: signup hashes BEFORE the
+    duplicate branch, sign-in dummy-hashes the unknown AND locked paths, and
+    account-dependent side work (SES sends, the failure counter) runs off
+    the response path via `_defer` (tests set `app.ASYNC_AUTH_WORK=False`
+    to run it inline). A completed password change or reset atomically
+    invalidates any outstanding reset token.
     Emailed GET links never mutate (scanners prefetch) — consumption is
     POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
     or a completed reset; the counter is an atomic DynamoDB ADD (concurrent

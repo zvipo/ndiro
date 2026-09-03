@@ -50,6 +50,7 @@ import app as app_module  # noqa: E402
 
 autolog.WORKER_ENABLED = False  # no threads in tests; call process_once()
 autolog.RETRY_BASE_S = 0        # retries are immediate under test
+app_module.ASYNC_AUTH_WORK = False  # auth mail/counter work runs inline
 
 # No real SES client is ever constructed: every send lands in MAILER.sent so
 # tests can pull the verification/reset links back out of the bodies.

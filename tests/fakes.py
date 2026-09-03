@@ -116,7 +116,16 @@ class FakeTable:
         self.items[self._kt(Item)] = deepcopy(Item)
         return {}
 
-    def delete_item(self, Key):
+    def delete_item(self, Key, ConditionExpression=None,
+                    ExpressionAttributeValues=None, ExpressionAttributeNames=None):
+        if ConditionExpression is not None:
+            existing = self.items.get(self._kt(Key))
+            cond_item = existing if existing is not None else {}
+            names = ExpressionAttributeNames or {}
+            if not _eval_str_condition(ConditionExpression, cond_item,
+                                       ExpressionAttributeValues or {},
+                                       lambda n: names.get(n, n)):
+                raise _ccf_error()
         self.items.pop(self._kt(Key), None)
         return {}
 

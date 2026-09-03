@@ -6,7 +6,8 @@ and S3 keys are constructed here, server-side only, under users/{user_id}/.
 
 Tables (all on-demand, auto-created on boot, no GSIs — deliberate at <=100
 users; the scans below are commented where they'd be wrong at larger scale):
-  users:  PK user_id (Google sub, or 'nat-' + random hex for native accounts)
+  users:  PK user_id (Google sub, or 'nat-' + SHA-256(email)[:32] for native
+          accounts — deterministic, see native_auth.new_user_id)
   meals:  PK user_id, SK sk = "{YYYY-MM-DD}#{meal_id}"
   shares: PK share_token
 """
@@ -263,6 +264,29 @@ def find_user_by_email(email, provider=None):
     return None
 
 
+def delete_stale_native_signup(user_id, verify_expires_at):
+    """Conditional delete for signup's stale-row purge: only removes a row
+    that is STILL a native, unverified, PENDING signup carrying the exact
+    expired verify_expires_at the caller's scan observed. A resend that
+    refreshed the token, a rejection, or a completed verification landing
+    in between wins the race — the row stays. True when deleted."""
+    try:
+        users_table().delete_item(
+            Key={'user_id': user_id},
+            ConditionExpression=('auth_provider = :n AND email_verified = :f '
+                                 'AND #s = :p AND verify_expires_at = :e'),
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues={':n': 'native', ':f': False,
+                                       ':p': 'pending',
+                                       ':e': int(verify_expires_at)},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
 def find_user_by_token_hash(attr_name, token_hash):
     """User row carrying this verify/reset token HASH, or None. Only hashes
     are ever stored, so a scan can never surface a live link."""
@@ -384,8 +408,13 @@ def complete_password_reset(user_id, password_hash, token_hash):
 
 
 def set_password_hash(user_id, password_hash):
-    """Signed-in password change (settings)."""
-    _update_if_exists(user_id, 'SET password_hash = :p', {':p': password_hash})
+    """Signed-in password change (settings). Also clears any outstanding
+    reset token in the same atomic write — an old reset email must not be
+    able to overwrite the freshly chosen password."""
+    _update_if_exists(
+        user_id,
+        'SET password_hash = :p REMOVE reset_token_hash, reset_expires_at',
+        {':p': password_hash})
 
 
 def record_login_failure(user_id, threshold, lockout_seconds):
@@ -407,8 +436,22 @@ def record_login_failure(user_id, threshold, lockout_seconds):
         return  # row deleted mid-race: nothing to count against
     count = int(resp.get('Attributes', {}).get('failed_logins') or 0)
     if count >= threshold:
-        _update_if_exists(user_id, 'SET locked_until = :t',
-                          {':t': int(time.time()) + int(lockout_seconds)})
+        # Conditioned on the counter STILL being at threshold: a successful
+        # login landing between the increment and this write clears the
+        # counter, and must not be re-locked by a stale loser.
+        try:
+            users_table().update_item(
+                Key={'user_id': user_id},
+                UpdateExpression='SET locked_until = :t',
+                ConditionExpression=('attribute_exists(user_id) '
+                                     'AND failed_logins >= :n'),
+                ExpressionAttributeValues={
+                    ':t': int(time.time()) + int(lockout_seconds),
+                    ':n': int(threshold)},
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+                raise
 
 
 def clear_login_failures(user_id):
