@@ -152,6 +152,23 @@
             color: var(--muted);
         }
 
+        /* Branding stand-in for the h1 on chapter pages (same look). */
+        .page-header .guide-brand {
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        .guide-brand a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .guide h1.chapter-title {
+            font-size: 1.15rem;
+            color: var(--gold);
+            margin: 4px 0 8px;
+        }
+
         .chap-nav {
             display: flex;
             justify-content: space-between;
@@ -189,14 +206,21 @@
 
 {% block content %}
         <div class="page-header">
+            {# On chapter pages the chapter title is the page's h1 and the
+               Dzidza label demotes to branding, so assistive-technology
+               heading navigation lands on the chapter, not the book name. #}
+            {% if chapter_num %}
+            <div class="guide-brand">📖 <a class="brand-home" href="/dzidza">Dzidza</a></div>
+            {% else %}
             <h1>📖 <a class="brand-home" href="/dzidza">Dzidza</a></h1>
+            {% endif %}
             <span class="subtitle">how this site works, from the wire to the pixel</span>
         </div>
 
         <div class="card guide">
             {% if chapter_num %}
             <div class="chapter-kicker">Chapter {{ chapter_num }} of {{ total_chapters }}</div>
-            <h2 style="margin-top:4px;">{{ chapter_title }}</h2>
+            <h1 class="chapter-title">{{ chapter_title }}</h1>
             {% endif %}
             {% block guide %}{% endblock %}
             {% if chapter_num %}

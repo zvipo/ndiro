@@ -16,7 +16,7 @@ os.environ['GOOGLE_CLIENT_ID'] = 'test-client-id.apps.googleusercontent.com'
 os.environ['GOOGLE_CLIENT_SECRET'] = 'test-client-secret'
 os.environ['GOOGLE_REDIRECT_URI'] = 'https://ndiro.test/callback'
 os.environ['ADMIN_EMAILS'] = 'admin@example.test'
-os.environ['MAX_USERS'] = '100'
+os.environ['MAX_USERS'] = '9137'  # distinctive, so the leak check can spot it
 os.environ['S3_BUCKET'] = 'fake-test-bucket'
 os.environ['USERS_TABLE'] = 'test-users'
 os.environ['MEALS_TABLE'] = 'test-meals'
@@ -64,7 +64,7 @@ CONFIG_VALUES = ['test-secret-key-not-for-production',
                  'test-client-secret', 'https://ndiro.test/callback',
                  'admin@example.test', 'fake-test-bucket',
                  'test-users', 'test-meals', 'test-shares', 'test-invites',
-                 'us-east-1', os.environ['AUTOLOG_DIR']]
+                 'us-east-1', '9137', os.environ['AUTOLOG_DIR']]
 
 
 def client():

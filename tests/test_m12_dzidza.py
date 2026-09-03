@@ -60,11 +60,16 @@ bad_links = sorted({target
 tk.check(f'all chapter cross-links name real slugs (bad: {bad_links})',
          not bad_links)
 
-# Code-excerpt chips are GitHub links to the file at the running ref (the
-# code_file macro; plain chips only when no repo URL is configured).
+# Code-excerpt chips: GitHub links to the file at the running ref when a repo
+# URL is configured, plain unlinked chips otherwise (both are documented
+# render modes of the code_file macro).
 flask_body = bodies[[s for s, _, _ in chapters].index('flask')]
-tk.check('excerpt chips link the repo',
-         f'{config.GITHUB_REPO_URL}/blob/' in flask_body)
+if config.GITHUB_REPO_URL:
+    tk.check('excerpt chips link the repo',
+             f'{config.GITHUB_REPO_URL}/blob/' in flask_body)
+else:
+    tk.check('excerpt chips render unlinked without a repo URL',
+             'class="code-file"' in flask_body and '/blob/' not in flask_body)
 
 # --- 3. The registry is closed: unknown slugs are 404s, never templates -------
 # 'dzidza_ch01_anatomy.html' and '..' reach the handler and prove a template
