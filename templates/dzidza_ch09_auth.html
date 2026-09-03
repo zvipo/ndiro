@@ -8,7 +8,7 @@
         room for improvisation.</p>
 
         <h2>The OAuth dance</h2>
-        <pre><code>browser                          ndiro.org                      Google
+        <pre><code>browser                          the app                        Google
    │ GET /login ────────────────────▶ │
    │                                  │ session['oauth_state'] = random
    │ ◀─ 302 to accounts.google.com ── │   (and login_next = where to land after)
@@ -29,8 +29,9 @@
         <strong><code>state</code> parameter</strong> is a random nonce stored
         in the session and compared with <code>session.pop</code> on return; a
         forged or replayed callback fails the comparison. And the account key is
-        Google's <strong><code>sub</code></strong> (a stable numeric ID), not
-        the email — emails change; primary keys shouldn't.</p>
+        Google's <strong><code>sub</code></strong> (a stable ID, treated as an
+        opaque string — never parsed), not the email — emails change; primary
+        keys shouldn't.</p>
         <p>One more guard hides in plain sight: <code>_safe_next</code>. The
         <code>?next=</code> destination that rides through login is validated to
         be a same-site relative path — starts with <code>/</code>, not
@@ -50,6 +51,10 @@
 # login_next. Status is NEVER cached in the cookie: every guarded request does
 # a fresh users-table read (~$0.25/million) so a rejected user's live session
 # dies immediately.</code></pre>
+        <p>(One more transient rides the session during an invite sign-up:
+        <code>invite_token</code>, stored by <code>/login</code> and popped
+        unconditionally in <code>/callback</code> so it never survives into the
+        signed-in session — invariant #4 lists all three transients.)</p>
         <p>A cookie is a cache you cannot invalidate — it lives on someone
         else's machine for 30 days. Cache <code>status: approved</code> in it
         and a banned user stays approved until expiry. So the cookie holds only

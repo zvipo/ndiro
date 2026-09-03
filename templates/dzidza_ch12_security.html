@@ -22,15 +22,20 @@
 
         <h2>CSRF — riding someone else's cookie</h2>
         <p><strong>Attack:</strong> the browser attaches your Ndiro cookie to
-        any request aimed at ndiro.org — including a form auto-submitted by a
-        page on <code>evil.example</code> that you merely visited. The attacker
-        can't read responses, but state-changing requests fire with your
-        identity. <strong>Counter:</strong> <code>SameSite=Lax</code> on the
-        session cookie — the browser withholds it on cross-site requests except
-        top-level GET navigations. That's sufficient <em>only because</em> of a
-        second discipline: no GET in the app ever changes state (ch 2).
-        <strong>Review question:</strong> does any new GET route write
-        anything?</p>
+        any request aimed at your instance's domain — including a form
+        auto-submitted by a page on <code>evil.example</code> that you merely
+        visited. The attacker can't read responses, but state-changing requests
+        fire with your identity. <strong>Counter:</strong>
+        <code>SameSite=Lax</code> on the session cookie — the browser withholds
+        it on cross-site requests except top-level GET navigations. That's
+        sufficient <em>only because</em> of a second discipline: no GET ever
+        changes <em>application data</em> (ch 2). Be precise about the
+        residue, because Lax does send the cookie on those top-level GETs: the
+        two GETs that touch session state are covered otherwise —
+        <code>/callback</code> by the OAuth <code>state</code> nonce, and
+        <code>/logout</code> not at all, logout-CSRF being a deliberately
+        accepted nuisance-only risk. <strong>Review question:</strong> does any
+        new GET route write anything?</p>
 
         <h2>IDOR — the missing ownership check</h2>
         <p><strong>Attack:</strong> "insecure direct object reference" — the URL

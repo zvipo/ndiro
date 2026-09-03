@@ -5,8 +5,8 @@
         site's own source code. It teaches web development — the whole stack,
         not just the browser half — using Ndiro itself as the textbook. Every
         example is real code from the
-        <a href="https://github.com/zvipo/ndiro">public repository</a>, and every
-        chapter tells you which file to open next.</p>
+        {% if repo_url %}<a href="{{ repo_url }}">public repository</a>{% else %}public repository{% endif %},
+        and every chapter tells you which file to open next.</p>
 
         <p>It is written for an engineer who already builds serious systems —
         distributed storage, query engines, RPC services — but has never had a

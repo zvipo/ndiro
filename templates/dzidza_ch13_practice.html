@@ -12,10 +12,11 @@
             model, the security invariants, the gotchas. Most bad diffs violate
             something already written there.</li>
             <li><strong>Find the seam.</strong> The codebase marks its intended
-            extension points — e.g. "add <code>protein_g</code> later by
-            extending <code>_nutrients_from_form</code> only". A change that
-            fits a seam touches one or two files; needing five is a signal to
-            re-read.</li>
+            extension points — e.g. offering another trackable micro-nutrient
+            is one new <code>NUTRIENT_CATALOG</code> entry in
+            <code>config.py</code>; everything downstream is key-generic. A
+            change that fits a seam touches one or two files; needing five is a
+            signal to re-read.</li>
             <li><strong>Run the stub tests before and after.</strong> Every
             <code>python tests/test_*.py</code> plus
             <code>probe_cross_user.py</code>; they need no AWS and no network
@@ -35,7 +36,7 @@
             <tr><th>Ask</th><th>Because (chapter)</th></tr>
             <tr><td>Does <code>innerHTML</code> or <code>|safe</code> get anything that isn't a source literal?</td><td>XSS (6, 7, 12)</td></tr>
             <tr><td>Does any identifier in a URL, query, or form decide <em>whose</em> data is read or written?</td><td>Tenant isolation (8, 12)</td></tr>
-            <tr><td>Does a new GET change state? Is a new write route missing its guard decorator or rate limit?</td><td>CSRF, auth (2, 3, 9)</td></tr>
+            <tr><td>Does a new GET change application data? Is a new write route missing its guard decorator or rate limit?</td><td>CSRF, auth (2, 3, 9)</td></tr>
             <tr><td>Does a public page or a log line gain a config value or user content?</td><td>Invariants #8, #11 (12)</td></tr>
             <tr><td>New in-process state (cache, counter, thread) — does it survive the "what if <code>--workers 2</code>?" question, and is the bet commented?</td><td>Single-worker design (3)</td></tr>
             <tr><td>Numbers crossing the DynamoDB edge: <code>Decimal(str(x))</code> in, <code>float()</code> out?</td><td>Decimal discipline (10)</td></tr>

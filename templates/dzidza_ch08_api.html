@@ -119,6 +119,9 @@ renderEstimate(result);</code></pre>
             JSON reply. Then use the Console:
             <code>await (await fetch('/api/meals?days=2&amp;anchor=2026-09-03')).json()</code>
             — you just called your own API by hand with your session riding
-            along. Try <code>days=999</code> and read the 400.</p>
+            along. Try <code>days=abc</code> and read the 400; then
+            <code>days=999</code> and notice it succeeds with 31 days — the
+            server clamps out-of-range numbers rather than rejecting them, a
+            policy choice worth spotting in <code>_meals_payload</code>.</p>
         </div>
 {% endblock %}

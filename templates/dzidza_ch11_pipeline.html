@@ -33,8 +33,10 @@
    │                                    │                                │  (on failure: retry; then degrade
    │                                    │                                │   or dead-letter as *.json.dead)</code></pre>
         <p>The spool is just files on local disk: the JPEG plus a tiny sidecar
-        JSON holding <code>user_id/date/time/attempts</code> — deliberately
-        never meal content. One daemon thread consumes it. It's started lazily
+        JSON holding <code>user_id/date/time/attempts</code> — deliberately no
+        meal content, with one earned exception: after a failed commit the
+        paid-for AI estimate (description included) is cached onto the sidecar
+        so the retry never re-bills. One daemon thread consumes it. It's started lazily
         (<code>ensure_worker</code>) because gunicorn's
         <code>--preload</code> imports the app before forking, and a thread
         started at import time would be lost in the fork — a genuinely sneaky
@@ -48,7 +50,7 @@
             <tr><th>Property</th><th>How Ndiro gets it</th></tr>
             <tr><td>Durability</td><td>Spooled to disk before the 200 — but <em>local</em> disk, ephemeral on most hosts. A stated PoC trade: a redeploy may drop queued work, and the design accepts it rather than paying for SQS.</td></tr>
             <tr><td>Idempotent producer</td><td>Re-uploading the same photos is safe: the EXIF date+minute is the dedup fingerprint, checked against both existing PHOTO meals (a range query over the batch's whole date window — clamped camera clocks drift days) and the queued spool.</td></tr>
-            <tr><td>Exactly-once billing</td><td>The AI cap is consumed per photo before the call, refunded on upstream failure — and the estimate is cached on the sidecar, so commit retries never re-bill.</td></tr>
+            <tr><td>At-most-once billing per handled retry</td><td>The AI cap is consumed per photo before the call, refunded on upstream failure, and the estimate is cached on the sidecar so handled commit retries never re-bill. (A process death in the window after the AI reply but before that cache write can still bill twice on restart — at-least-once delivery leaves exactly this residue.)</td></tr>
             <tr><td>Poison messages</td><td><code>MAX_ATTEMPTS</code>, then the sidecar is renamed <code>*.json.dead</code> — a dead-letter queue, kept for the operator.</td></tr>
             <tr><td>Graceful degradation</td><td>Cap exhausted or retries spent? The meal is committed anyway with a placeholder description — the photo and its timestamp are never lost; only the AI garnish is.</td></tr>
             <tr><td>Revocation race</td><td>The worker re-reads the user row before each commit; a rejected or deleted account's queued photos are discarded, never logged. Account deletion also purges the user's spool (<code>drop_user</code>) <em>before</em> the S3 wipe.</td></tr>
@@ -92,8 +94,12 @@
             exactly is the boundary between "the upload request" and "the
             worker" — which failure before it loses work, and which after it
             merely delays work? (2) find the consume/refund pair and convince
-            yourself no path bills twice; (3) find what happens if the process
-            dies between <code>put_meal</code> and deleting the spool entry —
-            what makes the redo harmless?</p>
+            yourself no <em>handled</em> path bills twice — then find the
+            unhandled window where a crash still can; (3) work out what happens
+            if the process dies between <code>put_meal</code> and deleting the
+            spool entry: the redo mints a fresh <code>meal_id</code>, so a
+            duplicate meal can appear — why does the design accept that residue
+            instead of engineering it away, and what would making the meal ID
+            stable per spool entry cost?</p>
         </div>
 {% endblock %}

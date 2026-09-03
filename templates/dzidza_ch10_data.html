@@ -57,9 +57,11 @@ between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code>
         and the app streams the bytes itself, because putting the app in the
         path buys three things: every photo read passes the same auth guards as
         everything else (session for owners, token scope for shares), a revoked
-        share stops working immediately (a presigned URL keeps working until it
-        expires, wherever it was forwarded), and there's one choke point to
-        rate-limit and cache.</p>
+        share stops being <em>served</em> immediately — a presigned URL keeps
+        working until it expires, wherever it was forwarded, while here only a
+        recipient's already-cached bytes linger, bounded by the one-day
+        max-age below — and there's one choke point to rate-limit and
+        cache.</p>
 
         <h2>The cache hierarchy</h2>
         <p>Proxying means paying an S3 round trip per photo view — unless you

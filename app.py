@@ -194,15 +194,18 @@ DZIDZA_CHAPTERS = (
 
 
 @app.route('/dzidza')
+@limiter.limit('30 per minute')  # public render, same budget as /status
 def dzidza_index():
     """Table of contents for the guide. Public like /privacy: pure teaching
     material about code that is already public — it renders NO config values
     (invariant #11 applies; tests/test_m12_dzidza.py holds it to that)."""
     return render_template('dzidza_index.html', user=auth.current_user(),
-                           chapters=DZIDZA_CHAPTERS)
+                           chapters=DZIDZA_CHAPTERS,
+                           repo_url=config.GITHUB_REPO_URL)
 
 
 @app.route('/dzidza/<slug>')
+@limiter.limit('30 per minute')  # the chapters are the app's heaviest renders
 def dzidza_chapter(slug):
     for i, (chapter_slug, title, template) in enumerate(DZIDZA_CHAPTERS):
         if chapter_slug == slug:
@@ -214,7 +217,9 @@ def dzidza_chapter(slug):
                 total_chapters=len(DZIDZA_CHAPTERS),
                 prev_ch=DZIDZA_CHAPTERS[i - 1] if i > 0 else None,
                 next_ch=DZIDZA_CHAPTERS[i + 1] if i + 1 < len(DZIDZA_CHAPTERS) else None)
-    return 'No such chapter — the table of contents is at /dzidza.', 404
+    # Themed dead state like share_404/invite_404 (unlike those, the four-way
+    # indistinguishability doesn't apply — there's nothing to enumerate here).
+    return render_template('dzidza_404.html', user=auth.current_user()), 404
 
 
 # --- OAuth flow --------------------------------------------------------------

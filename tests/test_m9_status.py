@@ -33,12 +33,10 @@ tk.check('commit title is HTML-escaped', '<script>alert(1)' not in body)
 config.GIT_COMMIT_TITLE = saved_title
 
 # --- 2. A public page must leak NO configuration -----------------------------
-# Everything below is a real value from the test environment (testkit.py).
-secrets_in_env = ['fake-test-bucket', 'test-secret-key-not-for-production',
-                  'test-client-secret', 'test-client-id.apps.googleusercontent.com',
-                  'admin@example.test', 'test-users', 'test-meals']
+# tk.CONFIG_VALUES is every real value from the test environment (testkit.py) —
+# shared with test_m12_dzidza.py so the two public-page checks can't drift.
 tk.check('status page leaks no config values',
-         not any(s in body for s in secrets_in_env))
+         not any(s in body for s in tk.CONFIG_VALUES))
 
 # --- 3. /health carries the same stamp, for scripts ---------------------------
 resp = tk.get(anon, '/health')

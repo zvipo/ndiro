@@ -6,10 +6,12 @@
 {% extends "base.html" %}
 {% block title %}Ndiro — Dzidza{% if chapter_title %} · {{ chapter_title }}{% endif %}{% endblock %}
 {% block favicon %}📖{% endblock %}
+{% block container_class %}book{% endblock %}
 
 {% block styles %}
-        /* The book wants slightly wider lines than the app's 640px column. */
-        .container { max-width: 780px; }
+        /* The book wants slightly wider lines than the app's 640px column
+           (a modifier class via container_class, like .container.wide). */
+        .container.book { max-width: 780px; }
 
         .guide p, .guide li {
             font-size: 0.94rem;

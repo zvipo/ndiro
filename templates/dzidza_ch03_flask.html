@@ -14,7 +14,7 @@ def privacy():
 
 @app.route('/api/meals/&lt;date_str&gt;/&lt;meal_id&gt;', methods=['PUT'])
 @auth.approved_required
-def edit_meal(date_str, meal_id):
+def update_meal(date_str, meal_id):
     ...</code></pre>
         <p>The decorator registers the function in Flask's routing table.
         <code>&lt;date_str&gt;</code> segments are extracted from the path and
@@ -23,14 +23,21 @@ def edit_meal(date_str, meal_id):
         (<code>_valid_date</code> rejects anything that isn't a canonical
         <code>YYYY-MM-DD</code>). <code>methods=['PUT']</code> means the same
         path can route to different functions by verb.</p>
-        <p>Decorators stack, and order matters — they apply bottom-up around the
-        function:</p>
+        <p>Decorators stack, and each has its own enforcement point:</p>
         <div class="code-file">app.py</div>
         <pre><code>@app.route('/api/estimate-fiber', methods=['POST'])
-@limiter.limit('6 per minute')     # then rate-limit those
-@auth.approved_required            # first check identity/approval
+@limiter.limit('6 per minute')     # enforced in a before-request hook —
+                                   # runs FIRST, before any auth check
+@auth.approved_required            # wraps the view — runs when it's invoked
 def estimate_fiber():
     ...</code></pre>
+        <p>The order of <em>enforcement</em> is a subtlety worth knowing:
+        decorators wrap bottom-up, but Flask-Limiter doesn't do its counting in
+        the wrapper — it registers the limit and checks it in a hook that runs
+        before the view is called at all. So an anonymous client hammering this
+        endpoint sees <code>429</code> on the seventh call in a minute, not
+        <code>401</code>: the rate limiter shields the auth guard (and the
+        database read inside it), not the other way around.</p>
         <p><code>approved_required</code> (in <code>auth.py</code>) is ~20 lines
         and worth reading now: it resolves the session to a fresh users-table
         row, stashes it in <code>g.user</code> (Flask's per-request scratch

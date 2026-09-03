@@ -81,12 +81,16 @@
     background: var(--card);
     border: 1px solid var(--border);
 }</code></pre>
-        <p>Because every color in the app is spelled <code>var(--token)</code>,
+        <p>Because colors in the app are spelled <code>var(--token)</code>,
         the entire theme switch is one attribute flip on
         <code>&lt;html&gt;</code>: set <code>data-theme="light"</code> and the
         second <code>:root</code> block wins, every
         <code>var()</code> re-resolves, and the whole page restyles. No CSS is
-        swapped, no classes are toggled per element.</p>
+        swapped, no classes are toggled per element. (There is one deliberate
+        exception that proves the rule: <code>.btn.primary</code> hard-codes
+        its dark text color, because dark-on-gold is the right contrast in
+        <em>both</em> themes — a color that shouldn't follow the theme is
+        written literally, so the token system stays honest.)</p>
         <p>One wrinkle worth knowing by name: <strong>FOUC</strong> (flash of
         unstyled/wrong content). The theme choice lives in
         <code>localStorage</code>, which only JavaScript can read — so a tiny

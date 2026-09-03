@@ -239,7 +239,8 @@ delete_photo/delete_user_photos purge the LRU.
 11. `/status` is PUBLIC (like `/privacy` and `/health`): it shows the build
     stamp, uptime, and BOOLEANS for the optional integrations — never a
     configuration value (no bucket, model, host, or email). A new field there
-    needs a matching entry in `tests/test_m9_status.py`'s leak check.
+    needs a matching entry in `tests/testkit.py`'s `CONFIG_VALUES` leak list
+    (the shared check `test_m9_status.py` and `test_m12_dzidza.py` both run).
 
 ## Gotchas
 
