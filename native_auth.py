@@ -53,11 +53,19 @@ def verify_dummy(password):
     return False
 
 
-def new_user_id():
-    """users-table PK for a native account. The 'nat-' prefix can never
-    collide with a numeric Google sub, and hex keeps it path-safe for the
-    users/{user_id}/ S3 prefix."""
-    return 'nat-' + secrets.token_hex(16)
+def new_user_id(email):
+    """users-table PK for a native account: 'nat-' + SHA-256(email)[:32].
+
+    DETERMINISTIC per (normalized) email on purpose — it is what makes
+    db.create_native_user's conditional put an atomic one-native-account-
+    per-email guarantee (two concurrent signups for the same address race
+    on the same key; exactly one wins). This mirrors Google accounts, whose
+    user_id is Google's stable sub. The 'nat-' prefix can never collide
+    with a numeric sub, and hex keeps it path-safe for the users/{user_id}/
+    S3 prefix. The hash is one-way; user_ids in logs still reveal no email.
+    """
+    return 'nat-' + hashlib.sha256(
+        ('ndiro-native:' + email).encode()).hexdigest()[:32]
 
 
 def mint_token():

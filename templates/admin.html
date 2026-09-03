@@ -114,8 +114,10 @@
             card.appendChild(badge);
 
             if (u.unverified) {
-                // A native signup that never clicked its verification link —
-                // explains a stuck pending row (reject it to free the slot).
+                // A native signup that never clicked its verification link.
+                // Stale ones (expired token) are purged automatically by the
+                // next signup attempt; reject only to BAN the address — a
+                // rejected row keeps its capacity slot on purpose.
                 const uv = document.createElement('span');
                 uv.className = 'badge';
                 uv.textContent = 'unverified';

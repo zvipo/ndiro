@@ -43,7 +43,9 @@ def enabled():
 
 def base_url():
     """Absolute base for links in emails. APP_BASE_URL when set (immune to
-    Host-header forgery); the request's own host as the dev fallback."""
+    Host-header forgery). The request-host fallback is reachable ONLY in the
+    COOKIE_SECURE=0 dev mode: config.EMAIL_ENABLED requires APP_BASE_URL in
+    production, so a forged Host can never steer a production reset link."""
     if config.APP_BASE_URL:
         return config.APP_BASE_URL
     return request.host_url.rstrip('/')

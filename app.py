@@ -502,39 +502,54 @@ def signup_submit():
                                name=name), 200
 
     try:
-        # MAX_USERS FIRST — before the duplicate check and before any invite
-        # logic (invariant #9): a full instance never consumes an invite and
+        # Purge abandoned signups BEFORE the capacity gate: an expired
+        # unverified PENDING native row is the one row class nobody can
+        # free (no session, no owner), so left in place it could squat a
+        # MAX_USERS slot forever. Rejected rows are deliberately NOT
+        # purged — rejection is a ban and must stick, slot and all. A
+        # purged row never had a session, so it owns no meals/photos/
+        # shares — the row delete is the whole wipe.
+        now = time.time()
+        rows = []
+        for row in db.list_users():
+            stale = (row.get('auth_provider') == 'native'
+                     and not row.get('email_verified')
+                     and row.get('status') == 'pending'
+                     and int(row.get('verify_expires_at') or 0) < now)
+            if stale:
+                db.delete_user(row['user_id'])
+            else:
+                rows.append(row)
+
+        # MAX_USERS before the duplicate check and before any invite logic
+        # (invariant #9): a full instance never consumes an invite and
         # answers every signup identically.
-        if db.count_users() >= config.MAX_USERS:
+        if len(rows) >= config.MAX_USERS:
             return render_template('full.html'), 403
 
-        existing = db.find_user_by_email(email)
-        if existing is not None:
-            stale = (existing.get('auth_provider') == 'native'
-                     and not existing.get('email_verified')
-                     and int(existing.get('verify_expires_at') or 0) < time.time())
-            if stale:
-                # An abandoned unverified signup must not squat the email (or
-                # a MAX_USERS slot) forever. The row never had a session, so
-                # it owns no meals/photos/shares — the row delete is the wipe.
-                db.delete_user(existing['user_id'])
-            else:
-                # Same page as a fresh signup — no enumeration. The address
-                # owner learns what happened by email instead.
-                provider = ('native' if existing.get('auth_provider') == 'native'
-                            else 'google')
-                sent = _send_existing_account_email(email, provider)
-                return _check_email_page(email, sent)
+        matches = [r for r in rows if (r.get('email') or '').lower() == email]
+        if matches:
+            # Same page as a fresh signup — no enumeration. The address
+            # owner learns what happened by email instead.
+            native = any(r.get('auth_provider') == 'native' for r in matches)
+            sent = _send_existing_account_email(
+                email, 'native' if native else 'google')
+            return _check_email_page(email, sent)
 
         if invite and not _valid_invite_for_redemption(invite):
             invite = None  # dead invite: normal pending signup, never an error
         raw_token, token_hash = native_auth.mint_token()
-        user_id = native_auth.new_user_id()
-        db.create_native_user(
-            user_id, email, name or email.split('@', 1)[0],
+        created = db.create_native_user(
+            native_auth.new_user_id(email), email,
+            name or email.split('@', 1)[0],
             native_auth.hash_password(password),
             token_hash, int(time.time()) + native_auth.VERIFY_TTL_S,
             pending_invite_token=invite)
+        if created is None:
+            # Lost a same-email signup race (the id is email-derived, so the
+            # conditional put is the atomic uniqueness check): the winner's
+            # owner just got a verification mail. Same uniform page.
+            return _check_email_page(email, True)
     except Exception as e:
         print(f"Signup failed: {type(e).__name__}")
         return 'Signup failed — please try again later.', 500
@@ -566,18 +581,21 @@ def verify_email_submit(token):
         if row is None or int(row.get('verify_expires_at') or 0) < time.time():
             return _dead_link()
         user_id = row['user_id']
-        # Claim the invite BEFORE flipping email_verified: claim_invite is
-        # idempotent for the same claimant, so a crash between the two writes
-        # retries cleanly through the same link (same design as /callback).
-        inviter_id = None
+        status = row.get('status')
+        # Order: claim invite -> approve -> ONLY THEN consume the verify
+        # token. Every crash window then retries cleanly through the same
+        # link: claim_invite is idempotent for the same claimant, approve is
+        # conditional on still-pending (a retry of a half-finished attempt
+        # reads the already-approved status off the row). Consuming the
+        # token first could burn the invite AND the link with the account
+        # still pending — unrecoverable.
         pending_invite = row.get('pending_invite_token')
         if pending_invite:
             inviter_id = _redeem_invite(pending_invite, user_id)
+            if inviter_id and db.approve_pending_user(user_id, inviter_id):
+                status = 'approved'
         if not db.mark_email_verified(user_id, token_hash):
             return _dead_link()  # lost a double-submit race: link already used
-        status = row.get('status')
-        if inviter_id and db.approve_pending_user(user_id, inviter_id):
-            status = 'approved'
     except Exception as e:
         print(f"Email verification failed: {type(e).__name__}")
         return 'Verification failed — please try again later.', 500
@@ -632,15 +650,16 @@ def login_password():
             return fail()
         if native_auth.is_locked(user):
             # Deliberately no distinct message (an account-existence oracle)
-            # and no hash check (the lockout must actually stop guessing).
+            # and no REAL hash check (the lockout must actually stop
+            # guessing) — but still burn the dummy hash so a locked account
+            # doesn't answer measurably faster than a wrong password.
             # "Forgot password?" is the way out — reset clears the lockout.
+            native_auth.verify_dummy(password)
             return fail()
         if not native_auth.verify_password(user.get('password_hash', ''), password):
-            failures = int(user.get('failed_logins') or 0) + 1
-            locked_until = None
-            if failures >= native_auth.LOCKOUT_THRESHOLD:
-                locked_until = int(time.time()) + native_auth.LOCKOUT_S
-            db.record_login_failure(user['user_id'], failures, locked_until)
+            db.record_login_failure(user['user_id'],
+                                    native_auth.LOCKOUT_THRESHOLD,
+                                    native_auth.LOCKOUT_S)
             return fail()
         if not user.get('email_verified'):
             # Correct password proves ownership — pointing at verification
@@ -648,14 +667,22 @@ def login_password():
             return render_template('verify_needed.html', user=None,
                                    email=email, form_token=_form_token())
         db.clear_login_failures(user['user_id'])
+        status = user.get('status')
+        # Google-flow parity (see /callback): a pending user signing in
+        # through an invite link gets approved — conditionally, so a
+        # concurrent admin rejection always wins.
+        if status == 'pending' and invite:
+            inviter_id = _redeem_invite(invite, user['user_id'])
+            if inviter_id and db.approve_pending_user(user['user_id'], inviter_id):
+                status = 'approved'
     except Exception as e:
         print(f"Password sign-in failed: {type(e).__name__}")
         return 'Sign-in failed — please try again later.', 500
 
-    deny = _establish_session(user['user_id'], user.get('status'))
+    deny = _establish_session(user['user_id'], status)
     if deny is not None:
         return deny
-    if user.get('status') == 'pending':
+    if status == 'pending':
         return redirect('/waiting')
     return redirect(next_target)
 
@@ -680,7 +707,11 @@ def forgot_submit():
     email, err = native_auth.valid_email(request.form.get('email'))
     if err is None:
         try:
-            user = db.find_user_by_email(email)
+            # Prefer the NATIVE row: a Google and a native account may share
+            # an email, and only the native one has a password to reset —
+            # picking whichever scan row came first could strand it.
+            user = (db.find_user_by_email(email, provider='native')
+                    or db.find_user_by_email(email))
             if user is None:
                 pass  # nothing to send; page below claims success anyway
             elif user.get('auth_provider') != 'native':

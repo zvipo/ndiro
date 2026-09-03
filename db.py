@@ -277,9 +277,13 @@ def find_user_by_token_hash(attr_name, token_hash):
 def create_native_user(user_id, email, name, password_hash,
                        verify_token_hash, verify_expires_at,
                        pending_invite_token=None):
-    """Create an unverified native-account row. Always status 'pending':
-    invites are validated at signup but CLAIMED only at verification (see
-    app.py), and ADMIN_EMAILS never bootstraps a native account."""
+    """Create an unverified native-account row, or None if the row already
+    exists. The put is CONDITIONAL on the key being free and the user_id is
+    derived from the email (native_auth.new_user_id), so two concurrent
+    signups for one address race on the same key and exactly one wins —
+    email uniqueness without a GSI. Always status 'pending': invites are
+    validated at signup but CLAIMED only at verification (see app.py), and
+    ADMIN_EMAILS never bootstraps a native account."""
     item = {
         'user_id': user_id,
         'email': email,
@@ -295,7 +299,13 @@ def create_native_user(user_id, email, name, password_hash,
     }
     if pending_invite_token:
         item['pending_invite_token'] = pending_invite_token
-    users_table().put_item(Item=item)
+    try:
+        users_table().put_item(
+            Item=item, ConditionExpression='attribute_not_exists(user_id)')
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return None
     return item
 
 
@@ -319,21 +329,38 @@ def mark_email_verified(user_id, token_hash):
         return False
 
 
+def _update_if_exists(user_id, update_expression, values=None):
+    """update_item conditioned on the row still existing. DynamoDB updates
+    UPSERT by default, so a write racing account deletion would otherwise
+    resurrect a partial user row — deletion must be final. Racers that lose
+    (row gone) are silently dropped; True when the write landed."""
+    kwargs = {
+        'Key': {'user_id': user_id},
+        'UpdateExpression': update_expression,
+        'ConditionExpression': 'attribute_exists(user_id)',
+    }
+    if values:
+        kwargs['ExpressionAttributeValues'] = values
+    try:
+        users_table().update_item(**kwargs)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
 def set_verify_token(user_id, token_hash, expires_at):
     """Re-mint the verification token (resend flow)."""
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression='SET verify_token_hash = :h, verify_expires_at = :e',
-        ExpressionAttributeValues={':h': token_hash, ':e': int(expires_at)},
-    )
+    _update_if_exists(
+        user_id, 'SET verify_token_hash = :h, verify_expires_at = :e',
+        {':h': token_hash, ':e': int(expires_at)})
 
 
 def set_reset_token(user_id, token_hash, expires_at):
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression='SET reset_token_hash = :h, reset_expires_at = :e',
-        ExpressionAttributeValues={':h': token_hash, ':e': int(expires_at)},
-    )
+    _update_if_exists(
+        user_id, 'SET reset_token_hash = :h, reset_expires_at = :e',
+        {':h': token_hash, ':e': int(expires_at)})
 
 
 def complete_password_reset(user_id, password_hash, token_hash):
@@ -358,33 +385,34 @@ def complete_password_reset(user_id, password_hash, token_hash):
 
 def set_password_hash(user_id, password_hash):
     """Signed-in password change (settings)."""
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression='SET password_hash = :p',
-        ExpressionAttributeValues={':p': password_hash},
-    )
+    _update_if_exists(user_id, 'SET password_hash = :p', {':p': password_hash})
 
 
-def record_login_failure(user_id, count, locked_until=None):
-    """Store the consecutive-failure count (caller computes it from the row
-    it just read — read-modify-write is fine for this threat model)."""
-    expr = 'SET failed_logins = :c'
-    values = {':c': int(count)}
-    if locked_until is not None:
-        expr += ', locked_until = :t'
-        values[':t'] = int(locked_until)
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression=expr,
-        ExpressionAttributeValues=values,
-    )
+def record_login_failure(user_id, threshold, lockout_seconds):
+    """Atomically bump the consecutive-failure counter and lock the account
+    once it reaches threshold. ADD is DynamoDB's atomic increment, so
+    concurrent wrong guesses can never lose an update and slip past the
+    lockout; the lock decision uses the count THIS write produced."""
+    try:
+        resp = users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='ADD failed_logins :one',
+            ConditionExpression='attribute_exists(user_id)',
+            ExpressionAttributeValues={':one': 1},
+            ReturnValues='ALL_NEW',
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return  # row deleted mid-race: nothing to count against
+    count = int(resp.get('Attributes', {}).get('failed_logins') or 0)
+    if count >= threshold:
+        _update_if_exists(user_id, 'SET locked_until = :t',
+                          {':t': int(time.time()) + int(lockout_seconds)})
 
 
 def clear_login_failures(user_id):
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression='REMOVE failed_logins, locked_until',
-    )
+    _update_if_exists(user_id, 'REMOVE failed_logins, locked_until')
 
 
 # --- AI daily-use counter (race-safe two-call conditional pattern) -----------

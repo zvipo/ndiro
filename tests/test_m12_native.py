@@ -286,14 +286,17 @@ tk.check('signup with an ADMIN_EMAILS address never bootstraps admin',
          and db.find_user_by_email('admin@example.test', provider='native') is None)
 
 # Stale unverified rows stop squatting the email once their token expires.
+# (The user_id is email-derived, so the fresh row reuses the same key — the
+# re-minted verify token is what proves the purge-and-recreate happened.)
 carol = db.find_user_by_email('carol@example.test')
 tk.FIXTURES.users.items[(carol['user_id'],)]['verify_expires_at'] = 1
 tk.limiter.reset()
 resp = tk.native_signup(tk.client(), 'carol@example.test', 'password-456')
 carol2 = db.find_user_by_email('carol@example.test')
 tk.check('expired unverified row purged and re-signup proceeds',
-         b'Check your email' in resp.data
-         and carol2 is not None and carol2['user_id'] != carol['user_id'])
+         b'Check your email' in resp.data and carol2 is not None
+         and carol2['verify_token_hash'] != carol['verify_token_hash']
+         and carol2['created_at'] != carol['created_at'])
 tk.limiter.reset()
 
 # --- 8. Invites: validated at signup, claimed only at verification -----------
@@ -390,7 +393,95 @@ raw_tokens = {p.rsplit('/', 1)[-1] for p in raw_links}
 tk.check('no raw emailed token is ever stored on a row',
          not any(t in str(row) for row in rows for t in raw_tokens))
 
-# --- 12. Rate limiting -------------------------------------------------------
+# --- 12. Races that must not corrupt state -----------------------------------
+# (a) Same-email signup race: the id is email-derived and the put conditional,
+# so the loser gets None instead of a second row.
+first = db.create_native_user(native_auth.new_user_id('dup@example.test'),
+                              'dup@example.test', 'Dup', 'ph', 'th', 9999999999)
+second = db.create_native_user(native_auth.new_user_id('dup@example.test'),
+                               'dup@example.test', 'Dup', 'ph2', 'th2', 9999999999)
+tk.check('conditional create refuses a second row for the same email',
+         first is not None and second is None)
+db.delete_user(first['user_id'])
+
+# (b) A write racing account deletion must never resurrect a row: every
+# native-account update is conditional on the row still existing.
+rows_before = len(tk.FIXTURES.users.items)
+db.set_verify_token('nat-ghost', 'h', 123)
+db.set_reset_token('nat-ghost', 'h', 123)
+db.set_password_hash('nat-ghost', 'h')
+db.record_login_failure('nat-ghost', 10, 900)
+db.clear_login_failures('nat-ghost')
+tk.check('updates on a deleted row are dropped, never upserted',
+         len(tk.FIXTURES.users.items) == rows_before)
+
+# --- 13. Stale-row purge: capacity + rejection interplay ---------------------
+# A stale pending row is purged BEFORE the capacity gate, so it can never
+# squat a MAX_USERS slot even when the instance is full.
+tk.limiter.reset()
+tk.native_signup(tk.client(), 'erin@example.test', 'password-ern-22')
+erin = db.find_user_by_email('erin@example.test')
+tk.FIXTURES.users.items[(erin['user_id'],)]['verify_expires_at'] = 1
+saved_max = config.MAX_USERS
+config.MAX_USERS = db.count_users()  # full, counting erin's stale row
+tk.limiter.reset()
+resp = tk.native_signup(tk.client(), 'frank@example.test', 'password-frk-33')
+tk.check('stale pending row frees its slot even at capacity',
+         b'Check your email' in resp.data
+         and db.find_user_by_email('erin@example.test') is None
+         and db.find_user_by_email('frank@example.test') is not None)
+config.MAX_USERS = saved_max
+
+# A REJECTED unverified row is a ban, not a stale signup: never purged.
+frank = db.find_user_by_email('frank@example.test')
+tk.post(ADMIN, f"/api/admin/users/{frank['user_id']}/reject")
+tk.FIXTURES.users.items[(frank['user_id'],)]['verify_expires_at'] = 1
+rows_before = len(tk.FIXTURES.users.items)
+tk.limiter.reset()
+resp = tk.native_signup(tk.client(), 'frank@example.test', 'password-frk-44')
+frank_after = db.find_user_by_email('frank@example.test')
+tk.check('rejected unverified row survives re-signup (ban sticks)',
+         b'Check your email' in resp.data
+         and len(tk.FIXTURES.users.items) == rows_before
+         and frank_after['status'] == 'rejected'
+         and frank_after['created_at'] == frank['created_at'])
+
+# --- 14. Coexisting Google + native accounts on one email -------------------
+# /forgot must reset the NATIVE account, not mail the Google notice, when
+# both rows share the address.
+tk.limiter.reset()
+tk.sign_in(tk.client(), sub='sub-google-alice', email='alice@example.test',
+           name='GAlice')
+mails_before = len(M.sent)
+tk.limiter.reset()
+tk.post(c3, '/forgot', data={'form_token': tk.form_token(c3),
+                             'email': 'alice@example.test'})
+tk.check('forgot prefers the native row when a google account shares the email',
+         len(M.sent) == mails_before + 1 and 'Reset' in M.sent[-1][1])
+
+# --- 15. Pending native user signing in through an invite link ---------------
+# Google-flow parity: a verified-but-pending user entering via an invite is
+# approved at password sign-in (conditionally — a rejection always wins).
+tk.limiter.reset()
+c7 = tk.client()
+tk.native_signup(c7, 'dana@example.test', 'password-dna-11')
+tk.post(c7, tk.extract_link(M.sent[-1][2]))  # verify -> pending session
+resp = tk.post(c3, '/api/invites', json={})
+tok_dana = resp.get_json()['token']
+tk.limiter.reset()
+c8 = tk.client()
+resp = tk.post(c8, '/login/password',
+               data={'form_token': tk.form_token(c8), 'next': '/log',
+                     'invite': tok_dana, 'email': 'dana@example.test',
+                     'password': 'password-dna-11'})
+dana = db.find_user_by_email('dana@example.test')
+tk.check('pending user + invite approved at password sign-in',
+         resp.status_code == 302 and resp.headers['Location'].endswith('/log')
+         and dana['status'] == 'approved'
+         and dana.get('invited_by') == alice['user_id']
+         and tk.FIXTURES.invites.items[(tok_dana,)].get('used_by') == dana['user_id'])
+
+# --- 16. Rate limiting -------------------------------------------------------
 tk.limiter.reset()
 anon = tk.client()
 last = None

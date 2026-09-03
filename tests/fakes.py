@@ -103,7 +103,16 @@ class FakeTable:
         item = self.items.get(self._kt(Key))
         return {'Item': deepcopy(item)} if item is not None else {}
 
-    def put_item(self, Item):
+    def put_item(self, Item, ConditionExpression=None,
+                 ExpressionAttributeValues=None, ExpressionAttributeNames=None):
+        if ConditionExpression is not None:
+            existing = self.items.get(self._kt(Item))
+            cond_item = existing if existing is not None else {}
+            names = ExpressionAttributeNames or {}
+            if not _eval_str_condition(ConditionExpression, cond_item,
+                                       ExpressionAttributeValues or {},
+                                       lambda n: names.get(n, n)):
+                raise _ccf_error()
         self.items[self._kt(Item)] = deepcopy(Item)
         return {}
 
@@ -138,7 +147,8 @@ class FakeTable:
         return {'Items': items}
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None,
-                    ConditionExpression=None, ExpressionAttributeNames=None):
+                    ConditionExpression=None, ExpressionAttributeNames=None,
+                    ReturnValues=None):
         kt = self._kt(Key)
         existing = self.items.get(kt)
         target = existing if existing is not None else dict(Key)
@@ -178,6 +188,8 @@ class FakeTable:
             else:
                 raise NotImplementedError(f'update expression: {expr}')
         self.items[kt] = target
+        if ReturnValues == 'ALL_NEW':
+            return {'Attributes': deepcopy(target)}
         return {}
 
     def batch_writer(self):

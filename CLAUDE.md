@@ -73,17 +73,21 @@ raises without it (tests set their own).
   JWT lib; token trusted because it comes from Google over TLS), `current_user()`,
   `approved_required` / `admin_required`, `_safe_next`.
 - **`native_auth.py`** — native (email/password) account primitives: werkzeug
-  scrypt hashing (+ a dummy-hash verify to flatten no-such-user timing),
-  `new_user_id()` (`nat-` + random hex — never collides with a Google sub,
-  path-safe for the S3 prefix), emailed-token minting (256-bit random in the
-  link, SHA-256 hash on the row), email/password validation (8–256 chars, no
-  composition rules), lockout math (10 fails → 15 min). Pure helpers — the
-  session and DB writes stay in app.py/db.py.
+  scrypt hashing (+ a dummy-hash verify to flatten no-such-user AND locked
+  timing), `new_user_id(email)` (`nat-` + SHA-256(email)[:32] —
+  DETERMINISTIC so db.create_native_user's conditional put is the atomic
+  one-native-account-per-email guarantee; mirrors Google's stable sub, never
+  collides with one, path-safe for the S3 prefix), emailed-token minting
+  (256-bit random in the link, SHA-256 hash on the row), email/password
+  validation (8–256 chars, no composition rules), lockout constants (10
+  fails → 15 min; the atomic counter itself lives in db.py). Pure helpers —
+  the session and DB writes stay in app.py/db.py.
 - **`mailer.py`** — Amazon SES via boto3 `sesv2` (same credential chain as
-  db.py; lazy client, 5s/10s timeouts). `MAIL_FROM` unset ⇒ `enabled()` False
-  ⇒ signup/forgot/resend 503 while password SIGN-IN keeps working.
-  `base_url()` prefers `APP_BASE_URL` over the forgeable request Host for the
-  links in emails. Failures log `MAIL_ERROR <type> <ses-code>` only — never
+  db.py; lazy client, 5s/10s timeouts). `EMAIL_ENABLED` requires `MAIL_FROM`
+  AND (`APP_BASE_URL` or the `COOKIE_SECURE=0` dev mode) ⇒ production
+  emailed links are NEVER built from the forgeable request Host (reset-link
+  poisoning); disabled ⇒ signup/forgot/resend 503 while password SIGN-IN
+  keeps working. Failures log `MAIL_ERROR <type> <ses-code>` only — never
   the address, body, or token. Tests monkeypatch `mailer.send`.
 - **`ai.py`** — estimator prompts/schema, `_openai_estimate` (plain requests,
   strict json_schema, timeouts (5,20) text / (5,25) vision under gunicorn's 60s).
@@ -143,9 +147,11 @@ raises without it (tests set their own).
   `verify_token_hash`/`verify_expires_at`, `reset_token_hash`/
   `reset_expires_at`, `failed_logins`/`locked_until`, transient
   `pending_invite_token` — all on this ONE row so deletion/scans need no
-  extra step; email lookups are scans, no GSI, and email has NO uniqueness
-  constraint: native signup refuses duplicates by scan, a Google account may
-  legitimately coexist with a native one on the same email), and optional
+  extra step; email lookups are scans, no GSI; native-email uniqueness is
+  enforced by the email-derived user_id + conditional put — race-safe with
+  no uniqueness constraint on the email attr itself, so a Google account
+  may legitimately coexist with a native one on the same email, and
+  /forgot prefers the NATIVE row), and optional
   `nutrient_key/nutrient_label/nutrient_unit/nutrient_goal/nutrient_direction`
   (the tracked micro; absent on legacy rows = fiber default, resolved at read
   time by `config.resolve_nutrient` — never migrate). The meal form field name
@@ -247,12 +253,16 @@ delete_photo/delete_user_photos purge the LRU.
    never log the description, the model's `content`, or the photo.
 9. `MAX_USERS` enforced server-side at account creation — including invited
    signups (the gate runs BEFORE invite logic; a full instance never consumes
-   an invite). Native signup keeps the same order (gate → duplicate check →
-   invite), and its invites are only VALIDATED at signup — the atomic claim
-   happens at email verification, so an abandoned signup never burns a
-   single-use invite. A native row that is unverified with an expired verify
-   token is purged by the next signup for its email (it never had a session,
-   so the row delete is the whole wipe).
+   an invite). Native signup keeps the same order (stale purge → gate →
+   duplicate check → invite), and its invites are only VALIDATED at signup —
+   the atomic claim happens at email verification (claim → approve → THEN
+   consume the verify token, so no crash window can burn the invite with the
+   account still pending), so an abandoned signup never burns a single-use
+   invite. Any later signup purges every native row that is unverified +
+   PENDING + expired-verify-token, BEFORE the capacity gate (such a row
+   never had a session, so the row delete is the whole wipe, and it must
+   not squat a MAX_USERS slot); a REJECTED unverified row is never purged —
+   rejection is a ban and keeps its slot.
 9b. Invite redemption is server-side ONLY (nothing from a URL sets status):
    `/i/<token>`'s four dead states (missing/revoked/expired/used) are
    byte-identical 404s; the inviter is freshly re-read at both view and
@@ -280,7 +290,11 @@ delete_photo/delete_user_photos purge the LRU.
     verify-your-email page on a CORRECT password (which proves ownership).
     Emailed GET links never mutate (scanners prefetch) — consumption is
     POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
-    or a completed reset. The admin payload's `unverified` boolean is derived
+    or a completed reset; the counter is an atomic DynamoDB ADD (concurrent
+    guesses can't lose an update). Every native users-table update is
+    conditional on the row still existing — a write racing account deletion
+    must never resurrect a row (DynamoDB updates upsert by default). The
+    admin payload's `unverified` boolean is derived
     — hashes/tokens/providers never enter `_user_to_json`'s allowlist.
 
 ## Gotchas

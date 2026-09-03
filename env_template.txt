@@ -37,9 +37,10 @@ GOOGLE_REDIRECT_URI=http://localhost:5000/callback
 #MAIL_FROM=Ndiro <no-reply@example.com>
 # SES region, when different from AWS_REGION.
 #SES_REGION=us-east-1
-# Absolute base URL for the links inside those emails. Strongly recommended in
-# production (immune to Host-header games); unset falls back to the request
-# host, which is fine for local dev.
+# Absolute base URL for the links inside those emails. REQUIRED in production:
+# without it email features stay disabled, because building reset links from
+# the request Host header would let a forged Host poison them. Only the
+# COOKIE_SECURE=0 dev mode may omit it (links then use the request host).
 #APP_BASE_URL=https://your-domain.example
 
 # --- Accounts ---

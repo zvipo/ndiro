@@ -52,6 +52,12 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/callback')
 
+# Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
+# plain-http localhost (Safari rejects Secure cookies there). NEVER set in
+# production — TLS-only cookies are assumed by the whole auth design. (Defined
+# up here because EMAIL_ENABLED below keys off it too.)
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', '1') != '0'
+
 # --- Email (Amazon SES; optional) --------------------------------------------
 # Native (email/password) signup, email verification, and password reset need
 # outbound mail. MAIL_FROM must be an SES-verified identity and the app's AWS
@@ -60,11 +66,13 @@ GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/ca
 # by a mail outage).
 MAIL_FROM = os.getenv('MAIL_FROM')
 SES_REGION = os.getenv('SES_REGION') or os.getenv('AWS_REGION', 'us-east-1')
-# Absolute base for links in emails (e.g. https://ndiro.example). An explicit
-# value beats deriving from the request Host header, which an attacker could
-# forge to poison reset links; unset falls back to request.host_url (dev).
+# Absolute base for links in emails (e.g. https://ndiro.example). REQUIRED in
+# production: building reset links from the request Host header would let a
+# forged Host put an attacker's domain into a victim's reset email (classic
+# reset poisoning). Only the COOKIE_SECURE=0 dev mode may fall back to the
+# request host (see mailer.base_url).
 APP_BASE_URL = (os.getenv('APP_BASE_URL') or '').strip().rstrip('/')
-EMAIL_ENABLED = bool(MAIL_FROM)
+EMAIL_ENABLED = bool(MAIL_FROM and (APP_BASE_URL or not COOKIE_SECURE))
 
 # --- Accounts ----------------------------------------------------------------
 # Emails that bootstrap as admin on their FIRST sign-in only; afterwards status
@@ -394,9 +402,3 @@ def resolve_nutrient(user_row):
         'direction': direction,
         'is_default': False,
     }
-
-
-# Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
-# plain-http localhost (Safari rejects Secure cookies there). NEVER set in
-# production — TLS-only cookies are assumed by the whole auth design.
-COOKIE_SECURE = os.getenv('COOKIE_SECURE', '1') != '0'
