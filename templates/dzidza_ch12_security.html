@@ -33,10 +33,11 @@
         changes <em>application data</em> (the <a href="/dzidza/http">HTTP
         chapter</a>). Be precise about the
         residue, because Lax does send the cookie on those top-level GETs: the
-        two GETs that touch session state are covered otherwise —
-        <code>/callback</code> by the OAuth <code>state</code> nonce, and
-        <code>/logout</code> not at all, logout-CSRF being a deliberately
-        accepted nuisance-only risk. <strong>Review question:</strong> does any
+        two exceptions are covered otherwise. <code>/callback</code> is a
+        genuinely state-changing GET — it can create your account and claim an
+        invite — and is guarded by the OAuth <code>state</code> nonce instead;
+        <code>/logout</code> only clears the session, logout-CSRF being a
+        deliberately accepted nuisance-only risk. <strong>Review question:</strong> does any
         new GET route write anything?</p>
 
         <h2>IDOR — the missing ownership check</h2>
@@ -67,8 +68,9 @@
         <h2>Enumeration oracles</h2>
         <p>Can an attacker <em>learn</em> from your error responses? If a dead
         share link said "revoked" vs "never existed", token-guessing gains a
-        probe. Ndiro's rule: the four dead states of a share or invite link
-        return <strong>byte-identical 404s</strong>. Combined with 192-bit
+        probe. Ndiro's rule: every dead state of a share link (missing,
+        revoked, expired) or invite link (those three plus already-used)
+        returns a <strong>byte-identical 404</strong>. Combined with 192-bit
         random tokens and a 30/min rate limit, guessing is hopeless and
         unmeasurable. The same thinking prices timing and wording of every
         error path: failure responses should be as uniform as truth allows.</p>

@@ -17,9 +17,10 @@
             <code>config.py</code>; everything downstream is key-generic. A
             change that fits a seam touches one or two files; needing five is a
             signal to re-read.</li>
-            <li><strong>Run the stub tests before and after.</strong> Every
-            <code>python tests/test_*.py</code> plus
-            <code>probe_cross_user.py</code>; they need no AWS and no network
+            <li><strong>Run the stub tests before and after.</strong> All of
+            them — each is its own script, so loop:
+            <code>for t in tests/test_m*.py tests/probe_cross_user.py; do
+            python "$t" || break; done</code>. They need no AWS and no network
             and run in seconds. They drive the <em>real</em> routes against
             fake boto3 tables (<code>tests/fakes.py</code>) — a minicluster in
             miniature. <code>tests/testkit.py</code> must be imported first in

@@ -39,9 +39,11 @@ Content-Type: application/json           ← headers: metadata about the body
         <p>The "GET never writes" rule is load-bearing security here, not
         etiquette: Ndiro's CSRF defence (the <a href="/dzidza/security">security
         chapter</a>) assumes <em>application data</em> never changes on a GET.
-        Two auth-flow GETs do touch session state — <code>/logout</code> clears
-        it, <code>/callback</code> finishes sign-in — and that chapter covers
-        why those are guarded differently.</p>
+        The auth flow holds the two deliberate exceptions:
+        <code>/logout</code> clears the session, and <code>/callback</code> —
+        forced to be a GET by the OAuth redirect — really writes (it can create
+        your account and claim an invite), which is why it carries its own
+        guard; that chapter explains both.</p>
 
         <h2>Status codes this app actually returns</h2>
         <p>Status codes are the API's error model. Grep <code>app.py</code> for

@@ -27,7 +27,7 @@
    │                                    │ dedup check (below)            │
    │                                    │ write photo + sidecar JSON     │
    │                                    │ to the LOCAL spool dir ──────▶ │ loop:
-   │ ◀── 200 {queued: …} ───────────────│                                │  re-read user row (still approved?)
+   │ ◀── 202 {queued: …} ───────────────│                                │  re-read user row (still approved?)
    │                                    │                                │  consume 1 AI use (cap)
    │ polls /api/auto-log/pending        │                                │  OpenAI vision estimate
    │ to render per-photo status         │                                │  put_photo + put_meal
@@ -50,7 +50,7 @@
         <h2>Grade it like a queue system</h2>
         <table>
             <tr><th>Property</th><th>How Ndiro gets it</th></tr>
-            <tr><td>Durability</td><td>Spooled to disk before the 200 — but <em>local</em> disk, ephemeral on most hosts. A stated PoC trade: a redeploy may drop queued work, and the design accepts it rather than paying for SQS.</td></tr>
+            <tr><td>Durability</td><td>Spooled to disk before the 202 Accepted (the status that says "taken, not yet done") — but <em>local</em> disk, ephemeral on most hosts. A stated PoC trade: a redeploy may drop queued work, and the design accepts it rather than paying for SQS.</td></tr>
             <tr><td>Idempotent producer</td><td>Re-uploading the same photos is safe: the EXIF date+minute is the dedup fingerprint, checked against both existing PHOTO meals (a range query over the batch's whole date window — clamped camera clocks drift days) and the queued spool.</td></tr>
             <tr><td>At-most-once billing per handled retry</td><td>The AI cap is consumed per photo before the call, refunded on upstream failure, and the estimate is cached on the sidecar so handled commit retries never re-bill. (A process death in the window after the AI reply but before that cache write can still bill twice on restart — at-least-once delivery leaves exactly this residue.)</td></tr>
             <tr><td>Poison messages</td><td><code>MAX_ATTEMPTS</code>, then the sidecar is renamed <code>*.json.dead</code> — a dead-letter queue, kept for the operator.</td></tr>

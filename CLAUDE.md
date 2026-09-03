@@ -167,7 +167,9 @@ keys built **server-side only** in db.py; served THROUGH the app (never
 presigned): `/photo/<date>/<meal_id>` (owner session) and
 `/s/<token>/photo/...` (token-scoped), both 120/min, backed by a
 byte-budgeted in-process LRU (`PHOTO_CACHE_MB`, default 64 — valid because
-of the single gunicorn worker) with `?v=sha1(updated_at)` versioned URLs +
+of the single gunicorn worker) with `?v=sha1(photo_v)` versioned URLs (a
+timestamp bumped only when the photo bytes change — text edits never bust
+photo caches) +
 ETag/304 so browsers cache too (`Cache-Control: private`; owner max-age 1y
 immutable, share max-age 1 day so revoked recipients' caches age out).
 `get_photo_bytes` refuses keys outside the owner's prefix; replacement

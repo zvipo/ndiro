@@ -63,7 +63,8 @@ CONFIG_VALUES = ['test-secret-key-not-for-production',
                  'test-client-id.apps.googleusercontent.com',
                  'test-client-secret', 'https://ndiro.test/callback',
                  'admin@example.test', 'fake-test-bucket',
-                 'test-users', 'test-meals', 'test-shares', 'test-invites']
+                 'test-users', 'test-meals', 'test-shares', 'test-invites',
+                 'us-east-1', os.environ['AUTOLOG_DIR']]
 
 
 def client():

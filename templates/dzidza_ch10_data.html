@@ -41,12 +41,15 @@ between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code>
         <div class="box pitfall">
             <div class="box-title">⚠️ The Decimal discipline</div>
             <p>boto3 refuses floats (binary floats can't round-trip through
-            DynamoDB's decimal wire type), and Flask's
-            <code>jsonify</code> refuses Decimals. Hence the rule stamped
-            through the codebase: <code>Decimal(str(x))</code> going in,
-            <code>float()</code> coming out. Any diff that stores a raw float or
-            serializes a raw Decimal will throw at runtime — in review, check
-            both edges of every new numeric field.</p>
+            DynamoDB's decimal wire type) — a raw float into
+            <code>put_item</code> throws. The other edge fails
+            <em>quietly</em>, which is worse: Flask's <code>jsonify</code>
+            serializes a raw Decimal as a JSON <em>string</em>
+            (<code>"12.5"</code>), and the first symptom is JavaScript
+            arithmetic misbehaving. Hence the rule stamped through the
+            codebase: <code>Decimal(str(x))</code> going in,
+            <code>float()</code> coming out — in review, check both edges of
+            every new numeric field.</p>
         </div>
 
         <h2>Photos: private bucket, proxied bytes</h2>
@@ -77,7 +80,10 @@ between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code>
     │                                  miss ─────────────────────────▶ get_object</code></pre>
         <ul>
             <li><strong>Versioned URLs.</strong> The photo URL carries
-            <code>?v=sha1(updated_at)</code>. Replace the photo and the URL
+            <code>?v=</code>, a digest of <code>photo_v</code> — a timestamp
+            written <em>only</em> when the photo bytes change (a text-only edit
+            carries the old value forward, so it never busts photo caches; see
+            <code>_photo_version</code>). Replace the photo and the URL
             <em>changes</em>, so caches never need invalidating — stale entries
             are simply never asked for again. Owners get
             <code>Cache-Control: private, max-age=1y, immutable</code>.</li>
@@ -95,12 +101,14 @@ between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code>
         </ul>
         <div class="box analogy">
             <div class="box-title">🐘 From your world</div>
-            <p>Version-the-key-instead-of-invalidating is content addressing —
-            the same move as immutable HDFS block IDs or a build system keyed by
-            content hash. The two hard problems collapse into one: no cache
-            invalidation, only naming. And the ETag/304 exchange is a
-            checksum-based short-circuit read, straight out of any replication
-            protocol.</p>
+            <p>Version-the-key-instead-of-invalidating is immutable versioned
+            naming — the same discipline as content addressing (immutable HDFS
+            block IDs, hash-keyed build systems), though here the version
+            derives from a change <em>timestamp</em> rather than the bytes: you
+            get the no-invalidation property without hashing every photo, at
+            the cost of the version not being a content proof. The ETag/304
+            exchange is the same version tag used as a short-circuit read —
+            "still on v9f8a? no bytes for you".</p>
         </div>
 
         <h2>Deletion, ordered like a systems engineer would</h2>

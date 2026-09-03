@@ -8,7 +8,11 @@
         <code>/api/…</code>, designed by one rule: <strong>the URL names the
         resource, the method names the action, the status code names the
         outcome, and errors are always <code>{"error": "human message"}</code>
-        with a 4xx/5xx status.</strong></p>
+        with a 4xx/5xx status.</strong> (One deliberate exception:
+        <code>_meals_payload</code> degrades a storage failure to a 200 with an
+        <code>error</code> field and empty days, so the page still renders a
+        timeline — an availability-over-strictness call, made once and
+        commented.)</p>
 
         <h2>The surface</h2>
         <table>
@@ -16,7 +20,8 @@
             <tr><td><code>/api/meals</code></td><td>GET, POST</td><td>List a window of days (query params) / add a meal (form data + optional photo)</td></tr>
             <tr><td><code>/api/meals/&lt;date&gt;/&lt;meal_id&gt;</code></td><td>PUT, DELETE</td><td>Edit / delete one meal</td></tr>
             <tr><td><code>/api/estimate-fiber</code>, <code>/api/estimate-photo</code></td><td>POST</td><td>AI estimates (JSON body / multipart photo)</td></tr>
-            <tr><td><code>/api/shares</code>, <code>/api/invites</code></td><td>GET, POST, DELETE</td><td>Manage share links and invites</td></tr>
+            <tr><td><code>/api/shares</code>, <code>/api/invites</code></td><td>GET, POST</td><td>List / create share links and invites</td></tr>
+            <tr><td><code>/api/shares/&lt;token&gt;</code>, <code>/api/invites/&lt;token&gt;</code></td><td>DELETE</td><td>Revoke one</td></tr>
             <tr><td><code>/api/settings/nutrient</code>, <code>/api/account/delete</code></td><td>POST</td><td>Settings; full account deletion</td></tr>
             <tr><td><code>/s/&lt;token&gt;/meals</code></td><td>GET</td><td>The same meals payload, scoped by share token instead of session</td></tr>
         </table>
@@ -45,8 +50,9 @@ if (!resp.ok) {                           // any 4xx/5xx: show the server's mess
     return;
 }
 renderEstimate(result);</code></pre>
-        <p>Read the error ladder carefully, because every fetch in the app
-        climbs the same one:</p>
+        <p>Read the error ladder carefully — it's the pattern to copy for any
+        new fetch (the app's simpler calls, like the settings saves and the
+        auto-log poll, collapse some rungs where less recovery is needed):</p>
         <ul>
             <li><strong>401</strong> — not an error to display; the user's
             session is gone, so navigate to login (with <code>next</code> so
