@@ -296,9 +296,15 @@ delete_photo/delete_user_photos purge the LRU.
     Timing is part of the no-oracle contract: signup hashes BEFORE the
     duplicate branch, sign-in dummy-hashes the unknown AND locked paths, and
     account-dependent side work (SES sends, the failure counter AND its
-    clear) runs off the response path via `_defer` — ONE lazily-started
-    FIFO worker, so failure/clear ordering is preserved and thread use is
-    bounded (tests set `app.ASYNC_AUTH_WORK=False` to run it inline). A
+    clear) runs off the response path via `_defer` — lazily-started FIFO
+    workers in TWO lanes ('state' orders the counter and its clear; 'mail'
+    carries SES sends, so a slow SES can never delay lockout bookkeeping;
+    tests set `app.ASYNC_AUTH_WORK=False` to run it all inline). The
+    settings password change participates in the SAME account lockout (its
+    current-password check is an oracle like sign-in). Credential/token/
+    duplicate lookups use strongly consistent scans
+    (`db.list_users(consistent=True)`) — an eventual read could serve a
+    pre-lockout counter or miss a just-written token. A
     completed password change or reset atomically invalidates any
     outstanding reset token, and the signed-in change is a compare-and-set
     on the verified hash (a stale request can't clobber a newer password).

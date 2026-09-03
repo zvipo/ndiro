@@ -6,8 +6,9 @@ and S3 keys are constructed here, server-side only, under users/{user_id}/.
 
 Tables (all on-demand, auto-created on boot, no GSIs — deliberate at <=100
 users; the scans below are commented where they'd be wrong at larger scale):
-  users:  PK user_id (Google sub, or 'nat-' + SHA-256(email)[:32] for native
-          accounts — deterministic, see native_auth.new_user_id)
+  users:  PK user_id (Google sub, or 'nat-' + HMAC-SHA256(secret, email)[:32]
+          for native accounts — deterministic AND keyed, see
+          native_auth.new_user_id)
   meals:  PK user_id, SK sk = "{YYYY-MM-DD}#{meal_id}"
   shares: PK share_token
 """
@@ -191,10 +192,14 @@ def set_user_nutrient(user_id, key, label, unit, goal, direction):
     )
 
 
-def list_users():
-    """All user rows. Scan + client-side handling is fine at <=100 users."""
+def list_users(consistent=False):
+    """All user rows. Scan + client-side handling is fine at <=100 users.
+    consistent=True for credential/account-state lookups (sign-in, token
+    resolution, signup duplicate checks): the default eventually-consistent
+    scan could serve a pre-lockout counter, a pre-change password hash, or
+    miss a token written moments ago. Admin/stats listings stay eventual."""
     items = []
-    kwargs = {}
+    kwargs = {'ConsistentRead': True} if consistent else {}
     while True:
         resp = users_table().scan(**kwargs)
         items.extend(resp.get('Items', []))
@@ -225,18 +230,27 @@ def approve_pending_user(user_id, invited_by):
 
 
 def set_user_status(user_id, status):
-    """Set a user's status (admin approve/reject)."""
+    """Set a user's status (admin approve/reject). Conditional on the row
+    still existing: an admin action racing account deletion must not upsert
+    a partial {user_id, status} row. True unless the row was gone."""
     expr = 'SET #s = :s'
     values = {':s': status}
     if status == 'approved':
         expr += ', approved_at = :t'
         values[':t'] = _utc_now_iso()
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression=expr,
-        ExpressionAttributeNames={'#s': 'status'},
-        ExpressionAttributeValues=values,
-    )
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=expr,
+            ConditionExpression='attribute_exists(user_id)',
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
 
 
 def delete_user(user_id):
@@ -255,7 +269,7 @@ def find_user_by_email(email, provider=None):
     email = (email or '').strip().lower()
     if not email:
         return None
-    for item in list_users():
+    for item in list_users(consistent=True):
         if (item.get('email') or '').lower() != email:
             continue
         if provider == 'native' and item.get('auth_provider') != 'native':
@@ -292,7 +306,7 @@ def find_user_by_token_hash(attr_name, token_hash):
     are ever stored, so a scan can never surface a live link."""
     if not token_hash:
         return None
-    for item in list_users():
+    for item in list_users(consistent=True):
         if item.get(attr_name) == token_hash:
             return item
     return None

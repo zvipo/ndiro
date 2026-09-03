@@ -32,8 +32,10 @@
             with Google, or the ones you typed at signup (plus a salted hash of your
             password — never the password itself) for email/password accounts. That's
             it. It is all stored in the operator's AWS account (DynamoDB and a private
-            S3 bucket). Email/password accounts also receive the occasional
-            account email (verification and password-reset links) at their address.</p>
+            S3 bucket). The app also sends the occasional account email to the
+            address on file: verification and password-reset links for
+            email/password accounts, and — whichever way you sign in — a short
+            notice if someone enters your address in the signup or reset form.</p>
 
             <h2>Who can see your data</h2>
             <ul>

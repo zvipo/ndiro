@@ -37,7 +37,7 @@ config.GIT_COMMIT_TITLE = saved_title
 secrets_in_env = ['fake-test-bucket', 'test-secret-key-not-for-production',
                   'test-client-secret', 'test-client-id.apps.googleusercontent.com',
                   'admin@example.test', 'test-users', 'test-meals',
-                  'ndiro@test.invalid']
+                  'ndiro@test.invalid', 'https://ndiro.test']
 tk.check('status page leaks no config values',
          not any(s in body for s in secrets_in_env))
 
@@ -70,6 +70,12 @@ tk.check('javascript: repo url rejected',
 tk.check('http repo url rejected', config._REPO_RE.match('http://example.com/x') is None)
 tk.check('https repo url accepted',
          bool(config._REPO_RE.match('https://github.com/example/ndiro')))
+tk.check('http APP_BASE_URL rejected (fails closed)',
+         config._BASE_URL_RE.match('http://ndiro.example') is None)
+tk.check('garbage APP_BASE_URL rejected',
+         config._BASE_URL_RE.match('ndiro.example/path"><x>') is None)
+tk.check('https APP_BASE_URL accepted',
+         bool(config._BASE_URL_RE.match('https://ndiro.example:8443')))
 tk.check('branch with a quote rejected', config._clean('main"><script>', config._REF_RE) is None)
 tk.check('plain commit title accepted',
          config._clean_title('Add /status page') == 'Add /status page')

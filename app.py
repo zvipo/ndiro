@@ -408,16 +408,22 @@ _LOGIN_ERROR = 'Wrong email or password.'
 # Auth side work (SES sends, the failure counter and its clear) runs OFF the
 # response path: a synchronous SES call or DynamoDB write only on the
 # account-exists branch would make response latency an account-existence
-# oracle even with uniform bodies. ONE lazily-started FIFO worker (the
+# oracle even with uniform bodies. Lazily-started FIFO workers (the
 # autolog.ensure_worker pattern) rather than a thread per request: bounded
-# concurrency, and strict ordering — a failure recorded before a successful
-# sign-in is applied before that sign-in's counter clear, so stale failures
-# can never re-lock an account that just authenticated. Queued work that a
-# container stop discards is retryable by design (the uniform pages promise
-# nothing, and a lost counter write only under-counts one guess). Tests flip
-# ASYNC_AUTH_WORK off to run the work inline (deterministic asserts).
+# concurrency, and strict per-lane ordering. TWO lanes on purpose:
+#   'state' — the failure counter and its clear (fast DynamoDB writes).
+#     FIFO order here means a failure recorded before a successful sign-in
+#     is applied before that sign-in's counter clear, so stale failures can
+#     never re-lock an account that just authenticated.
+#   'mail'  — SES sends and token re-mints. Separate so a slow or down SES
+#     (5s/10s timeouts per call) can never delay lockout bookkeeping —
+#     otherwise an attacker could keep the lockout perpetually behind by
+#     spraying /forgot.
+# Queued work that a container stop discards is retryable by design (the
+# uniform pages promise nothing, and a lost counter write only under-counts
+# one guess). Tests flip ASYNC_AUTH_WORK off to run everything inline.
 ASYNC_AUTH_WORK = True
-_auth_queue = None
+_auth_queues = {}
 _auth_queue_lock = threading.Lock()
 
 
@@ -430,22 +436,23 @@ def _auth_worker(q):
             print(f"AUTH_TASK_ERROR {type(e).__name__}")
 
 
-def _defer(fn):
-    """Queue fn for the auth worker (prod) or run it now (tests). fn must
+def _defer(fn, lane='mail'):
+    """Queue fn on the lane's worker (prod) or run it now (tests). fn must
     not touch the request context — capture what it needs first."""
-    global _auth_queue
     if not ASYNC_AUTH_WORK:
         fn()
         return
-    if _auth_queue is None:
+    q = _auth_queues.get(lane)
+    if q is None:
         with _auth_queue_lock:
-            if _auth_queue is None:
+            q = _auth_queues.get(lane)
+            if q is None:
                 import queue as _queue
                 q = _queue.Queue()
                 threading.Thread(target=_auth_worker, args=(q,),
                                  daemon=True).start()
-                _auth_queue = q
-    _auth_queue.put(fn)
+                _auth_queues[lane] = q
+    q.put(fn)
 
 
 def _establish_session(user_id, status):
@@ -584,7 +591,7 @@ def signup_submit():
         # owns no meals/photos/shares — the row delete is the whole wipe.
         now = time.time()
         rows = []
-        for row in db.list_users():
+        for row in db.list_users(consistent=True):
             stale = (row.get('auth_provider') == 'native'
                      and not row.get('email_verified')
                      and row.get('status') == 'pending'
@@ -664,8 +671,11 @@ def verify_email_submit(token):
         # reads the already-approved status off the row). Consuming the
         # token first could burn the invite AND the link with the account
         # still pending — unrecoverable.
+        # Redeem only while the observed status is still pending: an admin
+        # who already approved or rejected this row settled its fate, and
+        # claiming the single-use invite then would burn it for nothing.
         pending_invite = row.get('pending_invite_token')
-        if pending_invite:
+        if pending_invite and status == 'pending':
             inviter_id = _redeem_invite(pending_invite, user_id)
             if inviter_id and db.approve_pending_user(user_id, inviter_id):
                 status = 'approved'
@@ -746,17 +756,18 @@ def login_password():
             # responses measurably slower than unknown-email ones.
             uid = user['user_id']
             _defer(lambda: db.record_login_failure(
-                uid, native_auth.LOCKOUT_THRESHOLD, native_auth.LOCKOUT_S))
+                uid, native_auth.LOCKOUT_THRESHOLD, native_auth.LOCKOUT_S),
+                lane='state')
             return fail()
         if not user.get('email_verified'):
             # Correct password proves ownership — pointing at verification
             # discloses nothing the owner doesn't know.
             return render_template('verify_needed.html', user=None,
                                    email=email, form_token=_form_token())
-        # Deferred through the same FIFO worker as failure writes, so the
+        # Deferred through the same 'state' FIFO as failure writes, so the
         # clear applies AFTER every failure recorded before this success.
         uid = user['user_id']
-        _defer(lambda: db.clear_login_failures(uid))
+        _defer(lambda: db.clear_login_failures(uid), lane='state')
         status = user.get('status')
         # Google-flow parity (see /callback): a pending user signing in
         # through an invite link gets approved — conditionally, so a
@@ -866,7 +877,8 @@ def reset_submit(token):
         print(f"Password reset failed: {type(e).__name__}")
         return 'Password reset failed — please try again later.', 500
     # No session from a reset link: sign in with the new password (keeps
-    # session establishment to the three sign-in points).
+    # session establishment to the two sign-in points — /callback and
+    # POST /login/password).
     return redirect('/login?reset=1')
 
 
@@ -882,8 +894,19 @@ def change_password():
     data = request.get_json(silent=True) or {}
     current = data.get('current') or ''
     new = data.get('new') or ''
+    uid = g.user['user_id']
+    # The current-password check is a password oracle like /login/password,
+    # so it participates in the SAME per-account lockout — otherwise a
+    # stolen or walked-away-from session could guess past the 10-failure
+    # limit through this endpoint instead.
+    if native_auth.is_locked(g.user):
+        native_auth.verify_dummy(current)
+        return jsonify({'error': 'Current password is incorrect.'}), 400
     current_hash = g.user.get('password_hash', '')
     if not native_auth.verify_password(current_hash, current):
+        _defer(lambda: db.record_login_failure(
+            uid, native_auth.LOCKOUT_THRESHOLD, native_auth.LOCKOUT_S),
+            lane='state')
         return jsonify({'error': 'Current password is incorrect.'}), 400
     pw_err = native_auth.valid_password(new)
     if pw_err:
@@ -899,6 +922,8 @@ def change_password():
         # request read the row — the newer password stands.
         return jsonify({'error': 'Password was changed in another session — '
                                  'sign in again and retry.'}), 409
+    # Successful reauthentication clears the counter, same as sign-in.
+    _defer(lambda: db.clear_login_failures(uid), lane='state')
     return jsonify({'ok': True})
 
 

@@ -69,9 +69,15 @@ SES_REGION = os.getenv('SES_REGION') or os.getenv('AWS_REGION', 'us-east-1')
 # Absolute base for links in emails (e.g. https://ndiro.example). REQUIRED in
 # production: building reset links from the request Host header would let a
 # forged Host put an attacker's domain into a victim's reset email (classic
-# reset poisoning). Only the COOKIE_SECURE=0 dev mode may fall back to the
-# request host (see mailer.base_url).
+# reset poisoning). Validated to an absolute https origin — reset links are
+# bearer tokens, so a malformed or http:// value fails CLOSED (email stays
+# disabled) rather than mailing tokens into broken or cleartext links. Only
+# the COOKIE_SECURE=0 dev mode may fall back to the request host
+# (see mailer.base_url).
+_BASE_URL_RE = re.compile(r'^https://[\w.-]+(?::\d+)?$')
 APP_BASE_URL = (os.getenv('APP_BASE_URL') or '').strip().rstrip('/')
+if APP_BASE_URL and not _BASE_URL_RE.match(APP_BASE_URL):
+    APP_BASE_URL = ''
 EMAIL_ENABLED = bool(MAIL_FROM and (APP_BASE_URL or not COOKIE_SECURE))
 
 # Keys the deterministic native-account user_id (HMAC(secret, email) — see

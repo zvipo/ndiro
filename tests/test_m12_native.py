@@ -441,6 +441,7 @@ db.set_reset_token('nat-ghost', 'h', 123)
 db.set_password_hash('nat-ghost', 'h', 'old-h')
 db.record_login_failure('nat-ghost', 10, 900)
 db.clear_login_failures('nat-ghost')
+db.set_user_status('nat-ghost', 'approved')  # admin action racing deletion
 tk.check('updates on a deleted row are dropped, never upserted',
          len(tk.FIXTURES.users.items) == rows_before)
 
@@ -559,6 +560,31 @@ tk.check('login invite banner shown only for a valid invite',
          b'approved right away' in body_valid
          and b'approved right away' not in body_dead
          and b'/login/password' in body_dead)  # page itself still renders
+
+# --- 15d. Settings password change participates in the lockout ---------------
+# The current-password check is an oracle like /login/password, so a stolen
+# session can't guess past the 10-failure limit through it.
+for _ in range(native_auth.LOCKOUT_THRESHOLD):
+    tk.limiter.reset()
+    tk.post(c3, '/api/settings/password',
+            json={'current': 'wrong-guess', 'new': 'whatever-123'})
+alice = db.get_user(alice['user_id'])
+tk.check('settings guesses count toward the account lockout',
+         int(alice.get('failed_logins') or 0) >= native_auth.LOCKOUT_THRESHOLD
+         and int(alice.get('locked_until') or 0) > time.time())
+tk.limiter.reset()
+resp = tk.post(c3, '/api/settings/password',
+               json={'current': 'yet-another-88', 'new': 'whatever-123'})
+tk.check('locked account cannot change its password even with the right current',
+         resp.status_code == 400)
+tk.FIXTURES.users.items[(alice['user_id'],)].pop('locked_until', None)
+tk.FIXTURES.users.items[(alice['user_id'],)].pop('failed_logins', None)
+tk.limiter.reset()
+resp = tk.post(c3, '/api/settings/password',
+               json={'current': 'yet-another-88', 'new': 'final-pw-99x'})
+tk.check('unlocked change works and clears the counter',
+         resp.status_code == 200
+         and 'failed_logins' not in db.get_user(alice['user_id']))
 
 # --- 16. Rate limiting -------------------------------------------------------
 tk.limiter.reset()
