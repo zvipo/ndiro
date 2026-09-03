@@ -1,0 +1,134 @@
+{% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
+
+{% block guide %}
+        <p>CSS is a rule engine: each rule is a <strong>selector</strong> (which
+        elements) plus <strong>declarations</strong> (which properties get which
+        values). The engine applies every matching rule to every element and
+        resolves conflicts by specificity and order — "the cascade". All of
+        Ndiro's CSS lives in two places: the shared skin in
+        <code>base.html</code>'s <code>&lt;style&gt;</code>, and per-page rules
+        each template adds via a block.</p>
+
+        <h2>Selectors you'll actually meet here</h2>
+        <pre><code>.card            { … }   /* any element with class="card"            */
+.btn.primary     { … }   /* both classes on the same element         */
+.menu-panel a    { … }   /* any &lt;a&gt; anywhere inside .menu-panel      */
+.btn:hover       { … }   /* while the pointer is over it             */
+.btn:disabled    { … }   /* state-based                              */
+:root[data-theme="light"] { … }   /* attribute match — the theme switch */</code></pre>
+        <p>When two rules set the same property on the same element, the more
+        <em>specific</em> selector wins (id beats class beats element), and
+        among equals, the later one in the file. You can see the whole
+        resolution in devtools: the Styles pane lists every matching rule with
+        the losers struck through — it's the query plan explainer for CSS.</p>
+
+        <h2>The box model and the layout primitives</h2>
+        <p>Every element is a rectangle: content, wrapped in
+        <code>padding</code>, wrapped in <code>border</code>, wrapped in
+        <code>margin</code>. Ndiro opts the whole page into the sane sizing mode
+        where <code>width</code> means the visible box, border and padding
+        included:</p>
+        {{ code_file('templates/base.html') }}
+        <pre><code>* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}</code></pre>
+        <p>For arranging boxes, this site needs only two tools:</p>
+        <ul>
+            <li><strong>Normal flow</strong> — blocks stack vertically. The page
+            is a centered column: <code>.container { max-width: 640px;
+            margin: 0 auto; }</code> (auto side margins = centering).</li>
+            <li><strong>Flexbox</strong> — one-dimensional rows/columns with
+            alignment and distribution. The form's date/time row, the meal
+            cards, the corner controls are all
+            <code>display: flex</code>.</li>
+        </ul>
+        {{ code_file('templates/log.html') }}
+        <pre><code>.form-row {
+    display: flex;      /* children become flex items in a row  */
+    gap: 10px;          /* space between them                   */
+    flex-wrap: wrap;    /* overflow wraps instead of squishing  */
+}
+.form-row &gt; div {
+    flex: 1;            /* share leftover width equally         */
+    min-width: 130px;   /* below this, wrap to the next line    */
+}</code></pre>
+        <p>Those five lines are also the entire "responsive design" of the
+        form: on a phone the three fields wrap into a column, on a laptop they
+        sit in a row, with no phone-specific code. Add the viewport meta from
+        the <a href="/dzidza/html">HTML chapter</a> and a fluid max-width
+        container, and small screens mostly take care of themselves.</p>
+        <p>The third tool, <strong>positioning</strong>, is used sparingly:
+        <code>position: fixed</code> pins the menu hamburger to the viewport
+        (<code>.corner-controls</code>) and stretches the photo lightbox over
+        everything (<code>inset: 0</code> plus a <code>z-index</code> to win the
+        stacking order).</p>
+
+        <h2>Design tokens: custom properties</h2>
+        <p>The gem of this stylesheet. CSS variables ("custom properties") are
+        defined once on the root element and referenced everywhere:</p>
+        {{ code_file('templates/base.html') }}
+        <pre><code>:root {                        /* dark theme — the default */
+    --bg-0: #282828;  --card: #3c3836;  --border: #504945;
+    --muted: #a89984; --text: #ebdbb2;  --gold: #fabd2f;
+    --green: #b8bb26; --red: #fb4934;   /* …14 tokens total */
+}
+:root[data-theme="light"] {    /* same 14 names, light values */
+    --bg-0: #fbf1c7;  --text: #3c3836;  --gold: #b57614;  …
+}
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+}</code></pre>
+        <p>Because colors in the app are spelled <code>var(--token)</code>,
+        the entire theme switch is one attribute flip on
+        <code>&lt;html&gt;</code>: set <code>data-theme="light"</code> and the
+        second <code>:root</code> block wins, every
+        <code>var()</code> re-resolves, and the whole page restyles. No CSS is
+        swapped, no classes are toggled per element. (There is one deliberate
+        exception that proves the rule: <code>.btn.primary</code> hard-codes
+        its dark text color, because dark-on-gold is the right contrast in
+        <em>both</em> themes — a color that shouldn't follow the theme is
+        written literally, so the token system stays honest.)</p>
+        <p>One wrinkle worth knowing by name: <strong>FOUC</strong> (flash of
+        unstyled/wrong content). The theme choice lives in
+        <code>localStorage</code>, which only JavaScript can read — so a tiny
+        script runs in <code>&lt;head&gt;</code>, <em>before the first
+        paint</em>, to set the attribute. Do it at the bottom of the page
+        instead and dark-theme users see a cream flash on every load. The
+        try/catch handles private browsing, where
+        <code>localStorage</code> may throw.</p>
+
+        <h2>Motion</h2>
+        <p>Two kinds, both present in miniature. Transitions animate a property
+        change: <code>.brand { transition: border-color .2s, transform .2s
+        }</code> makes the hover lift smooth. Keyframe animations run on their
+        own — the loading indicator is a broccoli spinning forever:</p>
+        {{ code_file('templates/base.html') }}
+        <pre><code>.spin { display: inline-block; animation: spin 1.1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }</code></pre>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>The token block is a config layer, exactly like a well-factored
+            <code>*-site.xml</code>: code references names, one file binds
+            names to values, and swapping the binding reconfigures everything.
+            The review smell is identical too — a hard-coded
+            <code>#fabd2f</code> in a template is the same defect as a
+            hard-coded hostname in a job: it works until the environment (here,
+            the theme) changes underneath it.</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>Open devtools → Elements, select the <code>&lt;html&gt;</code>
+            element, and add the attribute <code>data-theme="light"</code> by
+            hand — the site restyles instantly. Then find
+            <code>:root</code> in the Styles pane and edit
+            <code>--gold</code> to <code>hotpink</code>; watch every heading,
+            button and chart accent change at once. That's the token system
+            proving itself.</p>
+        </div>
+{% endblock %}

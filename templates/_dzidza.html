@@ -1,0 +1,233 @@
+{# Shared layout for the Dzidza guide (the built-in web-dev book, /dzidza).
+   Chapters extend this and fill the `guide` block; the index leaves
+   chapter_num unset, which hides the chapter header and prev/next nav.
+   Context from app.py: chapter_num, chapter_title, total_chapters,
+   prev_ch/next_ch = (slug, title, template) tuples or None. #}
+{% extends "base.html" %}
+{% block title %}Ndiro — Dzidza{% if chapter_title %} · {{ chapter_title }}{% endif %}{% endblock %}
+{% block favicon %}📖{% endblock %}
+{% block container_class %}book{% endblock %}
+
+{% block styles %}
+        /* The book wants slightly wider lines than the app's 640px column
+           (a modifier class via container_class, like .container.wide). */
+        .container.book { max-width: 780px; }
+
+        .guide p, .guide li {
+            font-size: 0.94rem;
+            line-height: 1.65;
+        }
+
+        .guide p { margin: 10px 0; }
+
+        .guide ul, .guide ol {
+            padding-left: 22px;
+            margin: 10px 0;
+        }
+
+        .guide li { margin: 5px 0; }
+
+        .guide h2 {
+            font-size: 1.05rem;
+            margin: 26px 0 8px;
+            color: var(--gold);
+        }
+
+        .guide h3 {
+            font-size: 0.95rem;
+            margin: 18px 0 6px;
+        }
+
+        .guide a { color: var(--gold); }
+
+        .guide code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.84em;
+            background: var(--bg-soft);
+            border-radius: 4px;
+            padding: 1px 5px;
+        }
+
+        .guide pre {
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 14px;
+            overflow-x: auto;
+            margin: 10px 0;
+            font-size: 0.78rem;
+            line-height: 1.55;
+        }
+
+        .guide pre code {
+            background: transparent;
+            padding: 0;
+            font-size: inherit;
+        }
+
+        /* "where this lives" chip above a code excerpt (a GitHub link when
+           the repo URL is configured, hence the anchor resets) */
+        .code-file {
+            display: inline-block;
+            text-decoration: none;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.72rem;
+            color: var(--purple);
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 8px 8px 0 0;
+            padding: 3px 10px;
+            margin: 12px 0 0;
+        }
+
+        .guide a.code-file { color: var(--purple); }
+
+        a.code-file:hover { border-color: var(--gold); color: var(--gold); }
+
+        .code-file + pre { margin-top: 0; border-top-left-radius: 0; }
+
+        /* Callout boxes */
+        .box {
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--gold);
+            border-radius: 8px;
+            background: var(--bg-soft);
+            padding: 10px 14px;
+            margin: 14px 0;
+        }
+
+        .box .box-title {
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+
+        .box p:first-of-type { margin-top: 2px; }
+        .box p:last-child { margin-bottom: 2px; }
+
+        .box.analogy { border-left-color: var(--magenta); }
+        .box.tryit   { border-left-color: var(--green); }
+        .box.pitfall { border-left-color: var(--red); }
+
+        .guide table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+            font-size: 0.84rem;
+        }
+
+        .guide th, .guide td {
+            border: 1px solid var(--border);
+            padding: 6px 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .guide th {
+            background: var(--bg-soft);
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--muted);
+        }
+
+        .guide kbd {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.78em;
+            border: 1px solid var(--dim);
+            border-bottom-width: 2px;
+            border-radius: 5px;
+            padding: 1px 6px;
+            background: var(--bg-0);
+        }
+
+        .chapter-kicker {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+
+        /* Branding stand-in for the h1 on chapter pages (same look). */
+        .page-header .guide-brand {
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        .guide-brand a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .guide h1.chapter-title {
+            font-size: 1.15rem;
+            color: var(--gold);
+            margin: 4px 0 8px;
+        }
+
+        .chap-nav {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            margin-top: 28px;
+        }
+
+        .chap-nav .btn { max-width: 46%; }
+
+        /* Table of contents (index page) */
+        .toc { list-style: none; padding: 0; margin: 0; }
+
+        .toc li { margin: 0; }
+
+        .toc a {
+            display: flex;
+            gap: 12px;
+            align-items: baseline;
+            padding: 9px 10px;
+            border-radius: 8px;
+            text-decoration: none;
+            color: var(--text);
+        }
+
+        .toc a:hover { background: var(--bg-soft); }
+
+        .toc .num {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            color: var(--gold);
+            font-size: 0.8rem;
+            min-width: 1.6em;
+            text-align: right;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            {# On chapter pages the chapter title is the page's h1 and the
+               Dzidza label demotes to branding, so assistive-technology
+               heading navigation lands on the chapter, not the book name. #}
+            {% if chapter_num %}
+            <div class="guide-brand">📖 <a class="brand-home" href="/dzidza">Dzidza</a></div>
+            {% else %}
+            <h1>📖 <a class="brand-home" href="/dzidza">Dzidza</a></h1>
+            {% endif %}
+            <span class="subtitle">how this site works, from the wire to the pixel</span>
+        </div>
+
+        <div class="card guide">
+            {% if chapter_num %}
+            <div class="chapter-kicker">Chapter {{ chapter_num }} of {{ total_chapters }}</div>
+            <h1 class="chapter-title">{{ chapter_title }}</h1>
+            {% endif %}
+            {% block guide %}{% endblock %}
+            {% if chapter_num %}
+            <div class="chap-nav">
+                {% if prev_ch %}<a class="btn" href="/dzidza/{{ prev_ch[0] }}">‹ {{ prev_ch[1] }}</a>{% else %}<a class="btn" href="/dzidza">‹ Contents</a>{% endif %}
+                {% if next_ch %}<a class="btn primary" href="/dzidza/{{ next_ch[0] }}">{{ next_ch[1] }} ›</a>{% else %}<a class="btn primary" href="/dzidza">Contents ›</a>{% endif %}
+            </div>
+            {% endif %}
+        </div>
+{% endblock %}

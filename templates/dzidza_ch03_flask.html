@@ -1,0 +1,131 @@
+{% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
+
+{% block guide %}
+        <p>The backend is one Python process. Flask's job is small and precise:
+        turn an incoming HTTP request into a call to one of your functions, and
+        turn whatever that function returns into an HTTP response. Everything
+        else — storage, auth, templates — is libraries and your own code.</p>
+
+        <h2>Routes: URL → function</h2>
+        {{ code_file('app.py') }}
+        <pre><code>@app.route('/privacy')
+def privacy():
+    return render_template('privacy.html', user=auth.current_user())
+
+@app.route('/api/meals/&lt;date_str&gt;/&lt;meal_id&gt;', methods=['PUT'])
+@auth.approved_required
+def update_meal(date_str, meal_id):
+    ...</code></pre>
+        <p>The decorator registers the function in Flask's routing table.
+        <code>&lt;date_str&gt;</code> segments are extracted from the path and
+        passed as arguments — but note they arrive as <em>untrusted
+        strings</em>; the first thing the handler does is validate them
+        (<code>_valid_date</code> rejects anything that isn't a canonical
+        <code>YYYY-MM-DD</code>). <code>methods=['PUT']</code> means the same
+        path can route to different functions by verb.</p>
+        <p>Decorators stack, and each has its own enforcement point:</p>
+        {{ code_file('app.py') }}
+        <pre><code>@app.route('/api/estimate-fiber', methods=['POST'])
+@limiter.limit('6 per minute')     # enforced in a before-request hook —
+                                   # runs FIRST, before any auth check
+@auth.approved_required            # wraps the view — runs when it's invoked
+def estimate_fiber():
+    ...</code></pre>
+        <p>The order of <em>enforcement</em> is a subtlety worth knowing:
+        decorators wrap bottom-up, but Flask-Limiter doesn't do its counting in
+        the wrapper — it registers the limit and checks it in a hook that runs
+        before the view is called at all. So an anonymous client hammering this
+        endpoint sees <code>429</code> on the seventh call in a minute, not
+        <code>401</code>: the rate limiter shields the auth guard (and the
+        database read inside it), not the other way around.</p>
+        <p><code>approved_required</code> (in <code>auth.py</code>) is ~20 lines
+        and worth reading now: it resolves the session to a fresh users-table
+        row, stashes it in <code>g.user</code> (Flask's per-request scratch
+        space), and short-circuits with a redirect or JSON 401/403 when the
+        check fails. That one decorator is the app's entire authorization
+        story.</p>
+
+        <h2>Request in, response out</h2>
+        <p>Inside a handler, the global-looking <code>request</code> object is
+        actually request-scoped (Flask proxies it per thread). Everything the
+        client sent hangs off it:</p>
+        <table>
+            <tr><th>Accessor</th><th>What</th><th>Example in Ndiro</th></tr>
+            <tr><td><code>request.args</code></td><td>Query string</td><td><code>request.args.get('month')</code> in the meals API</td></tr>
+            <tr><td><code>request.form</code></td><td>POSTed form fields</td><td><code>form.get('description')</code> in <code>_read_meal_form</code></td></tr>
+            <tr><td><code>request.files</code></td><td>Uploaded files</td><td><code>request.files.get('photo')</code></td></tr>
+            <tr><td><code>request.get_json()</code></td><td>JSON body</td><td>The text estimator's <code>{'description': …}</code></td></tr>
+        </table>
+        <p>Return values are flexible: a rendered template string, a
+        <code>jsonify(…)</code> response, or a <code>(body, status)</code> tuple
+        like <code>jsonify({'error': 'Description is required'}), 400</code>.
+        App-wide error shapes live in <code>@app.errorhandler</code> functions —
+        see the 429 and 413 handlers at the top of <code>app.py</code>.</p>
+
+        <h2>Startup: fail fast, then be lazy</h2>
+        <p>Importing <code>app.py</code> runs the module top to bottom once:
+        <code>config.py</code> loads the environment and <em>raises</em> if
+        <code>SECRET_KEY</code> is unset (a misconfigured deploy should die at
+        boot, not limp), <code>db.ensure_tables()</code> creates any missing
+        DynamoDB tables, and the route table is built. Per-request work stays
+        out of import time; the auto-log worker thread is even started lazily on
+        first use because gunicorn forks after preload (the <a href="/dzidza/pipeline">capstone chapter</a>).</p>
+
+        <h2>The single-worker design</h2>
+        <p>This is the part of the backend written specifically for someone with
+        your instincts, because it looks wrong until you read why:</p>
+        {{ code_file('Dockerfile') }}
+        <pre><code># SINGLE worker is load-bearing: the rate limiter is in-memory (memory://),
+# so a second worker would hold a divergent limit state. Threads provide the
+# concurrency; the 60s timeout leaves room for the AI calls' 20-25s reads.
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 60 \
+    --no-control-socket --preload app:app</code></pre>
+        <p>gunicorn is the production process manager: it speaks WSGI (the
+        Python standard interface between HTTP servers and apps — <code>python
+        app.py</code>'s dev server is for development only). Workers are
+        processes; threads share one process. Ndiro pins <strong>one worker,
+        eight threads</strong>, and three pieces of state silently depend on
+        that:</p>
+        <ul>
+            <li>the rate limiter's counters (<code>storage_uri='memory://'</code>),</li>
+            <li>the photo byte-cache LRU in <code>db.py</code>,</li>
+            <li>the auto-log spool worker (exactly one consumer thread).</li>
+        </ul>
+        <p>Python's GIL doesn't hurt here because the workload is I/O-bound —
+        threads spend their time waiting on DynamoDB, S3, and OpenAI, and the
+        GIL is released during I/O.</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>This is a deliberately <em>single-node</em> system, the way a
+            NameNode without HA is: correctness properties are pinned to "there
+            is exactly one of me". Scaling to two containers would be a real
+            project — the limiter and photo cache move to Redis, the spool moves
+            to a real queue — and at ~100 users that machinery would be pure
+            liability. The discipline is documenting the assumption where it's
+            made, so nobody adds <code>--workers 4</code> in a well-meaning
+            "performance fix". That comment in the Dockerfile is doing the same
+            job as an invariant comment in a consensus implementation.</p>
+        </div>
+
+        <div class="box pitfall">
+            <div class="box-title">⚠️ Review trap</div>
+            <p>Any diff that adds cross-request, in-process state (a cache dict,
+            a counter, a background thread) is implicitly betting on the single
+            worker. That can be fine — but the bet must be stated in a comment,
+            and it must survive the question "what happens under
+            <code>--workers 2</code>?"</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>Clone the repo, <code>pip install -r requirements.txt</code>, set
+            a throwaway <code>SECRET_KEY</code> in <code>.env</code>, and run
+            <code>python app.py</code>. Without AWS credentials most pages
+            fail — but <code>/health</code>, <code>/status</code>,
+            <code>/privacy</code>, and this guide all work, because they touch
+            no storage. Mapping "which routes need which backing services" is a
+            good first exercise in reading <code>app.py</code>.</p>
+        </div>
+{% endblock %}

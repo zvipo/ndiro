@@ -1,0 +1,115 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p>You wanted three abilities: modify the site, review changes to it,
+        and suggest improvements. This closing chapter is the working method for
+        all three.</p>
+
+        <h2>The loop for making a change</h2>
+        <ol>
+            <li><strong>Read CLAUDE.md first.</strong> It's the repo's contract
+            with its contributors (human or AI): the module map, the data
+            model, the security invariants, the gotchas. Most bad diffs violate
+            something already written there.</li>
+            <li><strong>Find the seam.</strong> The codebase marks its intended
+            extension points — e.g. offering another trackable micro-nutrient
+            is one new <code>NUTRIENT_CATALOG</code> entry in
+            <code>config.py</code>; everything downstream is key-generic. A
+            change that fits a seam touches one or two files; needing five is a
+            signal to re-read.</li>
+            <li><strong>Run the stub tests before and after.</strong> All of
+            them — each is its own script, so loop:
+            <code>for t in tests/test_m*.py tests/probe_cross_user.py; do
+            python "$t" || break; done</code>. They need no AWS and no network
+            and run in seconds. They drive the <em>real</em> routes against
+            fake boto3 tables (<code>tests/fakes.py</code>) — a minicluster in
+            miniature. <code>tests/testkit.py</code> must be imported first in
+            any new test; it installs the fakes before the app imports.</li>
+            <li><strong>Check both themes and a phone width</strong> for any UI
+            change — devtools has a device-width toggle, and the <a href="/dzidza/css">CSS chapter</a> showed
+            the one-attribute theme flip.</li>
+        </ol>
+
+        <h2>The review checklist</h2>
+        <p>Chapter by chapter, compressed into one table. A "yes" isn't
+        automatically a rejection — it's where to spend your attention:</p>
+        <table>
+            <tr><th>Ask</th><th>Because (chapter)</th></tr>
+            <tr><td>Does <code>innerHTML</code> or <code>|safe</code> get anything that isn't a source literal?</td><td>XSS (<a href="/dzidza/jinja">Jinja</a>, <a href="/dzidza/js">JS</a>, <a href="/dzidza/security">security</a>)</td></tr>
+            <tr><td>Does any identifier in a URL, query, or form decide <em>whose</em> data is read or written?</td><td>Tenant isolation (<a href="/dzidza/api">API</a>, <a href="/dzidza/security">security</a>)</td></tr>
+            <tr><td>Does a new GET change application data? Is a new write route missing its guard decorator or rate limit?</td><td>CSRF, auth (<a href="/dzidza/http">HTTP</a>, <a href="/dzidza/flask">backend</a>, <a href="/dzidza/auth">identity</a>)</td></tr>
+            <tr><td>Does a public page or a log line gain a config value or user content?</td><td>Invariants #8, #11 (<a href="/dzidza/security">security</a>)</td></tr>
+            <tr><td>New in-process state (cache, counter, thread) — does it survive the "what if <code>--workers 2</code>?" question, and is the bet commented?</td><td>Single-worker design (<a href="/dzidza/flask">backend</a>)</td></tr>
+            <tr><td>Numbers crossing the DynamoDB edge: <code>Decimal(str(x))</code> in, <code>float()</code> out?</td><td>Decimal discipline (<a href="/dzidza/data">storage</a>)</td></tr>
+            <tr><td>New fetch call: does it handle 401, non-OK, and network failure — the three-rung ladder?</td><td>The error contract (<a href="/dzidza/api">API</a>)</td></tr>
+            <tr><td>New input: validated to canonical form server-side, not just constrained in the HTML?</td><td>Validation (<a href="/dzidza/html">HTML</a>, <a href="/dzidza/api">API</a>)</td></tr>
+            <tr><td>Hard-coded color instead of a <code>var(--token)</code>? A button that's a styled div?</td><td>Theming, a11y (<a href="/dzidza/html">HTML</a>, <a href="/dzidza/css">CSS</a>)</td></tr>
+            <tr><td>Does the diff update the matching stub test — or need a new one?</td><td>The tests are the spec</td></tr>
+        </table>
+
+        <h2>Graded exercises</h2>
+        <p>Each is small, safe, and touches one new layer. Do them in a branch;
+        the tests tell you if you broke a promise.</p>
+        <ol>
+            <li><strong>CSS only:</strong> change <code>--gold</code> in both
+            theme blocks of <code>base.html</code> and watch it propagate.
+            Then find one hard-coded color anywhere and tokenize it.</li>
+            <li><strong>Template only:</strong> add your own section to
+            <code>privacy.html</code>. No route change needed — why not?</li>
+            <li><strong>Template + JS:</strong> add a third tile to the log
+            page's today-summary (say, largest meal today). The data is already
+            in the <code>/api/meals</code> payload; you need one element in the
+            HTML and a few lines in <code>renderDays</code>.</li>
+            <li><strong>Full stack:</strong> add a field to the
+            <code>/api/meals</code> response (e.g. a per-day meal count) in
+            <code>_meals_payload</code>, render it, and extend the relevant
+            test. Decimal rules apply.</li>
+            <li><strong>Backend + test first:</strong> write a failing check in
+            a copy of <code>test_m9_status.py</code> asserting
+            <code>/status</code> shows something it doesn't yet — then make it
+            pass. You'll touch a route, a template, and the leak check.</li>
+            <li><strong>Boss level:</strong> add a nutrient to
+            <code>NUTRIENT_CATALOG</code> in <code>config.py</code>, and trace
+            why that one dict entry is enough — through
+            <code>resolve_nutrient</code>, the settings page, the form field
+            name, the AI schema, and the chart. That trace <em>is</em> the
+            architecture of the app.</li>
+        </ol>
+
+        <h2>Suggesting improvements</h2>
+        <p>The strongest improvement proposals here name the trade they're
+        reversing. This codebase declines things on purpose — GSIs, caching
+        layers, multiple workers, frameworks, a real queue — and writes down
+        why. "Add Redis so we can run two workers" is only an improvement once
+        ~100 users isn't the scale anymore; "the meals cache from the old
+        tracker" is explicitly warned against in CLAUDE.md. Meanwhile some gaps
+        are real and acknowledged: the ephemeral spool, memory-only rate-limit
+        state across restarts, no CSP header yet. An improvement pitch that
+        says "this trade was right at PoC scale and here's the trigger that
+        changes it" will land; one that pattern-matches "small app is missing
+        big-app machinery" won't.</p>
+
+        <h2>Where to go deeper</h2>
+        <ul>
+            <li><strong>MDN Web Docs</strong> (developer.mozilla.org) — the
+            reference for HTML, CSS, JS, and HTTP. Bookmark it; it's the
+            javadoc of the web platform.</li>
+            <li><strong>Flask</strong> and <strong>Jinja</strong> official docs
+            — short, readable, and this app uses maybe a third of each.</li>
+            <li><strong>OWASP Top 10</strong> — the <a href="/dzidza/security">security chapter</a>'s families,
+            catalogued with case studies.</li>
+            <li><strong>web.dev/learn</strong> — Google's structured HTML/CSS/JS
+            courses, good for filling gaps in order.</li>
+            <li><strong>This repo's tests</strong> — still the best reading in
+            the house. Each <code>test_m*.py</code> is an executable
+            specification of one subsystem.</li>
+        </ul>
+
+        <p>One last pointer, in the spirit of the whole book: this guide is
+        itself part of the site — a closed chapter registry and two routes in
+        <code>app.py</code> (grep for <code>dzidza</code>), templates extending
+        <code>_dzidza.html</code>, a leak-checked public page like any other,
+        with a stub test of its own. Reading how the book you just finished is
+        served makes a fitting final exercise. <strong>Dzidza zvakanaka</strong>
+        — happy learning.</p>
+{% endblock %}

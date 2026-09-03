@@ -1,0 +1,134 @@
+{% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
+
+{% block guide %}
+        <p>This is the chapter closest to your home turf, so it moves fast and
+        focuses on the web-specific parts: how a web app shapes its storage
+        around access patterns, and how HTTP caching turns a slow photo store
+        into a fast one.</p>
+
+        <h2>Four tables, no GSIs, scans on purpose</h2>
+        <p>DynamoDB is a key-value/wide-column store: you get O(1) access by
+        partition key, ordered range reads within a partition by sort key, and
+        (almost) nothing else. So you design the keys from the queries — the
+        same access-pattern-first thinking as any HBase/Bigtable schema:</p>
+        <table>
+            <tr><th>Table</th><th>PK</th><th>SK</th><th>Designed for</th></tr>
+            <tr><td>users</td><td><code>user_id</code> (Google sub)</td><td>—</td><td>Point reads on every request (the auth guard)</td></tr>
+            <tr><td>meals</td><td><code>user_id</code></td><td><code>sk = date#meal_id</code></td><td>All range queries below</td></tr>
+            <tr><td>shares</td><td><code>share_token</code></td><td>—</td><td>Point read per share-link visit</td></tr>
+            <tr><td>invites</td><td><code>invite_token</code></td><td>—</td><td>Point read + conditional claim</td></tr>
+        </table>
+        <p>The meals sort key is the whole data model in one string:
+        <code>2026-09-03#183042-a1b2c3</code> — date, then a meal ID whose
+        prefix is the <em>client-supplied</em> time of day. Lexicographic order
+        of the SK <em>is</em> chronological order, so:</p>
+        {{ code_file('db.py') }}
+        <pre><code>begins_with(sk, '2026-09-')            # one month  = ONE Query
+between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code></pre>
+        <p>(The <code>#~</code> trick: <code>~</code> sorts after the digits, so
+        the range is inclusive of the end day's meals.) A side effect worth
+        knowing because it shows up in the UI: the time is part of the
+        <em>key</em>, so editing a meal's date or time would be a delete+create,
+        not an update — which is why edit mode disables those two inputs.</p>
+        <p>Everything that isn't one of those patterns — admin user listing,
+        share/invite listing, the monitor stats — is a scan, and the code
+        refuses to pretend otherwise. At ≤100 users a scan is microscopic;
+        CLAUDE.md explicitly warns contributors not to "fix" it with GSIs.
+        Complexity is spent where the access pattern is hot, and nowhere
+        else.</p>
+
+        <div class="box pitfall">
+            <div class="box-title">⚠️ The Decimal discipline</div>
+            <p>boto3 refuses floats (binary floats can't round-trip through
+            DynamoDB's decimal wire type) — a raw float into
+            <code>put_item</code> throws. The other edge fails
+            <em>quietly</em>, which is worse: Flask's <code>jsonify</code>
+            serializes a raw Decimal as a JSON <em>string</em>
+            (<code>"12.5"</code>), and the first symptom is JavaScript
+            arithmetic misbehaving. Hence the rule stamped through the
+            codebase: <code>Decimal(str(x))</code> going in,
+            <code>float()</code> coming out — in review, check both edges of
+            every new numeric field.</p>
+        </div>
+
+        <h2>Photos: private bucket, proxied bytes</h2>
+        <p>Photos live in S3 at
+        <code>users/{user_id}/meals/{date}/{meal_id}.jpg</code> — keys built
+        server-side only, never accepted from a client. The bucket is private,
+        and the app deliberately does <em>not</em> hand out presigned S3 URLs.
+        Instead the browser fetches <code>/photo/&lt;date&gt;/&lt;meal_id&gt;</code>
+        and the app streams the bytes itself, because putting the app in the
+        path buys three things: every photo read passes the same auth guards as
+        everything else (session for owners, token scope for shares), a revoked
+        share stops being <em>served</em> immediately — a presigned URL keeps
+        working until it expires, wherever it was forwarded, while here only a
+        recipient's already-cached bytes linger, bounded by the one-day
+        max-age below — and there's one choke point to rate-limit and
+        cache.</p>
+
+        <h2>The cache hierarchy</h2>
+        <p>Proxying means paying an S3 round trip per photo view — unless you
+        cache. Ndiro stacks two layers, and the versioning idea that makes them
+        safe is the transferable lesson:</p>
+        <pre><code>browser cache (per user)             in-process LRU (shared)          S3
+    │                                        │                         │
+    │  &lt;img src="/photo/…?v=9f8a…"&gt;         │                         │
+    │  hit: 0 requests (immutable, 1y)       │                         │
+    │  miss ─────────────────────────▶ byte-budgeted dict              │
+    │                                  hit: no S3 call                 │
+    │                                  miss ─────────────────────────▶ get_object</code></pre>
+        <ul>
+            <li><strong>Versioned URLs.</strong> The photo URL carries
+            <code>?v=</code>, a digest of <code>photo_v</code> — a timestamp
+            written <em>only</em> when the photo bytes change (a text-only edit
+            carries the old value forward, so it never busts photo caches; see
+            <code>_photo_version</code>). Replace the photo and the URL
+            <em>changes</em>, so caches never need invalidating — stale entries
+            are simply never asked for again. Owners get
+            <code>Cache-Control: private, max-age=1y, immutable</code>.</li>
+            <li><strong>ETag/304.</strong> When a browser revalidates anyway, it
+            sends <code>If-None-Match</code>; matching means a bodyless
+            <code>304 Not Modified</code> — headers, no bytes.</li>
+            <li><strong>The LRU</strong> (<code>db.py</code>'s
+            <code>_PhotoCache</code>) is a byte-budgeted in-process cache
+            (default 64&nbsp;MB) — valid only because there's exactly one
+            worker process (the <a href="/dzidza/flask">backend chapter</a>'s
+            bet, called in).</li>
+            <li><strong>Share links get <code>max-age=1&nbsp;day</code></strong>
+            instead of a year — so a revoked recipient's browser cache ages out
+            in bounded time. Cache policy as access policy.</li>
+        </ul>
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>Version-the-key-instead-of-invalidating is immutable versioned
+            naming — the same discipline as content addressing (immutable HDFS
+            block IDs, hash-keyed build systems), though here the version
+            derives from a change <em>timestamp</em> rather than the bytes: you
+            get the no-invalidation property without hashing every photo, at
+            the cost of the version not being a content proof. The ETag/304
+            exchange is the same version tag used as a short-circuit read —
+            "still on v9f8a? no bytes for you".</p>
+        </div>
+
+        <h2>Deletion, ordered like a systems engineer would</h2>
+        <p>Account deletion has no transaction spanning S3 and four tables, so
+        order substitutes for atomicity: photos → meals → shares → invites →
+        the users row <em>last</em>. Every prefix of that sequence is retryable,
+        and the user row acts as the commit record — while it exists, deletion
+        can be re-run. The admin monitor even counts "orphans" (meal rows and
+        photo objects whose user row is gone) as a detector for the sequence
+        having stopped part-way: a reconciliation check, not a hope.</p>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>On the review page with photos visible, open Network and reload
+            twice. First load: photo requests return <code>200</code> with
+            sizes. Second: they say <em>(memory cache)</em> or
+            <em>(disk cache)</em> — zero requests hit the server. Now edit a
+            meal's photo and watch its <code>?v=</code> change in the new
+            <code>&lt;img&gt;</code> URL. Then read
+            <code>get_photo_bytes</code> in <code>db.py</code> and find the line
+            that refuses keys outside the owner's prefix.</p>
+        </div>
+{% endblock %}
