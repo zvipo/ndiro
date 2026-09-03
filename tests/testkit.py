@@ -22,6 +22,8 @@ os.environ['USERS_TABLE'] = 'test-users'
 os.environ['MEALS_TABLE'] = 'test-meals'
 os.environ['SHARES_TABLE'] = 'test-shares'
 os.environ['INVITES_TABLE'] = 'test-invites'
+os.environ['MAIL_FROM'] = 'ndiro@test.invalid'
+os.environ['APP_BASE_URL'] = 'https://ndiro.test'
 os.environ.pop('OPENAI_API_KEY', None)
 
 # Auto-log spool: a per-run temp dir, and NO background thread — tests drive
@@ -43,10 +45,18 @@ FIXTURES = fakes.install(db)
 
 import auth  # noqa: E402
 import autolog  # noqa: E402
+import mailer  # noqa: E402
 import app as app_module  # noqa: E402
 
 autolog.WORKER_ENABLED = False  # no threads in tests; call process_once()
 autolog.RETRY_BASE_S = 0        # retries are immediate under test
+app_module.ASYNC_AUTH_WORK = False  # auth mail/counter work runs inline
+
+# No real SES client is ever constructed: every send lands in MAILER.sent so
+# tests can pull the verification/reset links back out of the bodies.
+MAILER = fakes.FakeMailer()
+mailer.send = MAILER.send
+FIXTURES.mailer = MAILER
 
 app = app_module.app
 app.config['TESTING'] = True
@@ -64,7 +74,11 @@ CONFIG_VALUES = ['test-secret-key-not-for-production',
                  'test-client-secret', 'https://ndiro.test/callback',
                  'admin@example.test', 'fake-test-bucket',
                  'test-users', 'test-meals', 'test-shares', 'test-invites',
-                 'us-east-1', '9137', os.environ['AUTOLOG_DIR']]
+                 'us-east-1', '9137', os.environ['AUTOLOG_DIR'],
+                 # Native-account email config (MAIL_FROM / APP_BASE_URL):
+                 # the sender identity and the deployment host are exactly
+                 # the values invariant #11 forbids on a public page.
+                 'ndiro@test.invalid', 'https://ndiro.test']
 
 
 def client():
@@ -92,15 +106,40 @@ def session(c):
     return c.session_transaction(base_url=BASE_URL)
 
 
-def sign_in(c, sub, email, name='Test User', login_url='/login?next=/log'):
-    """Drive the real /login -> /callback flow with a stubbed Google exchange.
-    login_url override lets invite tests enter via /login?invite=..."""
+def sign_in(c, sub, email, name='Test User', login_url='/login/google?next=/log'):
+    """Drive the real /login/google -> /callback flow with a stubbed Google
+    exchange. login_url override lets invite tests enter via
+    /login/google?invite=... (the /login chooser page just links here)."""
     auth.fetch_userinfo = lambda code: ({'sub': sub, 'email': email, 'name': name}, None)
     resp = get(c, login_url)
-    assert resp.status_code == 302, f'/login gave {resp.status_code}'
+    assert resp.status_code == 302, f'{login_url} gave {resp.status_code}'
     with session(c) as sess:
         state = sess['oauth_state']
     return get(c, f'/callback?state={state}&code=stub-code')
+
+
+def form_token(c):
+    """Mint (via GET /login) and return the session's native-form CSRF token."""
+    get(c, '/login')
+    with session(c) as sess:
+        return sess['form_token']
+
+
+def native_signup(c, email, password, name='', invite=None):
+    """Drive POST /signup; returns the response. The verification link lands
+    in MAILER.sent — pull it with extract_link(MAILER.sent[-1][2])."""
+    data = {'form_token': form_token(c), 'email': email,
+            'password': password, 'name': name, 'next': '/log'}
+    if invite:
+        data['invite'] = invite
+    return post(c, '/signup', data=data)
+
+
+def extract_link(body):
+    """The first https://ndiro.test/... link inside an email body, path only."""
+    import re
+    m = re.search(r'https://ndiro\.test(/\S+)', body)
+    return m.group(1) if m else None
 
 
 _checks = []

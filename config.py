@@ -52,6 +52,43 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/callback')
 
+# Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
+# plain-http localhost (Safari rejects Secure cookies there). NEVER set in
+# production — TLS-only cookies are assumed by the whole auth design. (Defined
+# up here because EMAIL_ENABLED below keys off it too.)
+COOKIE_SECURE = os.getenv('COOKIE_SECURE', '1') != '0'
+
+# --- Email (Amazon SES; optional) --------------------------------------------
+# Native (email/password) signup, email verification, and password reset need
+# outbound mail. MAIL_FROM must be an SES-verified identity and the app's AWS
+# principal needs ses:SendEmail. Unset => those flows return a friendly 503;
+# password SIGN-IN keeps working (existing native users are never locked out
+# by a mail outage).
+MAIL_FROM = os.getenv('MAIL_FROM')
+SES_REGION = os.getenv('SES_REGION') or os.getenv('AWS_REGION', 'us-east-1')
+# Absolute base for links in emails (e.g. https://ndiro.example). REQUIRED in
+# production: building reset links from the request Host header would let a
+# forged Host put an attacker's domain into a victim's reset email (classic
+# reset poisoning). Validated to an absolute https origin — reset links are
+# bearer tokens, so a malformed or http:// value fails CLOSED (email stays
+# disabled) rather than mailing tokens into broken or cleartext links. Only
+# the COOKIE_SECURE=0 dev mode may fall back to the request host
+# (see mailer.base_url).
+_BASE_URL_RE = re.compile(r'^https://[\w.-]+(?::\d+)?$')
+APP_BASE_URL = (os.getenv('APP_BASE_URL') or '').strip().rstrip('/')
+if APP_BASE_URL and not _BASE_URL_RE.match(APP_BASE_URL):
+    APP_BASE_URL = ''
+EMAIL_ENABLED = bool(MAIL_FROM and (APP_BASE_URL or not COOKIE_SECURE))
+
+# Keys the deterministic native-account user_id (HMAC(secret, email) — see
+# native_auth.new_user_id): keyed so a leaked log line can't be turned into
+# email-membership answers by hashing candidate addresses. MUST stay stable
+# for the life of the instance — changing it orphans every native account.
+# Defaults to SECRET_KEY; set it explicitly BEFORE creating native accounts
+# if you ever plan to rotate SECRET_KEY (which is otherwise safe to rotate —
+# it only invalidates sessions).
+NATIVE_ID_SECRET = os.getenv('NATIVE_ID_SECRET') or SECRET_KEY
+
 # --- Accounts ----------------------------------------------------------------
 # Emails that bootstrap as admin on their FIRST sign-in only; afterwards status
 # lives in the users table and is managed at /admin.
@@ -380,9 +417,3 @@ def resolve_nutrient(user_row):
         'direction': direction,
         'is_default': False,
     }
-
-
-# Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
-# plain-http localhost (Safari rejects Secure cookies there). NEVER set in
-# production — TLS-only cookies are assumed by the whole auth design.
-COOKIE_SECURE = os.getenv('COOKIE_SECURE', '1') != '0'

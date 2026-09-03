@@ -20,14 +20,36 @@ S3_BUCKET=your-private-bucket-name
 # --- Flask ---
 # REQUIRED. The app refuses to boot without it. Generate with:
 #   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-# Must stay stable across restarts or all sessions invalidate.
+# Must stay stable across restarts or all sessions invalidate — and unless
+# NATIVE_ID_SECRET below is set, native-account ids derive from it too, so
+# rotating it would orphan every email/password account.
 SECRET_KEY=
+
+# Keys the deterministic native-account user ids (HMAC over the email).
+# Optional — defaults to SECRET_KEY. Set it once BEFORE creating native
+# accounts if you ever plan to rotate SECRET_KEY; NEVER change it afterwards
+# (changing it orphans every native account from its data).
+#NATIVE_ID_SECRET=
 
 # --- Google OAuth (Web application client, Google Cloud Console) ---
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
 # Must exactly match an Authorized redirect URI on that client.
 GOOGLE_REDIRECT_URI=http://localhost:5000/callback
+
+# --- Email (Amazon SES; optional) ---
+# Sender for native (email/password) account mail: verification links,
+# password resets. Must be an SES-verified identity, and the AWS credentials
+# above need ses:SendEmail. Unset = email/password signup and password reset
+# are disabled (503) — password SIGN-IN for existing accounts still works.
+#MAIL_FROM=Ndiro <no-reply@example.com>
+# SES region, when different from AWS_REGION.
+#SES_REGION=us-east-1
+# Absolute base URL for the links inside those emails. REQUIRED in production:
+# without it email features stay disabled, because building reset links from
+# the request Host header would let a forged Host poison them. Only the
+# COOKIE_SECURE=0 dev mode may omit it (links then use the request host).
+#APP_BASE_URL=https://your-domain.example
 
 # --- Accounts ---
 # Comma-separated emails that bootstrap as admin on their FIRST sign-in.

@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Create an account{% endblock %}
+{% block favicon %}🔑{% endblock %}
+
+{% block styles %}
+        .auth-wrap {
+            max-width: 380px;
+            margin: 36px auto 0;
+        }
+
+        .auth-hero {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .auth-hero .mark {
+            font-size: 2.6rem;
+        }
+
+        .auth-hero h1 {
+            margin-top: 8px;
+            font-size: 1.35rem;
+        }
+
+        .auth-card .field {
+            margin-top: 12px;
+        }
+
+        .auth-card input[type="email"],
+        .auth-card input[type="password"],
+        .auth-card input[type="text"] {
+            width: 100%;
+            background: var(--bg-0);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            padding: 8px 10px;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        .auth-card .btn {
+            width: 100%;
+            text-align: center;
+            margin-top: 14px;
+        }
+
+        .auth-error {
+            color: var(--red);
+            font-size: 0.85rem;
+            margin-top: 12px;
+        }
+
+        .auth-links {
+            margin-top: 12px;
+            font-size: 0.82rem;
+            text-align: center;
+        }
+
+        .auth-links a {
+            color: var(--muted);
+        }
+
+        .invite-note {
+            font-size: 0.82rem;
+            color: var(--gold);
+            margin-top: 12px;
+            text-align: center;
+        }
+
+        .hint {
+            font-size: 0.75rem;
+            color: var(--dim);
+            margin-top: 4px;
+        }
+
+        .consent {
+            margin-top: 14px;
+            font-size: 0.78rem;
+            color: var(--dim);
+            text-align: center;
+        }
+
+        .consent a {
+            color: var(--muted);
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="auth-wrap">
+            <div class="auth-hero">
+                <div class="mark">🥦</div>
+                <h1>Create an account</h1>
+            </div>
+
+            <div class="card auth-card">
+                <form method="post" action="/signup">
+                    <input type="hidden" name="form_token" value="{{ form_token }}">
+                    <input type="hidden" name="next" value="{{ next_target }}">
+                    {% if invite %}<input type="hidden" name="invite" value="{{ invite }}">{% endif %}
+                    <div class="field" style="margin-top:0;">
+                        <label class="form-label" for="email">Email</label>
+                        <input type="email" id="email" name="email" required
+                               autocomplete="email" value="{{ email|default('') }}">
+                        <div class="hint">We'll send a verification link there.</div>
+                    </div>
+                    <div class="field">
+                        <label class="form-label" for="name">Name (optional)</label>
+                        <input type="text" id="name" name="name" maxlength="80"
+                               autocomplete="name" value="{{ name|default('') }}">
+                    </div>
+                    <div class="field">
+                        <label class="form-label" for="password">Password</label>
+                        <input type="password" id="password" name="password" required
+                               minlength="8" autocomplete="new-password">
+                        <div class="hint">At least 8 characters.</div>
+                    </div>
+                    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+                    <button type="submit" class="btn primary">Create account</button>
+                </form>
+                <div class="auth-links">
+                    Already have an account?
+                    <a href="/login?next={{ next_target|urlencode }}{% if invite %}&invite={{ invite|urlencode }}{% endif %}">Sign in</a>
+                </div>
+            </div>
+
+            {% if invite and invite_valid %}
+            <div class="invite-note">✉️ You're signing up through an invite link —
+                your account is approved as soon as you verify your email.</div>
+            {% endif %}
+            <div class="consent">By signing up you agree to the <a href="/privacy">privacy&nbsp;&amp;&nbsp;terms</a>.</div>
+        </div>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Verify your email{% endblock %}
+{% block favicon %}📬{% endblock %}
+
+{# Shown ONLY on a correct password for an unverified account — the password
+   proves ownership, so pointing at verification discloses nothing new. #}
+
+{% block content %}
+        <div class="page-header">
+            <h1>📬 Verify your email first</h1>
+        </div>
+
+        <div class="card">
+            <p>Your password is right, but <strong>{{ email }}</strong> hasn't been
+            verified yet. Open the link in the email we sent you to finish
+            signing up.</p>
+            <p class="muted" style="margin-top:10px; font-size:0.85rem;">Nothing
+            arriving? Check your spam folder, or resend below.</p>
+            <form method="post" action="/resend-verification" style="margin-top:14px;">
+                <input type="hidden" name="form_token" value="{{ form_token }}">
+                <input type="hidden" name="email" value="{{ email }}">
+                <button type="submit" class="btn subtle">Resend the email</button>
+            </form>
+        </div>
+{% endblock %}

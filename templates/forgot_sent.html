@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Check your email{% endblock %}
+{% block favicon %}📬{% endblock %}
+
+{# Rendered for EVERY /forgot submission — known address or not, native or
+   Google — so the form can't be used to test which emails have accounts.
+   What actually happened (reset link, verify link, "you use Google", or
+   nothing) arrives by email. Don't add case-specific copy. #}
+
+{% block content %}
+        <div class="page-header">
+            <h1>📬 Check your email</h1>
+        </div>
+
+        <div class="card">
+            <p>If that address has an Ndiro account, we've sent it an email with
+            what to do next. The link inside is valid for a limited time.</p>
+            <p class="muted" style="margin-top:10px; font-size:0.85rem;">Nothing
+            arriving? Check your spam folder, or
+            <a href="/forgot">try again</a> in a few minutes.</p>
+        </div>
+{% endblock %}

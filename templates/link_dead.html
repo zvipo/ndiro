@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Ndiro{% endblock %}
+
+{% block content %}
+        <div class="page-header">
+            <h1>🥦 Ndiro</h1>
+        </div>
+
+        <div class="card">
+            <p>This link has expired or is no longer available.</p>
+            <p class="muted" style="margin-top:10px; font-size:0.85rem;">Links
+            from Ndiro emails are single-use and time-limited. Request a fresh
+            one from the <a href="/login">sign-in page</a>.</p>
+        </div>
+{% endblock %}
+
+{# ONE byte-identical page for every dead verify/reset link (missing, expired,
+   already used) — same no-oracle design as the invite/share 404s. The route
+   pins login_next='/' so the token in the path never lands in the menu link. #}

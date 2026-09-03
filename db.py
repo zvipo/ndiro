@@ -6,7 +6,9 @@ and S3 keys are constructed here, server-side only, under users/{user_id}/.
 
 Tables (all on-demand, auto-created on boot, no GSIs — deliberate at <=100
 users; the scans below are commented where they'd be wrong at larger scale):
-  users:  PK user_id (Google sub)
+  users:  PK user_id (Google sub, or 'nat-' + HMAC-SHA256(secret, email)[:32]
+          for native accounts — deterministic AND keyed, see
+          native_auth.new_user_id)
   meals:  PK user_id, SK sk = "{YYYY-MM-DD}#{meal_id}"
   shares: PK share_token
 """
@@ -124,8 +126,13 @@ def ensure_tables():
 # --- Users -------------------------------------------------------------------
 
 def get_user(user_id):
-    """Fresh read of one user row, or None."""
-    resp = users_table().get_item(Key={'user_id': user_id})
+    """Fresh, STRONGLY CONSISTENT read of one user row, or None. Consistent
+    because this read backs the per-request status gate (a rejected user's
+    session must die immediately) and the settings lockout check — an
+    eventually consistent GetItem could serve pre-rejection or pre-lockout
+    state. 2x RCU cost is nothing at PoC scale."""
+    resp = users_table().get_item(Key={'user_id': user_id},
+                                  ConsistentRead=True)
     return resp.get('Item')
 
 
@@ -190,10 +197,14 @@ def set_user_nutrient(user_id, key, label, unit, goal, direction):
     )
 
 
-def list_users():
-    """All user rows. Scan + client-side handling is fine at <=100 users."""
+def list_users(consistent=False):
+    """All user rows. Scan + client-side handling is fine at <=100 users.
+    consistent=True for credential/account-state lookups (sign-in, token
+    resolution, signup duplicate checks): the default eventually-consistent
+    scan could serve a pre-lockout counter, a pre-change password hash, or
+    miss a token written moments ago. Admin/stats listings stay eventual."""
     items = []
-    kwargs = {}
+    kwargs = {'ConsistentRead': True} if consistent else {}
     while True:
         resp = users_table().scan(**kwargs)
         items.extend(resp.get('Items', []))
@@ -224,22 +235,298 @@ def approve_pending_user(user_id, invited_by):
 
 
 def set_user_status(user_id, status):
-    """Set a user's status (admin approve/reject)."""
+    """Set a user's status (admin approve/reject). Conditional on the row
+    still existing: an admin action racing account deletion must not upsert
+    a partial {user_id, status} row. True unless the row was gone."""
     expr = 'SET #s = :s'
     values = {':s': status}
     if status == 'approved':
         expr += ', approved_at = :t'
         values[':t'] = _utc_now_iso()
-    users_table().update_item(
-        Key={'user_id': user_id},
-        UpdateExpression=expr,
-        ExpressionAttributeNames={'#s': 'status'},
-        ExpressionAttributeValues=values,
-    )
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=expr,
+            ConditionExpression='attribute_exists(user_id)',
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
 
 
 def delete_user(user_id):
     users_table().delete_item(Key={'user_id': user_id})
+
+
+# --- Native (email/password) accounts ----------------------------------------
+# All native-account state lives on the ONE users row (auth_provider,
+# password_hash, email_verified, hashed single-use tokens, lockout counters),
+# so account deletion and the admin/monitor scans need no extra steps. Email
+# and token lookups are full scans — fine at <=100 users, same as list_users.
+
+def find_user_by_email(email, provider=None):
+    """First user row whose email matches (case-insensitive), or None.
+    provider='native' additionally requires auth_provider == 'native'."""
+    email = (email or '').strip().lower()
+    if not email:
+        return None
+    for item in list_users(consistent=True):
+        if (item.get('email') or '').lower() != email:
+            continue
+        if provider == 'native' and item.get('auth_provider') != 'native':
+            continue
+        return item
+    return None
+
+
+def delete_stale_native_signup(user_id, verify_expires_at):
+    """Conditional delete for signup's stale-row purge: only removes a row
+    that is STILL a native, unverified, PENDING signup carrying the exact
+    expired verify_expires_at the caller's scan observed. A resend that
+    refreshed the token, a rejection, or a completed verification landing
+    in between wins the race — the row stays. True when deleted."""
+    try:
+        users_table().delete_item(
+            Key={'user_id': user_id},
+            ConditionExpression=('auth_provider = :n AND email_verified = :f '
+                                 'AND #s = :p AND verify_expires_at = :e'),
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues={':n': 'native', ':f': False,
+                                       ':p': 'pending',
+                                       ':e': int(verify_expires_at)},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def find_user_by_token_hash(attr_name, token_hash):
+    """User row carrying this verify/reset token HASH, or None. Only hashes
+    are ever stored, so a scan can never surface a live link."""
+    if not token_hash:
+        return None
+    for item in list_users(consistent=True):
+        if item.get(attr_name) == token_hash:
+            return item
+    return None
+
+
+def create_native_user(user_id, email, name, password_hash,
+                       verify_token_hash, verify_expires_at,
+                       pending_invite_token=None):
+    """Create an unverified native-account row, or None if the row already
+    exists. The put is CONDITIONAL on the key being free and the user_id is
+    derived from the email (native_auth.new_user_id), so two concurrent
+    signups for one address race on the same key and exactly one wins —
+    email uniqueness without a GSI. Always status 'pending': invites are
+    validated at signup but CLAIMED only at verification (see app.py), and
+    ADMIN_EMAILS never bootstraps a native account."""
+    item = {
+        'user_id': user_id,
+        'email': email,
+        'name': name,
+        'picture': '',
+        'status': 'pending',
+        'created_at': _utc_now_iso(),
+        'auth_provider': 'native',
+        'password_hash': password_hash,
+        'email_verified': False,
+        'verify_token_hash': verify_token_hash,
+        'verify_expires_at': int(verify_expires_at),
+    }
+    if pending_invite_token:
+        item['pending_invite_token'] = pending_invite_token
+    try:
+        users_table().put_item(
+            Item=item, ConditionExpression='attribute_not_exists(user_id)')
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return None
+    return item
+
+
+def mark_email_verified(user_id, token_hash):
+    """Flip email_verified and clear the token — conditional on the row still
+    carrying THIS token hash, so a verification link is single-use even under
+    a double-submit race. True on success, False when the condition failed."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=('SET email_verified = :t '
+                              'REMOVE verify_token_hash, verify_expires_at, '
+                              'pending_invite_token'),
+            ConditionExpression='verify_token_hash = :h',
+            ExpressionAttributeValues={':t': True, ':h': token_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def _update_if_exists(user_id, update_expression, values=None):
+    """update_item conditioned on the row still existing. DynamoDB updates
+    UPSERT by default, so a write racing account deletion would otherwise
+    resurrect a partial user row — deletion must be final. Racers that lose
+    (row gone) are silently dropped; True when the write landed."""
+    kwargs = {
+        'Key': {'user_id': user_id},
+        'UpdateExpression': update_expression,
+        'ConditionExpression': 'attribute_exists(user_id)',
+    }
+    if values:
+        kwargs['ExpressionAttributeValues'] = values
+    try:
+        users_table().update_item(**kwargs)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def set_verify_token(user_id, token_hash, expires_at):
+    """Re-mint the verification token (resend flow)."""
+    _update_if_exists(
+        user_id, 'SET verify_token_hash = :h, verify_expires_at = :e',
+        {':h': token_hash, ':e': int(expires_at)})
+
+
+def set_reset_token(user_id, token_hash, expires_at, observed_hash):
+    """Install a reset token, BOUND to the password hash the caller's forgot
+    task observed: a password change completing after the /forgot request
+    was queued swaps the hash (and clears tokens), and the stale task must
+    not install a fresh token capable of overwriting the new password.
+    True when the write landed — mail the link only then."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET reset_token_hash = :h, reset_expires_at = :e',
+            ConditionExpression=('attribute_exists(user_id) '
+                                 'AND password_hash = :p'),
+            ExpressionAttributeValues={':h': token_hash,
+                                       ':e': int(expires_at),
+                                       ':p': observed_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def complete_password_reset(user_id, password_hash, token_hash):
+    """Set the new password and clear the reset token + lockout in one
+    conditional write — the token-hash condition makes the link single-use.
+    True on success, False when the condition failed (used/replaced token)."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=('SET password_hash = :p '
+                              'REMOVE reset_token_hash, reset_expires_at, '
+                              'failed_logins, locked_until'),
+            ConditionExpression='reset_token_hash = :h',
+            ExpressionAttributeValues={':p': password_hash, ':h': token_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def set_password_hash(user_id, password_hash, expected_hash):
+    """Signed-in password change (settings): a compare-and-set on the exact
+    hash the route just verified, so a stale request that validated an old
+    password can never overwrite a newer change or reset that committed in
+    between. Also clears any outstanding reset token in the same atomic
+    write — an old reset email must not be able to overwrite the freshly
+    chosen password. True on success, False when the condition lost."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=('SET password_hash = :p '
+                              'REMOVE reset_token_hash, reset_expires_at'),
+            ConditionExpression='password_hash = :old',
+            ExpressionAttributeValues={':p': password_hash,
+                                       ':old': expected_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
+
+
+def record_login_failure(user_id, observed_hash, threshold, lockout_seconds):
+    """Atomically bump the consecutive-failure counter and lock the account
+    once it reaches threshold. ADD is DynamoDB's atomic increment, so
+    concurrent wrong guesses can never lose an update and slip past the
+    lockout; the lock decision uses the count THIS write produced. The
+    increment is BOUND to the password hash the caller verified against:
+    a stale deferred task from before a completed reset/change (which
+    swapped the hash and cleared the counter) dies here instead of
+    resurrecting failures onto the fresh credential."""
+    try:
+        resp = users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='ADD failed_logins :one',
+            ConditionExpression=('attribute_exists(user_id) '
+                                 'AND password_hash = :h'),
+            ExpressionAttributeValues={':one': 1, ':h': observed_hash},
+            ReturnValues='ALL_NEW',
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return  # row deleted mid-race: nothing to count against
+    count = int(resp.get('Attributes', {}).get('failed_logins') or 0)
+    if count >= threshold:
+        # Conditioned on the counter STILL being at threshold: a successful
+        # login landing between the increment and this write clears the
+        # counter, and must not be re-locked by a stale loser.
+        try:
+            users_table().update_item(
+                Key={'user_id': user_id},
+                UpdateExpression='SET locked_until = :t',
+                ConditionExpression=('attribute_exists(user_id) '
+                                     'AND failed_logins >= :n'),
+                ExpressionAttributeValues={
+                    ':t': int(time.time()) + int(lockout_seconds),
+                    ':n': int(threshold)},
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+                raise
+
+
+def clear_login_failures(user_id):
+    _update_if_exists(user_id, 'REMOVE failed_logins, locked_until')
+
+
+def set_pending_invite(user_id, invite_token):
+    """Attach a validated invite to an unverified row (login flow) so the
+    verification POST can claim it. First invite wins — one already riding
+    the row (from signup) is never overwritten."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET pending_invite_token = :t',
+            ConditionExpression=('attribute_exists(user_id) '
+                                 'AND attribute_not_exists(pending_invite_token)'),
+            ExpressionAttributeValues={':t': invite_token},
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
 
 
 # --- AI daily-use counter (race-safe two-call conditional pattern) -----------

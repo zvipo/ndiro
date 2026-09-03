@@ -8,8 +8,10 @@ root so the Google redirect URI and root-absolute template paths never change.
 """
 import calendar
 import hashlib
+import queue
 import re
 import secrets
+import threading
 import time
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -27,6 +29,8 @@ import autolog
 import config
 import imaging
 import db
+import mailer
+import native_auth
 
 _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
@@ -168,7 +172,8 @@ def status_page():
                            .strftime('%Y-%m-%d %H:%M UTC'),
         server_time=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
         ai_enabled=bool(config.OPENAI_API_KEY),
-        photos_enabled=bool(config.S3_BUCKET))
+        photos_enabled=bool(config.S3_BUCKET),
+        email_enabled=bool(config.EMAIL_ENABLED))
 
 
 # --- Dzidza ("learn" in Shona): the built-in web-development guide -----------
@@ -226,11 +231,77 @@ def dzidza_chapter(slug):
     return render_template('dzidza_404.html', user=auth.current_user()), 404
 
 
-# --- OAuth flow --------------------------------------------------------------
+# --- Sign-in (chooser page + Google OAuth + native email/password) -----------
+
+def _form_token():
+    """Session-bound CSRF token for the UNauthenticated auth forms — the
+    native-form analog of oauth_state. Minted on the GET pages, echoed as a
+    hidden field, compared (without popping — multiple tabs) on POST.
+    SameSite=Lax keeps the cookie off cross-site POSTs, so a forged POST
+    can't present a matching value."""
+    token = session.get('form_token')
+    if not token:
+        token = secrets.token_urlsafe(16)
+        session['form_token'] = token
+    return token
+
+
+def _check_form_token():
+    """True when the POSTed form_token matches the session's."""
+    expected = session.get('form_token')
+    supplied = request.form.get('form_token')
+    return bool(expected) and supplied == expected
+
+
+def _login_page_args():
+    """Sanitized next/invite carried through the login/signup forms."""
+    next_target = auth._safe_next(request.values.get('next'), default='/log')
+    invite = request.values.get('invite')
+    if not (invite and _INVITE_RE.match(invite)):
+        invite = None
+    return next_target, invite
+
+
+def _render_login(next_target, invite, error=None, email='', notice=None,
+                  invite_valid=False, status=200):
+    return render_template(
+        'login.html',
+        user=None,
+        google_enabled=bool(config.GOOGLE_CLIENT_ID),
+        email_enabled=mailer.enabled(),
+        next_target=next_target,
+        invite=invite,
+        invite_valid=invite_valid,
+        form_token=_form_token(),
+        error=error,
+        email=email,
+        notice=notice,
+    ), status
+
 
 @app.route('/login')
 @limiter.limit('10 per minute')
 def login():
+    """The one sign-in page: Google button + native email/password form.
+    Every historical /login?next=...&invite=... link lands here; the endpoint
+    name stays 'login' for auth._deny_unauthenticated's url_for."""
+    next_target, invite = _login_page_args()
+    notice = None
+    if request.args.get('reset') == '1':
+        notice = 'Password updated — sign in with your new password.'
+    elif request.args.get('verified') == '1':
+        notice = 'Email verified — sign in to get started.'
+    # The "approved right away" banner only for a CURRENTLY valid invite —
+    # a dead token still rides the forms (harmless) but must not promise
+    # an approval that redemption would fall back from.
+    invite_valid = bool(invite and _valid_invite_for_redemption(invite))
+    return _render_login(next_target, invite, notice=notice,
+                         invite_valid=invite_valid)
+
+
+@app.route('/login/google')
+@limiter.limit('10 per minute')
+def login_google():
     if not config.GOOGLE_CLIENT_ID:
         return 'Google login is not configured (set GOOGLE_CLIENT_ID).', 503
     # Remember where to land after the OAuth round-trip. Kept in the session
@@ -380,6 +451,590 @@ def logout():
     return redirect(dest)
 
 
+# --- Native accounts (email/password signup, verification, reset) ------------
+# Anti-enumeration discipline mirrors the share/invite 404s: /signup always
+# shows the same "check your email" page, sign-in failures share one exact
+# error string (locked accounts included), /forgot always claims success, and
+# every dead verify/reset link renders one shared page. The only accepted
+# differentials: full.html at capacity (same as the Google path) and the
+# "verify your email" page on a CORRECT password (which proves ownership).
+
+_LOGIN_ERROR = 'Wrong email or password.'
+
+# Auth side work (SES sends, the failure counter and its clear) runs OFF the
+# response path: a synchronous SES call or DynamoDB write only on the
+# account-exists branch would make response latency an account-existence
+# oracle even with uniform bodies. Lazily-started FIFO workers (the
+# autolog.ensure_worker pattern) rather than a thread per request: bounded
+# concurrency, and strict per-lane ordering. TWO lanes on purpose:
+#   'state' — the failure counter and its clear (fast DynamoDB writes).
+#     FIFO order here means a failure recorded before a successful sign-in
+#     is applied before that sign-in's counter clear, so stale failures can
+#     never re-lock an account that just authenticated.
+#   'mail'  — SES sends and token re-mints. Separate so a slow or down SES
+#     (5s/10s timeouts per call) can never delay lockout bookkeeping —
+#     otherwise an attacker could keep the lockout perpetually behind by
+#     spraying /forgot.
+# Queued work that a container stop discards is retryable by design (the
+# uniform pages promise nothing, and a lost counter write only under-counts
+# one guess). Queues are BOUNDED: with SES down, the mail lane drains as
+# slowly as one send-timeout per task, and an unbounded backlog would retain
+# captured addresses in memory and later deliver long-obsolete links —
+# overflow drops the task with one AUTH_TASK_DROPPED log line instead (a
+# dropped mail is a user-visible retry; a dropped state write under- or
+# over-counts a single guess, both harmless). Tests flip ASYNC_AUTH_WORK
+# off to run everything inline.
+ASYNC_AUTH_WORK = True
+_AUTH_QUEUE_LIMITS = {'state': 1000, 'mail': 100}
+_auth_queues = {}
+_auth_queue_lock = threading.Lock()
+
+
+def _auth_worker(q):
+    while True:
+        fn = q.get()
+        try:
+            fn()
+        except Exception as e:
+            print(f"AUTH_TASK_ERROR {type(e).__name__}")
+
+
+def _defer(fn, lane='mail'):
+    """Queue fn on the lane's worker (prod) or run it now (tests). fn must
+    not touch the request context — capture what it needs first."""
+    if not ASYNC_AUTH_WORK:
+        fn()
+        return
+    q = _auth_queues.get(lane)
+    if q is None:
+        with _auth_queue_lock:
+            q = _auth_queues.get(lane)
+            if q is None:
+                q = queue.Queue(maxsize=_AUTH_QUEUE_LIMITS.get(lane, 100))
+                threading.Thread(target=_auth_worker, args=(q,),
+                                 daemon=True).start()
+                _auth_queues[lane] = q
+    try:
+        q.put_nowait(fn)
+    except queue.Full:
+        print(f"AUTH_TASK_DROPPED {lane}")
+
+
+def _establish_session(user_id, status):
+    """The post-auth session pattern (same as /callback's tail): clear first
+    so no transient key survives, then user_id only. Returns the redirect."""
+    if status not in auth.APPROVED_STATUSES and status != 'pending':
+        session.clear()  # rejected: no session at all
+        return redirect('/')
+    session.clear()
+    session['user_id'] = user_id
+    session.permanent = True
+    return None
+
+
+def _dead_link():
+    """The ONE page every dead verify/reset link renders (missing, expired,
+    used — byte-identical, no oracle). login_next pinned to '/' so the token
+    in the path never lands in the page's menu link."""
+    return render_template('link_dead.html', user=None, login_next='/'), 404
+
+
+def _send_verify_email(email, raw_token, base=None):
+    link = f'{base or mailer.base_url()}/verify-email/{raw_token}'
+    return mailer.send(
+        email, 'Verify your email for Ndiro',
+        'Welcome to Ndiro!\n\n'
+        'Confirm your email address by opening this link:\n\n'
+        f'  {link}\n\n'
+        'The link is valid for 24 hours. If you did not sign up for Ndiro, '
+        'ignore this email and nothing will happen.\n')
+
+
+def _send_reset_email(email, raw_token, base=None):
+    link = f'{base or mailer.base_url()}/reset/{raw_token}'
+    return mailer.send(
+        email, 'Reset your Ndiro password',
+        'Someone asked to reset the password for your Ndiro account.\n\n'
+        'Set a new password by opening this link:\n\n'
+        f'  {link}\n\n'
+        'The link is valid for 1 hour and can be used once. If this was not '
+        'you, ignore this email — your password is unchanged.\n')
+
+
+def _send_existing_account_email(email, provider, base=None):
+    """Signup-attempt notice for an address that already has an account."""
+    base = base or mailer.base_url()
+    if provider == 'native':
+        body = ('Someone tried to sign up for Ndiro with your email address, '
+                'but you already have an account.\n\n'
+                f'Sign in at {base}/login — or reset your password at '
+                f'{base}/forgot if you have forgotten it.\n\n'
+                'If this was not you, you can ignore this email.\n')
+    else:
+        body = ('Someone tried to sign up for Ndiro with your email address, '
+                'but this address already has an account that signs in with '
+                'Google.\n\n'
+                f'Sign in with Google at {base}/login\n\n'
+                'If this was not you, you can ignore this email.\n')
+    return mailer.send(email, 'You already have an Ndiro account', body)
+
+
+def _send_google_reset_notice(email, base):
+    """Reset-request notice for a Google-only address — accurate copy, not
+    the signup-attempt wording."""
+    return mailer.send(
+        email, 'About your Ndiro password reset',
+        'Someone asked to reset the Ndiro password for this email address, '
+        'but your account signs in with Google — it has no password to '
+        'reset.\n\n'
+        f'Sign in with Google at {base}/login\n\n'
+        'If this was not you, you can ignore this email.\n')
+
+
+def _check_email_page(email, sent_ok):
+    """The uniform post-signup page — identical whether a row was created,
+    the email already had an account, or the signup was a stale-row retry."""
+    return render_template('check_email.html', user=None, email=email,
+                           sent_ok=sent_ok, form_token=_form_token())
+
+
+@app.route('/signup')
+@limiter.limit('5 per minute')
+def signup_page():
+    if not mailer.enabled():
+        return ('Email/password signup is not available on this instance '
+                '(no outbound email is configured).', 503)
+    next_target, invite = _login_page_args()
+    # Non-consuming validation only — a dead invite renders the same signup
+    # page without the banner (the /i/ page already 404s dead tokens).
+    invite_valid = bool(invite and _valid_invite_for_redemption(invite))
+    return render_template('signup.html', user=None,
+                           next_target=next_target, invite=invite,
+                           invite_valid=invite_valid,
+                           form_token=_form_token())
+
+
+@app.route('/signup', methods=['POST'])
+@limiter.limit('5 per minute')
+def signup_submit():
+    if not mailer.enabled():
+        return ('Email/password signup is not available on this instance '
+                '(no outbound email is configured).', 503)
+    if not _check_form_token():
+        return 'Invalid form token — please reload the page and retry.', 400
+
+    next_target, invite = _login_page_args()
+    email, email_err = native_auth.valid_email(request.form.get('email'))
+    password = request.form.get('password') or ''
+    pw_err = native_auth.valid_password(password)
+    name = (request.form.get('name') or '').strip()[:80]
+    if email_err or pw_err:
+        return render_template('signup.html', user=None,
+                               next_target=next_target, invite=invite,
+                               invite_valid=bool(invite and _valid_invite_for_redemption(invite)),
+                               form_token=_form_token(),
+                               error=email_err or pw_err,
+                               email=request.form.get('email', ''),
+                               name=name), 200
+
+    try:
+        # Hash BEFORE branching on duplicates: the scrypt work is the
+        # dominant cost here, and skipping it on the already-registered
+        # path would make response latency an account-existence oracle
+        # despite the uniform page.
+        password_hash = native_auth.hash_password(password)
+
+        # Purge abandoned signups BEFORE the capacity gate: an expired
+        # unverified PENDING native row is the one row class nobody can
+        # free (no session, no owner), so left in place it could squat a
+        # MAX_USERS slot forever. The delete is CONDITIONAL on the row
+        # still being exactly what this scan observed — a resend that
+        # refreshed the token or an admin rejection landing mid-request
+        # wins, and the row then stays (and stays counted). Rejected rows
+        # are deliberately never purged — rejection is a ban and must
+        # stick, slot and all. A purged row never had a session, so it
+        # owns no meals/photos/shares — the row delete is the whole wipe.
+        now = time.time()
+        rows = []
+        for row in db.list_users(consistent=True):
+            stale = (row.get('auth_provider') == 'native'
+                     and not row.get('email_verified')
+                     and row.get('status') == 'pending'
+                     and int(row.get('verify_expires_at') or 0) < now)
+            if stale and db.delete_stale_native_signup(
+                    row['user_id'], int(row.get('verify_expires_at') or 0)):
+                continue
+            rows.append(row)
+
+        # MAX_USERS before the duplicate check and before any invite logic
+        # (invariant #9): a full instance never consumes an invite and
+        # answers every signup identically. Read-then-create, like the
+        # Google path in /callback and the invite cap: concurrent signups
+        # can overshoot by at most the thread count, which the rate limit
+        # bounds — accepted at PoC scale, a transactional counter is
+        # machinery this app deliberately avoids (see CLAUDE.md).
+        if len(rows) >= config.MAX_USERS:
+            return render_template('full.html'), 403
+
+        # The remaining work (notice mail on the duplicate branch; invite
+        # validation + conditional create + verification mail on the fresh
+        # branch) is DEFERRED: it is the only I/O that differs between the
+        # two branches, so keeping any of it on the response path would
+        # leave a latency oracle. In-memory branch selection costs nothing;
+        # both branches return after the identical scan + scrypt above.
+        matches = [r for r in rows if (r.get('email') or '').lower() == email]
+        base = mailer.base_url()  # request-bound: capture before deferring
+        if matches:
+            # Same page as a fresh signup — no enumeration. The address
+            # owner learns what happened by email instead.
+            native = any(r.get('auth_provider') == 'native' for r in matches)
+            _defer(lambda: _send_existing_account_email(
+                email, 'native' if native else 'google', base))
+        else:
+            _defer(lambda: _signup_create_work(email, name, password_hash,
+                                               invite, base))
+    except Exception as e:
+        print(f"Signup failed: {type(e).__name__}")
+        return 'Signup failed — please try again later.', 500
+
+    return _check_email_page(email, True)
+
+
+def _signup_create_work(email, name, password_hash, invite, base):
+    """Deferred tail of a fresh signup: create the row and mail the link.
+    Failures log only — the uniform page has already answered, and resend
+    or a fresh signup recovers (same contract as /forgot)."""
+    try:
+        # Re-check capacity HERE, not just at enqueue time: while a slow SES
+        # send blocks this lane, many requests could pass the request-path
+        # gate and queue creates that would land after the instance filled.
+        # This lane is ONE FIFO worker, so creates are serialized and this
+        # recheck immediately before each put keeps the cap tight.
+        if db.count_users() >= config.MAX_USERS:
+            print("Signup dropped: instance filled while queued")
+            return
+        if invite and not _valid_invite_for_redemption(invite):
+            invite = None  # dead invite: normal pending signup, never an error
+        raw_token, token_hash = native_auth.mint_token()
+        # name stays exactly as submitted — an empty name must NOT default
+        # to the email local-part, which the invite/share attribution pages
+        # would then display (they have their own anonymous fallbacks).
+        created = db.create_native_user(
+            native_auth.new_user_id(email), email, name,
+            password_hash,
+            token_hash, int(time.time()) + native_auth.VERIFY_TTL_S,
+            pending_invite_token=invite)
+        if created is None:
+            # Lost a same-email signup race (the id is email-derived, so the
+            # conditional put is the atomic uniqueness check): the winner's
+            # owner just got a verification mail. Nothing more to do.
+            return
+        _send_verify_email(email, raw_token, base)
+    except Exception as e:
+        print(f"Signup work failed: {type(e).__name__}")
+
+
+@app.route('/verify-email/<token>')
+@limiter.limit('10 per minute')
+def verify_email_page(token):
+    """Non-consuming: email scanners prefetch GETs, and a prefetch must not
+    burn the single-use token (or establish a session inside the scanner).
+    The POST below does the actual work."""
+    row = db.find_user_by_token_hash('verify_token_hash',
+                                     native_auth.hash_token(token))
+    if row is None or int(row.get('verify_expires_at') or 0) < time.time():
+        return _dead_link()
+    return render_template('verify_confirm.html', user=None, login_next='/',
+                           token=token)
+
+
+@app.route('/verify-email/<token>', methods=['POST'])
+@limiter.limit('10 per minute')
+def verify_email_submit(token):
+    token_hash = native_auth.hash_token(token)
+    try:
+        row = db.find_user_by_token_hash('verify_token_hash', token_hash)
+        if row is None or int(row.get('verify_expires_at') or 0) < time.time():
+            return _dead_link()
+        user_id = row['user_id']
+        status = row.get('status')
+        # Order: claim invite -> approve -> ONLY THEN consume the verify
+        # token. Every crash window then retries cleanly through the same
+        # link: claim_invite is idempotent for the same claimant, approve is
+        # conditional on still-pending (a retry of a half-finished attempt
+        # reads the already-approved status off the row). Consuming the
+        # token first could burn the invite AND the link with the account
+        # still pending — unrecoverable.
+        # Redeem only while the observed status is still pending: an admin
+        # who already approved or rejected this row settled its fate, and
+        # claiming the single-use invite then would burn it for nothing.
+        pending_invite = row.get('pending_invite_token')
+        if pending_invite and status == 'pending':
+            inviter_id = _redeem_invite(pending_invite, user_id)
+            if inviter_id and db.approve_pending_user(user_id, inviter_id):
+                status = 'approved'
+        if not db.mark_email_verified(user_id, token_hash):
+            return _dead_link()  # lost a double-submit race: link already used
+    except Exception as e:
+        print(f"Email verification failed: {type(e).__name__}")
+        return 'Verification failed — please try again later.', 500
+
+    # NO session from a verification link: the link is transferable, so
+    # auto-sign-in would be login CSRF (an attacker signs up an account they
+    # control and tricks the victim into confirming it — the victim would
+    # then be logging meals into the attacker's account). Verification only
+    # proves inbox control; the password proves the person.
+    return redirect('/login?verified=1')
+
+
+@app.route('/resend-verification', methods=['POST'])
+@limiter.limit('3 per minute')
+def resend_verification():
+    if not mailer.enabled():
+        return ('Email is not configured on this instance.', 503)
+    if not _check_form_token():
+        return 'Invalid form token — please reload the page and retry.', 400
+    email, err = native_auth.valid_email(request.form.get('email'))
+    if err is None:
+        # ALL the account-dependent work (lookup, re-mint, SES call) runs off
+        # the response path so response timing is identical whether or not
+        # the address has an unverified account.
+        base = mailer.base_url()  # request-bound: capture before deferring
+        _defer(lambda: _resend_verification_work(email, base))
+    # Uniform regardless of whether anything was sent — no enumeration.
+    return _check_email_page(email or (request.form.get('email') or '').strip(),
+                             True)
+
+
+def _resend_verification_work(email, base):
+    try:
+        row = db.find_user_by_email(email, provider='native')
+        if row is not None and not row.get('email_verified'):
+            raw_token, token_hash = native_auth.mint_token()
+            db.set_verify_token(row['user_id'], token_hash,
+                                int(time.time()) + native_auth.VERIFY_TTL_S)
+            _send_verify_email(email, raw_token, base)
+    except Exception as e:
+        print(f"Resend verification failed: {type(e).__name__}")
+
+
+@app.route('/login/password', methods=['POST'])
+@limiter.limit('10 per minute')
+def login_password():
+    if not _check_form_token():
+        return 'Invalid form token — please reload the page and retry.', 400
+    next_target, invite = _login_page_args()
+    email, email_err = native_auth.valid_email(request.form.get('email'))
+    password = request.form.get('password') or ''
+    fail = lambda: _render_login(next_target, invite, error=_LOGIN_ERROR,
+                                 email=request.form.get('email', ''))
+    if email_err:
+        native_auth.verify_dummy(password)
+        return fail()
+
+    try:
+        user = db.find_user_by_email(email, provider='native')
+        if user is None:
+            native_auth.verify_dummy(password)  # flatten the timing
+            return fail()
+        if native_auth.is_locked(user):
+            # Deliberately no distinct message (an account-existence oracle)
+            # and no REAL hash check (the lockout must actually stop
+            # guessing) — but still burn the dummy hash so a locked account
+            # doesn't answer measurably faster than a wrong password.
+            # "Forgot password?" is the way out — reset clears the lockout.
+            native_auth.verify_dummy(password)
+            return fail()
+        if not native_auth.verify_password(user.get('password_hash', ''), password):
+            # Deferred: the counter write must not make wrong-password
+            # responses measurably slower than unknown-email ones. Bound to
+            # the hash this request verified against, so it dies if a
+            # reset/change lands before the worker gets to it.
+            uid, observed = user['user_id'], user.get('password_hash', '')
+            _defer(lambda: db.record_login_failure(
+                uid, observed, native_auth.LOCKOUT_THRESHOLD,
+                native_auth.LOCKOUT_S), lane='state')
+            return fail()
+        if not user.get('email_verified'):
+            # An unverified owner arriving through an invite link keeps it:
+            # persist it on the row (first invite wins) so the verification
+            # POST can claim it — otherwise the invite the page promises
+            # would silently evaporate here. Correct password proves
+            # ownership, so this write is on the owner's behalf.
+            if invite and _valid_invite_for_redemption(invite):
+                db.set_pending_invite(user['user_id'], invite)
+            # Correct password proves ownership — pointing at verification
+            # discloses nothing the owner doesn't know.
+            return render_template('verify_needed.html', user=None,
+                                   email=email, form_token=_form_token())
+        # Deferred through the same 'state' FIFO as failure writes, so the
+        # clear applies AFTER every failure recorded before this success.
+        uid = user['user_id']
+        _defer(lambda: db.clear_login_failures(uid), lane='state')
+        status = user.get('status')
+        # Google-flow parity (see /callback): a pending user signing in
+        # through an invite link gets approved — conditionally, so a
+        # concurrent admin rejection always wins.
+        if status == 'pending' and invite:
+            inviter_id = _redeem_invite(invite, user['user_id'])
+            if inviter_id and db.approve_pending_user(user['user_id'], inviter_id):
+                status = 'approved'
+    except Exception as e:
+        print(f"Password sign-in failed: {type(e).__name__}")
+        return 'Sign-in failed — please try again later.', 500
+
+    deny = _establish_session(user['user_id'], status)
+    if deny is not None:
+        return deny
+    if status == 'pending':
+        return redirect('/waiting')
+    return redirect(next_target)
+
+
+@app.route('/forgot')
+@limiter.limit('10 per minute')
+def forgot_page():
+    if not mailer.enabled():
+        return ('Password reset is not available on this instance '
+                '(no outbound email is configured).', 503)
+    return render_template('forgot.html', user=None, form_token=_form_token())
+
+
+@app.route('/forgot', methods=['POST'])
+@limiter.limit('3 per minute')
+def forgot_submit():
+    if not mailer.enabled():
+        return ('Password reset is not available on this instance '
+                '(no outbound email is configured).', 503)
+    if not _check_form_token():
+        return 'Invalid form token — please reload the page and retry.', 400
+    email, err = native_auth.valid_email(request.form.get('email'))
+    if err is None:
+        # ALL the account-dependent work (lookups, token mint, SES call)
+        # runs off the response path: a synchronous SES call only on the
+        # account-exists branches would make latency an enumeration oracle
+        # even though the page below is uniform.
+        base = mailer.base_url()  # request-bound: capture before deferring
+        _defer(lambda: _forgot_work(email, base))
+    # Uniform for every input — unknown address included. No enumeration.
+    return render_template('forgot_sent.html', user=None)
+
+
+def _forgot_work(email, base):
+    try:
+        # Prefer the NATIVE row: a Google and a native account may share
+        # an email, and only the native one has a password to reset —
+        # picking whichever scan row came first could strand it.
+        user = (db.find_user_by_email(email, provider='native')
+                or db.find_user_by_email(email))
+        if user is None:
+            pass  # nothing to send; the page already claimed success
+        elif user.get('auth_provider') != 'native':
+            _send_google_reset_notice(email, base)
+        elif not user.get('email_verified'):
+            # Resetting the password wouldn't let them in; verification is
+            # the actual blocker (and the mail proves inbox control).
+            raw_token, token_hash = native_auth.mint_token()
+            db.set_verify_token(user['user_id'], token_hash,
+                                int(time.time()) + native_auth.VERIFY_TTL_S)
+            _send_verify_email(email, raw_token, base)
+        else:
+            raw_token, token_hash = native_auth.mint_token()
+            # Bound to the hash this task observed: if a password change
+            # completed while this sat in the queue, the write loses and no
+            # link goes out (the owner just chose a password — a stale
+            # reset link able to overwrite it must not exist).
+            if db.set_reset_token(user['user_id'], token_hash,
+                                  int(time.time()) + native_auth.RESET_TTL_S,
+                                  user.get('password_hash', '')):
+                _send_reset_email(email, raw_token, base)
+    except Exception as e:
+        print(f"Password-reset request failed: {type(e).__name__}")
+
+
+@app.route('/reset/<token>')
+@limiter.limit('10 per minute')
+def reset_page(token):
+    row = db.find_user_by_token_hash('reset_token_hash',
+                                     native_auth.hash_token(token))
+    if row is None or int(row.get('reset_expires_at') or 0) < time.time():
+        return _dead_link()
+    return render_template('reset.html', user=None, login_next='/',
+                           token=token)
+
+
+@app.route('/reset/<token>', methods=['POST'])
+@limiter.limit('10 per minute')
+def reset_submit(token):
+    token_hash = native_auth.hash_token(token)
+    try:
+        row = db.find_user_by_token_hash('reset_token_hash', token_hash)
+        if row is None or int(row.get('reset_expires_at') or 0) < time.time():
+            return _dead_link()
+        password = request.form.get('password') or ''
+        pw_err = native_auth.valid_password(password)
+        if pw_err is None and password != (request.form.get('password2') or ''):
+            pw_err = 'The two passwords do not match.'
+        if pw_err:
+            return render_template('reset.html', user=None, login_next='/',
+                                   token=token, error=pw_err), 200
+        if not db.complete_password_reset(
+                row['user_id'], native_auth.hash_password(password), token_hash):
+            return _dead_link()  # link already used
+    except Exception as e:
+        print(f"Password reset failed: {type(e).__name__}")
+        return 'Password reset failed — please try again later.', 500
+    # No session from a reset link: sign in with the new password (keeps
+    # session establishment to the two sign-in points — /callback and
+    # POST /login/password).
+    return redirect('/login?reset=1')
+
+
+@app.route('/api/settings/password', methods=['POST'])
+@limiter.limit('10 per minute')  # scrypt x2 per call — keep it off the global lane
+@auth.approved_required
+def change_password():
+    """Signed-in password change (native accounts only). Requires the current
+    password so a walked-away-from session can't silently take the account.
+    Completing it also invalidates any outstanding reset link (db side)."""
+    if g.user.get('auth_provider') != 'native':
+        return jsonify({'error': 'This account signs in with Google.'}), 400
+    data = request.get_json(silent=True) or {}
+    current = data.get('current') or ''
+    new = data.get('new') or ''
+    uid = g.user['user_id']
+    # The current-password check is a password oracle like /login/password,
+    # so it participates in the SAME per-account lockout — otherwise a
+    # stolen or walked-away-from session could guess past the 10-failure
+    # limit through this endpoint instead.
+    if native_auth.is_locked(g.user):
+        native_auth.verify_dummy(current)
+        return jsonify({'error': 'Current password is incorrect.'}), 400
+    current_hash = g.user.get('password_hash', '')
+    if not native_auth.verify_password(current_hash, current):
+        _defer(lambda: db.record_login_failure(
+            uid, current_hash, native_auth.LOCKOUT_THRESHOLD,
+            native_auth.LOCKOUT_S), lane='state')
+        return jsonify({'error': 'Current password is incorrect.'}), 400
+    pw_err = native_auth.valid_password(new)
+    if pw_err:
+        return jsonify({'error': pw_err}), 400
+    try:
+        ok = db.set_password_hash(g.user['user_id'],
+                                  native_auth.hash_password(new), current_hash)
+    except Exception as e:
+        print(f"Password change failed for user {g.user['user_id']}: {type(e).__name__}")
+        return jsonify({'error': 'Failed to save — please try again'}), 500
+    if not ok:
+        # Compare-and-set lost: another change or a reset landed since this
+        # request read the row — the newer password stands.
+        return jsonify({'error': 'Password was changed in another session — '
+                                 'sign in again and retry.'}), 409
+    # Successful reauthentication clears the counter, same as sign-in.
+    _defer(lambda: db.clear_login_failures(uid), lane='state')
+    return jsonify({'ok': True})
+
+
 # --- Admin API (account metadata ONLY — never another user's meals/photos) ---
 
 def _user_to_json(u, email_by_id=None):
@@ -403,6 +1058,14 @@ def _user_to_json(u, email_by_id=None):
         'approved_at': u.get('approved_at'),
         'invited_by': u.get('invited_by'),
         'invited_by_email': (email_by_id or {}).get(u.get('invited_by')),
+        # Derived boolean only — the explicit allowlist above is what keeps
+        # password/token hashes out of the payload. True marks a native
+        # signup that never clicked its verification link (explains a stuck
+        # pending row). Stale ones purge themselves via the next signup;
+        # rejecting one makes the ban permanent — the row KEEPS its
+        # capacity slot on purpose.
+        'unverified': bool(u.get('auth_provider') == 'native'
+                           and not u.get('email_verified')),
     }
 
 
@@ -437,10 +1100,14 @@ def admin_set_status(user_id, action):
         return jsonify({'error': 'Admins cannot be modified here'}), 400
     status = 'approved' if action == 'approve' else 'rejected'
     try:
-        db.set_user_status(user_id, status)
+        ok = db.set_user_status(user_id, status)
     except Exception as e:
         print(f"Error setting user status: {type(e).__name__}")
         return jsonify({'error': 'Failed to update user'}), 500
+    if not ok:
+        # The row vanished between the read above and the conditional write
+        # (self-deletion, or a signup purge) — say so, don't claim success.
+        return jsonify({'error': 'User not found'}), 404
     return jsonify({'user_id': user_id, 'status': status})
 
 
