@@ -74,10 +74,13 @@ raises without it (tests set their own).
   `approved_required` / `admin_required`, `_safe_next`.
 - **`native_auth.py`** — native (email/password) account primitives: werkzeug
   scrypt hashing (+ a dummy-hash verify to flatten no-such-user AND locked
-  timing), `new_user_id(email)` (`nat-` + SHA-256(email)[:32] —
+  timing; overlong candidates are rejected before scrypt — CPU-DoS guard),
+  `new_user_id(email)` (`nat-` + HMAC(NATIVE_ID_SECRET, email)[:32] —
   DETERMINISTIC so db.create_native_user's conditional put is the atomic
-  one-native-account-per-email guarantee; mirrors Google's stable sub, never
-  collides with one, path-safe for the S3 prefix), emailed-token minting
+  one-native-account-per-email guarantee, KEYED so leaked logs can't answer
+  email-membership by hashing candidates; mirrors Google's stable sub, never
+  collides with one, path-safe for the S3 prefix; the secret must stay
+  stable or native accounts orphan), emailed-token minting
   (256-bit random in the link, SHA-256 hash on the row), email/password
   validation (8–256 chars, no composition rules), lockout constants (10
   fails → 15 min; the atomic counter itself lives in db.py). Pure helpers —
@@ -214,9 +217,11 @@ delete_photo/delete_user_photos purge the LRU.
 4. Session stores only `user_id` (+ transient `oauth_state`, `login_next`,
    `invite_token` — the last popped unconditionally in /callback, never
    surviving into the post-login session — and `form_token`, the native-form
-   CSRF analog of oauth_state); sessions are established in exactly three
-   places — `/callback`, `POST /login/password`, `POST /verify-email/<token>`
-   — always clear-then-set, and never for an unverified native account;
+   CSRF analog of oauth_state); sessions are established in exactly TWO
+   places — `/callback` and `POST /login/password` — always clear-then-set,
+   and never for an unverified native account. An emailed link NEVER
+   establishes a session (a transferable link that signs you in is login
+   CSRF: verification proves inbox control, the password proves the person);
    cookie is Secure/HttpOnly/SameSite=Lax, 30 days; ProxyFix(x_proto, x_host).
 5. OAuth `state` CSRF via `session.pop` comparison; `_safe_next` allows only
    relative paths (no `//`, no `\`).
@@ -290,10 +295,13 @@ delete_photo/delete_user_photos purge the LRU.
     verify-your-email page on a CORRECT password (which proves ownership).
     Timing is part of the no-oracle contract: signup hashes BEFORE the
     duplicate branch, sign-in dummy-hashes the unknown AND locked paths, and
-    account-dependent side work (SES sends, the failure counter) runs off
-    the response path via `_defer` (tests set `app.ASYNC_AUTH_WORK=False`
-    to run it inline). A completed password change or reset atomically
-    invalidates any outstanding reset token.
+    account-dependent side work (SES sends, the failure counter AND its
+    clear) runs off the response path via `_defer` — ONE lazily-started
+    FIFO worker, so failure/clear ordering is preserved and thread use is
+    bounded (tests set `app.ASYNC_AUTH_WORK=False` to run it inline). A
+    completed password change or reset atomically invalidates any
+    outstanding reset token, and the signed-in change is a compare-and-set
+    on the verified hash (a stale request can't clobber a newer password).
     Emailed GET links never mutate (scanners prefetch) — consumption is
     POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
     or a completed reset; the counter is an atomic DynamoDB ADD (concurrent

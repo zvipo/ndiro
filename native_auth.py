@@ -13,11 +13,14 @@ Credential discipline (invariant #12):
     successful sign-in or a completed password reset.
 """
 import hashlib
+import hmac
 import re
 import secrets
 import time
 
 from werkzeug.security import check_password_hash, generate_password_hash
+
+import config
 
 PASSWORD_MIN = 8
 PASSWORD_MAX = 256          # scrypt is happy with long passphrases; cap DoS-y input
@@ -37,6 +40,14 @@ def hash_password(password):
 
 
 def verify_password(password_hash, password):
+    """False for any bad candidate — including an overlong one, which is
+    rejected WITHOUT feeding it to scrypt (a request body can be megabytes;
+    hashing it would be a cheap CPU-DoS since no stored password exceeds
+    PASSWORD_MAX anyway). The bounded dummy hash keeps the timing in line
+    with a normal wrong password."""
+    if password is None or len(password) > PASSWORD_MAX:
+        check_password_hash(_DUMMY_HASH, 'overlong-candidate')
+        return False
     try:
         return check_password_hash(password_hash, password)
     except Exception:
@@ -49,12 +60,12 @@ _DUMMY_HASH = generate_password_hash(secrets.token_urlsafe(16))
 
 
 def verify_dummy(password):
-    check_password_hash(_DUMMY_HASH, password)
+    check_password_hash(_DUMMY_HASH, (password or '')[:PASSWORD_MAX])
     return False
 
 
 def new_user_id(email):
-    """users-table PK for a native account: 'nat-' + SHA-256(email)[:32].
+    """users-table PK for a native account: 'nat-' + HMAC(secret, email)[:32].
 
     DETERMINISTIC per (normalized) email on purpose — it is what makes
     db.create_native_user's conditional put an atomic one-native-account-
@@ -62,10 +73,17 @@ def new_user_id(email):
     on the same key; exactly one wins). This mirrors Google accounts, whose
     user_id is Google's stable sub. The 'nat-' prefix can never collide
     with a numeric sub, and hex keeps it path-safe for the users/{user_id}/
-    S3 prefix. The hash is one-way; user_ids in logs still reveal no email.
+    S3 prefix.
+
+    KEYED (config.NATIVE_ID_SECRET), not a bare hash: user_ids land in
+    server logs (invariant #8), and an unkeyed SHA-256 would let anyone
+    holding a log confirm candidate emails by hashing them. The secret must
+    stay stable for the life of the instance — changing it orphans every
+    native account from its row (see the env_template warning).
     """
-    return 'nat-' + hashlib.sha256(
-        ('ndiro-native:' + email).encode()).hexdigest()[:32]
+    return 'nat-' + hmac.new(
+        config.NATIVE_ID_SECRET.encode(), email.encode(),
+        hashlib.sha256).hexdigest()[:32]
 
 
 def mint_token():

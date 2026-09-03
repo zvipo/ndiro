@@ -407,14 +407,27 @@ def complete_password_reset(user_id, password_hash, token_hash):
         return False
 
 
-def set_password_hash(user_id, password_hash):
-    """Signed-in password change (settings). Also clears any outstanding
-    reset token in the same atomic write — an old reset email must not be
-    able to overwrite the freshly chosen password."""
-    _update_if_exists(
-        user_id,
-        'SET password_hash = :p REMOVE reset_token_hash, reset_expires_at',
-        {':p': password_hash})
+def set_password_hash(user_id, password_hash, expected_hash):
+    """Signed-in password change (settings): a compare-and-set on the exact
+    hash the route just verified, so a stale request that validated an old
+    password can never overwrite a newer change or reset that committed in
+    between. Also clears any outstanding reset token in the same atomic
+    write — an old reset email must not be able to overwrite the freshly
+    chosen password. True on success, False when the condition lost."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression=('SET password_hash = :p '
+                              'REMOVE reset_token_hash, reset_expires_at'),
+            ConditionExpression='password_hash = :old',
+            ExpressionAttributeValues={':p': password_hash,
+                                       ':old': expected_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
 
 
 def record_login_failure(user_id, threshold, lockout_seconds):

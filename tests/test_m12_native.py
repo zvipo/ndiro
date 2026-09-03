@@ -90,17 +90,29 @@ resp = tk.get(c, verify_path)
 tk.check('verify GET repeatable (still not consumed)', resp.status_code == 200)
 
 resp = tk.post(c, verify_path)
-tk.check('verify POST signs in and redirects to /waiting',
-         resp.status_code == 302 and resp.headers['Location'].endswith('/waiting'))
+tk.check('verify POST completes and sends the user to sign in',
+         resp.status_code == 302 and 'verified=1' in resp.headers['Location'])
 alice = db.get_user(alice['user_id'])
 tk.check('row now verified with token cleared',
          alice['email_verified'] and 'verify_token_hash' not in alice)
 with tk.session(c) as sess:
-    tk.check('post-verify session holds only user_id',
-             set(sess.keys()) <= {'user_id', '_permanent'})
+    # A verification link is transferable — auto-sign-in would be login
+    # CSRF (verifying an attacker-planted account). No session here.
+    tk.check('verify POST establishes NO session', 'user_id' not in sess)
 
 dead = tk.post(tk.client(), verify_path)
 tk.check('verify link is single-use', dead.status_code == 404)
+
+tk.limiter.reset()
+resp = tk.post(c, '/login/password',
+               data={'form_token': tk.form_token(c), 'next': '/log',
+                     'email': 'alice@example.test',
+                     'password': 'hunter2hunter2'})
+tk.check('verified account signs in with its password -> /waiting',
+         resp.status_code == 302 and resp.headers['Location'].endswith('/waiting'))
+with tk.session(c) as sess:
+    tk.check('password sign-in session holds only user_id (post-verify)',
+             set(sess.keys()) <= {'user_id', '_permanent'})
 
 approve(alice['user_id'])
 resp = tk.get(c, '/log')
@@ -203,6 +215,13 @@ tk.check('success clears the failure counter',
 with tk.session(c3) as sess:
     tk.check('password sign-in session holds only user_id',
              set(sess.keys()) <= {'user_id', '_permanent'})
+
+# Overlong candidates are rejected WITHOUT feeding megabytes to scrypt
+# (CPU-DoS guard) — and still render the exact same uniform error.
+tk.limiter.reset()
+overlong = try_login(probe, 'alice@example.test', 'x' * 100000)
+tk.check('overlong password: same uniform error, bounded hashing',
+         overlong.data == wrong.data)
 
 tk.post(ADMIN, f"/api/admin/users/{alice['user_id']}/reject")
 resp = tk.get(c3, '/log')
@@ -321,12 +340,18 @@ resp = tk.post(c4, tk.extract_link(M.sent[-1][2]))
 dave = db.get_user(dave['user_id'])
 inv_row = tk.FIXTURES.invites.items[(inv_token,)]
 tk.check('verification claims the invite and approves the account',
-         resp.status_code == 302 and resp.headers['Location'].endswith('/log')
+         resp.status_code == 302 and 'verified=1' in resp.headers['Location']
          and dave['status'] == 'approved'
          and dave.get('invited_by') == alice['user_id']
          and inv_row.get('used_by') == dave['user_id'])
 tk.check('pending_invite_token cleared after verification',
          'pending_invite_token' not in dave)
+tk.limiter.reset()
+resp = tk.post(c4, '/login/password',
+               data={'form_token': tk.form_token(c4), 'next': '/log',
+                     'email': 'dave@example.test', 'password': 'password-789'})
+tk.check('invited + verified account signs straight in to /log',
+         resp.status_code == 302 and resp.headers['Location'].endswith('/log'))
 tk.limiter.reset()
 
 # MAX_USERS beats invite logic: full instance burns nothing.
@@ -413,11 +438,20 @@ db.delete_user(first['user_id'])
 rows_before = len(tk.FIXTURES.users.items)
 db.set_verify_token('nat-ghost', 'h', 123)
 db.set_reset_token('nat-ghost', 'h', 123)
-db.set_password_hash('nat-ghost', 'h')
+db.set_password_hash('nat-ghost', 'h', 'old-h')
 db.record_login_failure('nat-ghost', 10, 900)
 db.clear_login_failures('nat-ghost')
 tk.check('updates on a deleted row are dropped, never upserted',
          len(tk.FIXTURES.users.items) == rows_before)
+
+# (b2) Password change is a compare-and-set on the verified hash: a stale
+# request that validated an old password can't clobber a newer one.
+alice_row = db.get_user(alice['user_id'])
+tk.check('stale password change loses the compare-and-set',
+         db.set_password_hash(alice['user_id'], 'new-h', 'not-the-current-hash')
+         is False
+         and db.get_user(alice['user_id'])['password_hash']
+         == alice_row['password_hash'])
 
 # (c) The stale-purge delete is conditional on the exact observed state: a
 # refreshed token (resend won the race) or a rejection keeps the row.

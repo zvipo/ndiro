@@ -74,6 +74,15 @@ SES_REGION = os.getenv('SES_REGION') or os.getenv('AWS_REGION', 'us-east-1')
 APP_BASE_URL = (os.getenv('APP_BASE_URL') or '').strip().rstrip('/')
 EMAIL_ENABLED = bool(MAIL_FROM and (APP_BASE_URL or not COOKIE_SECURE))
 
+# Keys the deterministic native-account user_id (HMAC(secret, email) — see
+# native_auth.new_user_id): keyed so a leaked log line can't be turned into
+# email-membership answers by hashing candidate addresses. MUST stay stable
+# for the life of the instance — changing it orphans every native account.
+# Defaults to SECRET_KEY; set it explicitly BEFORE creating native accounts
+# if you ever plan to rotate SECRET_KEY (which is otherwise safe to rotate —
+# it only invalidates sessions).
+NATIVE_ID_SECRET = os.getenv('NATIVE_ID_SECRET') or SECRET_KEY
+
 # --- Accounts ----------------------------------------------------------------
 # Emails that bootstrap as admin on their FIRST sign-in only; afterwards status
 # lives in the users table and is managed at /admin.

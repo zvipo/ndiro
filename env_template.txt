@@ -20,8 +20,16 @@ S3_BUCKET=your-private-bucket-name
 # --- Flask ---
 # REQUIRED. The app refuses to boot without it. Generate with:
 #   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-# Must stay stable across restarts or all sessions invalidate.
+# Must stay stable across restarts or all sessions invalidate — and unless
+# NATIVE_ID_SECRET below is set, native-account ids derive from it too, so
+# rotating it would orphan every email/password account.
 SECRET_KEY=
+
+# Keys the deterministic native-account user ids (HMAC over the email).
+# Optional — defaults to SECRET_KEY. Set it once BEFORE creating native
+# accounts if you ever plan to rotate SECRET_KEY; NEVER change it afterwards
+# (changing it orphans every native account from its data).
+#NATIVE_ID_SECRET=
 
 # --- Google OAuth (Web application client, Google Cloud Console) ---
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com

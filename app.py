@@ -233,6 +233,8 @@ def login():
     notice = None
     if request.args.get('reset') == '1':
         notice = 'Password updated — sign in with your new password.'
+    elif request.args.get('verified') == '1':
+        notice = 'Email verified — sign in to get started.'
     # The "approved right away" banner only for a CURRENTLY valid invite —
     # a dead token still rides the forms (harmless) but must not promise
     # an approval that redemption would fall back from.
@@ -403,28 +405,47 @@ def logout():
 
 _LOGIN_ERROR = 'Wrong email or password.'
 
-# Auth side work (SES sends, the failure counter) runs OFF the response path:
-# a synchronous SES call or DynamoDB write only on the account-exists branch
-# would make response latency an account-existence oracle even with uniform
-# bodies. Tests flip this off to run the work inline (deterministic asserts),
-# like autolog.WORKER_ENABLED.
+# Auth side work (SES sends, the failure counter and its clear) runs OFF the
+# response path: a synchronous SES call or DynamoDB write only on the
+# account-exists branch would make response latency an account-existence
+# oracle even with uniform bodies. ONE lazily-started FIFO worker (the
+# autolog.ensure_worker pattern) rather than a thread per request: bounded
+# concurrency, and strict ordering — a failure recorded before a successful
+# sign-in is applied before that sign-in's counter clear, so stale failures
+# can never re-lock an account that just authenticated. Queued work that a
+# container stop discards is retryable by design (the uniform pages promise
+# nothing, and a lost counter write only under-counts one guess). Tests flip
+# ASYNC_AUTH_WORK off to run the work inline (deterministic asserts).
 ASYNC_AUTH_WORK = True
+_auth_queue = None
+_auth_queue_lock = threading.Lock()
 
 
-def _defer(fn):
-    """Run fn now (tests) or on a fire-and-forget daemon thread (prod).
-    fn must not touch the request context — capture what it needs first."""
-    if not ASYNC_AUTH_WORK:
-        fn()
-        return
-
-    def run():
+def _auth_worker(q):
+    while True:
+        fn = q.get()
         try:
             fn()
         except Exception as e:
             print(f"AUTH_TASK_ERROR {type(e).__name__}")
 
-    threading.Thread(target=run, daemon=True).start()
+
+def _defer(fn):
+    """Queue fn for the auth worker (prod) or run it now (tests). fn must
+    not touch the request context — capture what it needs first."""
+    global _auth_queue
+    if not ASYNC_AUTH_WORK:
+        fn()
+        return
+    if _auth_queue is None:
+        with _auth_queue_lock:
+            if _auth_queue is None:
+                import queue as _queue
+                q = _queue.Queue()
+                threading.Thread(target=_auth_worker, args=(q,),
+                                 daemon=True).start()
+                _auth_queue = q
+    _auth_queue.put(fn)
 
 
 def _establish_session(user_id, status):
@@ -654,10 +675,12 @@ def verify_email_submit(token):
         print(f"Email verification failed: {type(e).__name__}")
         return 'Verification failed — please try again later.', 500
 
-    deny = _establish_session(user_id, status)
-    if deny is not None:
-        return deny
-    return redirect('/waiting' if status == 'pending' else '/log')
+    # NO session from a verification link: the link is transferable, so
+    # auto-sign-in would be login CSRF (an attacker signs up an account they
+    # control and tricks the victim into confirming it — the victim would
+    # then be logging meals into the attacker's account). Verification only
+    # proves inbox control; the password proves the person.
+    return redirect('/login?verified=1')
 
 
 @app.route('/resend-verification', methods=['POST'])
@@ -730,7 +753,10 @@ def login_password():
             # discloses nothing the owner doesn't know.
             return render_template('verify_needed.html', user=None,
                                    email=email, form_token=_form_token())
-        db.clear_login_failures(user['user_id'])
+        # Deferred through the same FIFO worker as failure writes, so the
+        # clear applies AFTER every failure recorded before this success.
+        uid = user['user_id']
+        _defer(lambda: db.clear_login_failures(uid))
         status = user.get('status')
         # Google-flow parity (see /callback): a pending user signing in
         # through an invite link gets approved — conditionally, so a
@@ -856,16 +882,23 @@ def change_password():
     data = request.get_json(silent=True) or {}
     current = data.get('current') or ''
     new = data.get('new') or ''
-    if not native_auth.verify_password(g.user.get('password_hash', ''), current):
+    current_hash = g.user.get('password_hash', '')
+    if not native_auth.verify_password(current_hash, current):
         return jsonify({'error': 'Current password is incorrect.'}), 400
     pw_err = native_auth.valid_password(new)
     if pw_err:
         return jsonify({'error': pw_err}), 400
     try:
-        db.set_password_hash(g.user['user_id'], native_auth.hash_password(new))
+        ok = db.set_password_hash(g.user['user_id'],
+                                  native_auth.hash_password(new), current_hash)
     except Exception as e:
         print(f"Password change failed for user {g.user['user_id']}: {type(e).__name__}")
         return jsonify({'error': 'Failed to save — please try again'}), 500
+    if not ok:
+        # Compare-and-set lost: another change or a reset landed since this
+        # request read the row — the newer password stands.
+        return jsonify({'error': 'Password was changed in another session — '
+                                 'sign in again and retry.'}), 409
     return jsonify({'ok': True})
 
 
@@ -895,7 +928,9 @@ def _user_to_json(u, email_by_id=None):
         # Derived boolean only — the explicit allowlist above is what keeps
         # password/token hashes out of the payload. True marks a native
         # signup that never clicked its verification link (explains a stuck
-        # pending row; the admin can reject it to free the slot).
+        # pending row). Stale ones purge themselves via the next signup;
+        # rejecting one makes the ban permanent — the row KEEPS its
+        # capacity slot on purpose.
         'unverified': bool(u.get('auth_provider') == 'native'
                            and not u.get('email_verified')),
     }
