@@ -621,15 +621,35 @@ def signup_submit():
         if len(rows) >= config.MAX_USERS:
             return render_template('full.html'), 403
 
+        # The remaining work (notice mail on the duplicate branch; invite
+        # validation + conditional create + verification mail on the fresh
+        # branch) is DEFERRED: it is the only I/O that differs between the
+        # two branches, so keeping any of it on the response path would
+        # leave a latency oracle. In-memory branch selection costs nothing;
+        # both branches return after the identical scan + scrypt above.
         matches = [r for r in rows if (r.get('email') or '').lower() == email]
+        base = mailer.base_url()  # request-bound: capture before deferring
         if matches:
             # Same page as a fresh signup — no enumeration. The address
             # owner learns what happened by email instead.
             native = any(r.get('auth_provider') == 'native' for r in matches)
-            sent = _send_existing_account_email(
-                email, 'native' if native else 'google')
-            return _check_email_page(email, sent)
+            _defer(lambda: _send_existing_account_email(
+                email, 'native' if native else 'google', base))
+        else:
+            _defer(lambda: _signup_create_work(email, name, password_hash,
+                                               invite, base))
+    except Exception as e:
+        print(f"Signup failed: {type(e).__name__}")
+        return 'Signup failed — please try again later.', 500
 
+    return _check_email_page(email, True)
+
+
+def _signup_create_work(email, name, password_hash, invite, base):
+    """Deferred tail of a fresh signup: create the row and mail the link.
+    Failures log only — the uniform page has already answered, and resend
+    or a fresh signup recovers (same contract as /forgot)."""
+    try:
         if invite and not _valid_invite_for_redemption(invite):
             invite = None  # dead invite: normal pending signup, never an error
         raw_token, token_hash = native_auth.mint_token()
@@ -644,14 +664,11 @@ def signup_submit():
         if created is None:
             # Lost a same-email signup race (the id is email-derived, so the
             # conditional put is the atomic uniqueness check): the winner's
-            # owner just got a verification mail. Same uniform page.
-            return _check_email_page(email, True)
+            # owner just got a verification mail. Nothing more to do.
+            return
+        _send_verify_email(email, raw_token, base)
     except Exception as e:
-        print(f"Signup failed: {type(e).__name__}")
-        return 'Signup failed — please try again later.', 500
-
-    sent = _send_verify_email(email, raw_token)
-    return _check_email_page(email, sent)
+        print(f"Signup work failed: {type(e).__name__}")
 
 
 @app.route('/verify-email/<token>')
@@ -767,13 +784,22 @@ def login_password():
             return fail()
         if not native_auth.verify_password(user.get('password_hash', ''), password):
             # Deferred: the counter write must not make wrong-password
-            # responses measurably slower than unknown-email ones.
-            uid = user['user_id']
+            # responses measurably slower than unknown-email ones. Bound to
+            # the hash this request verified against, so it dies if a
+            # reset/change lands before the worker gets to it.
+            uid, observed = user['user_id'], user.get('password_hash', '')
             _defer(lambda: db.record_login_failure(
-                uid, native_auth.LOCKOUT_THRESHOLD, native_auth.LOCKOUT_S),
-                lane='state')
+                uid, observed, native_auth.LOCKOUT_THRESHOLD,
+                native_auth.LOCKOUT_S), lane='state')
             return fail()
         if not user.get('email_verified'):
+            # An unverified owner arriving through an invite link keeps it:
+            # persist it on the row (first invite wins) so the verification
+            # POST can claim it — otherwise the invite the page promises
+            # would silently evaporate here. Correct password proves
+            # ownership, so this write is on the owner's behalf.
+            if invite and _valid_invite_for_redemption(invite):
+                db.set_pending_invite(user['user_id'], invite)
             # Correct password proves ownership — pointing at verification
             # discloses nothing the owner doesn't know.
             return render_template('verify_needed.html', user=None,
@@ -919,8 +945,8 @@ def change_password():
     current_hash = g.user.get('password_hash', '')
     if not native_auth.verify_password(current_hash, current):
         _defer(lambda: db.record_login_failure(
-            uid, native_auth.LOCKOUT_THRESHOLD, native_auth.LOCKOUT_S),
-            lane='state')
+            uid, current_hash, native_auth.LOCKOUT_THRESHOLD,
+            native_auth.LOCKOUT_S), lane='state')
         return jsonify({'error': 'Current password is incorrect.'}), 400
     pw_err = native_auth.valid_password(new)
     if pw_err:

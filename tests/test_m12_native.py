@@ -451,11 +451,18 @@ rows_before = len(tk.FIXTURES.users.items)
 db.set_verify_token('nat-ghost', 'h', 123)
 db.set_reset_token('nat-ghost', 'h', 123)
 db.set_password_hash('nat-ghost', 'h', 'old-h')
-db.record_login_failure('nat-ghost', 10, 900)
+db.record_login_failure('nat-ghost', 'h', 10, 900)
 db.clear_login_failures('nat-ghost')
 db.set_user_status('nat-ghost', 'approved')  # admin action racing deletion
+db.set_pending_invite('nat-ghost', 'tok')
 tk.check('updates on a deleted row are dropped, never upserted',
          len(tk.FIXTURES.users.items) == rows_before)
+
+# (b3) A failure write bound to a superseded hash dies instead of
+# resurrecting counters after a completed reset or password change.
+db.record_login_failure(alice['user_id'], 'hash-from-before-a-reset', 10, 900)
+tk.check('stale-hash failure write is dropped',
+         'failed_logins' not in db.get_user(alice['user_id']))
 
 # (b2) Password change is a compare-and-set on the verified hash: a stale
 # request that validated an old password can't clobber a newer one.
@@ -597,6 +604,32 @@ resp = tk.post(c3, '/api/settings/password',
 tk.check('unlocked change works and clears the counter',
          resp.status_code == 200
          and 'failed_logins' not in db.get_user(alice['user_id']))
+
+# --- 15e. Unverified owner arriving through an invite link keeps it ----------
+# Signed up without an invite, later follows one: the correct password
+# proves ownership, the invite rides the row, verification claims it.
+tk.limiter.reset()
+c9 = tk.client()
+tk.native_signup(c9, 'gina@example.test', 'password-gna-77')
+gina_link = tk.extract_link(M.sent[-1][2])
+resp = tk.post(c3, '/api/invites', json={})
+tok_gina = resp.get_json()['token']
+tk.limiter.reset()
+resp = tk.post(c9, '/login/password',
+               data={'form_token': tk.form_token(c9), 'next': '/log',
+                     'invite': tok_gina, 'email': 'gina@example.test',
+                     'password': 'password-gna-77'})
+gina = db.find_user_by_email('gina@example.test')
+tk.check('valid invite at sign-in persists on the unverified row',
+         b'Verify your email first' in resp.data
+         and gina.get('pending_invite_token') == tok_gina)
+resp = tk.post(c9, gina_link)
+gina = db.get_user(gina['user_id'])
+tk.check('verification claims the login-carried invite',
+         resp.status_code == 302 and gina['status'] == 'approved'
+         and gina.get('invited_by') == alice['user_id']
+         and tk.FIXTURES.invites.items[(tok_gina,)].get('used_by')
+         == gina['user_id'])
 
 # --- 16. Rate limiting -------------------------------------------------------
 tk.limiter.reset()

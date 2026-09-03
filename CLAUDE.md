@@ -211,7 +211,8 @@ delete_photo/delete_user_photos purge the LRU.
    lands in the page).
 3. `approved_required`/`admin_required` do a FRESH users-table read every
    request (a rejected user's live session must die immediately; never cache
-   status in the cookie). `ADMIN_EMAILS` only bootstraps status at first
+   status in the cookie). `db.get_user` reads strongly consistent — a stale
+   GetItem could serve pre-rejection status or a pre-lockout counter. `ADMIN_EMAILS` only bootstraps status at first
    **Google** sign-in — NEVER for native accounts (typing the admin's email
    into the signup form, even verified, must not mint an admin).
 4. Session stores only `user_id` (+ transient `oauth_state`, `login_next`,

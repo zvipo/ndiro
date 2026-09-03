@@ -126,8 +126,13 @@ def ensure_tables():
 # --- Users -------------------------------------------------------------------
 
 def get_user(user_id):
-    """Fresh read of one user row, or None."""
-    resp = users_table().get_item(Key={'user_id': user_id})
+    """Fresh, STRONGLY CONSISTENT read of one user row, or None. Consistent
+    because this read backs the per-request status gate (a rejected user's
+    session must die immediately) and the settings lockout check — an
+    eventually consistent GetItem could serve pre-rejection or pre-lockout
+    state. 2x RCU cost is nothing at PoC scale."""
+    resp = users_table().get_item(Key={'user_id': user_id},
+                                  ConsistentRead=True)
     return resp.get('Item')
 
 
@@ -444,17 +449,22 @@ def set_password_hash(user_id, password_hash, expected_hash):
         return False
 
 
-def record_login_failure(user_id, threshold, lockout_seconds):
+def record_login_failure(user_id, observed_hash, threshold, lockout_seconds):
     """Atomically bump the consecutive-failure counter and lock the account
     once it reaches threshold. ADD is DynamoDB's atomic increment, so
     concurrent wrong guesses can never lose an update and slip past the
-    lockout; the lock decision uses the count THIS write produced."""
+    lockout; the lock decision uses the count THIS write produced. The
+    increment is BOUND to the password hash the caller verified against:
+    a stale deferred task from before a completed reset/change (which
+    swapped the hash and cleared the counter) dies here instead of
+    resurrecting failures onto the fresh credential."""
     try:
         resp = users_table().update_item(
             Key={'user_id': user_id},
             UpdateExpression='ADD failed_logins :one',
-            ConditionExpression='attribute_exists(user_id)',
-            ExpressionAttributeValues={':one': 1},
+            ConditionExpression=('attribute_exists(user_id) '
+                                 'AND password_hash = :h'),
+            ExpressionAttributeValues={':one': 1, ':h': observed_hash},
             ReturnValues='ALL_NEW',
         )
     except ClientError as e:
@@ -483,6 +493,23 @@ def record_login_failure(user_id, threshold, lockout_seconds):
 
 def clear_login_failures(user_id):
     _update_if_exists(user_id, 'REMOVE failed_logins, locked_until')
+
+
+def set_pending_invite(user_id, invite_token):
+    """Attach a validated invite to an unverified row (login flow) so the
+    verification POST can claim it. First invite wins — one already riding
+    the row (from signup) is never overwritten."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET pending_invite_token = :t',
+            ConditionExpression=('attribute_exists(user_id) '
+                                 'AND attribute_not_exists(pending_invite_token)'),
+            ExpressionAttributeValues={':t': invite_token},
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
 
 
 # --- AI daily-use counter (race-safe two-call conditional pattern) -----------

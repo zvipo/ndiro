@@ -99,7 +99,7 @@ class FakeTable:
     def load(self):
         pass
 
-    def get_item(self, Key):
+    def get_item(self, Key, ConsistentRead=None):
         item = self.items.get(self._kt(Key))
         return {'Item': deepcopy(item)} if item is not None else {}
 
