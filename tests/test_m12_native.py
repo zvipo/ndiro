@@ -303,10 +303,22 @@ tk.check('duplicate signup creates no row, notice mail sent instead',
                  for m in M.sent[mails_before:]))
 tk.limiter.reset()
 resp = tk.native_signup(tk.client(), 'admin@example.test', 'password-123')
-tk.check('signup with an ADMIN_EMAILS address never bootstraps admin',
+tk.check('signup with the existing admin email hits the duplicate branch',
          b'Check your email' in resp.data
          and db.find_user_by_email('admin@example.test')['status'] == 'admin'
          and db.find_user_by_email('admin@example.test', provider='native') is None)
+
+# The real ADMIN_EMAILS invariant needs a FRESH admin-listed address (the
+# one above exits through the duplicate branch before any status logic):
+# even a brand-new native signup for a listed email must come out pending.
+config.ADMIN_EMAILS.add('boss@example.test')
+tk.limiter.reset()
+resp = tk.native_signup(tk.client(), 'boss@example.test', 'password-123')
+boss = db.find_user_by_email('boss@example.test', provider='native')
+tk.check('a fresh ADMIN_EMAILS address never bootstraps a native admin',
+         b'Check your email' in resp.data
+         and boss is not None and boss['status'] == 'pending')
+config.ADMIN_EMAILS.discard('boss@example.test')
 
 # Stale unverified rows stop squatting the email once their token expires.
 # (The user_id is email-derived, so the fresh row reuses the same key — the
@@ -594,5 +606,32 @@ for _ in range(6):
     last = tk.post(anon, '/signup', data={'email': 'x@y.zz', 'password': 'p' * 10})
 tk.check('6th signup POST in a minute is a JSON 429',
          last.status_code == 429 and 'error' in (last.get_json() or {}))
+
+# --- 17. The async _defer path itself (prod branch, event-gated) -------------
+# Every HTTP test runs the inline branch; this exercises the lazy worker
+# start, lane isolation, and FIFO ordering the production path relies on.
+import threading as _threading
+
+app_module = tk.app_module
+seen = []
+state_done = _threading.Event()
+mail_done = _threading.Event()
+app_module.ASYNC_AUTH_WORK = True
+try:
+    app_module._defer(lambda: (seen.append('m1'), mail_done.set()))
+    app_module._defer(lambda: seen.append('s1'), lane='state')
+    app_module._defer(lambda: seen.append('s2'), lane='state')
+    app_module._defer(lambda: (seen.append('s3'), state_done.set()),
+                      lane='state')
+    tk.check('async state lane completes in FIFO order',
+             state_done.wait(5)
+             and [x for x in seen if x.startswith('s')] == ['s1', 's2', 's3'])
+    tk.check('async mail lane completes on its own worker',
+             mail_done.wait(5)
+             and app_module._auth_queues.get('mail') is not None
+             and app_module._auth_queues.get('mail')
+             is not app_module._auth_queues.get('state'))
+finally:
+    app_module.ASYNC_AUTH_WORK = False
 
 tk.finish('M12 native accounts')

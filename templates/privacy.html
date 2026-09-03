@@ -29,9 +29,12 @@
             <h2 style="margin-top:0;">What Ndiro stores</h2>
             <p>Your meal descriptions, optional context notes, fiber amounts, optional
             meal photos, and your account's email and name — from Google if you sign in
-            with Google, or the ones you typed at signup (plus a salted hash of your
-            password — never the password itself) for email/password accounts. That's
-            it. It is all stored in the operator's AWS account (DynamoDB and a private
+            with Google, or the ones you typed at signup for email/password accounts.
+            Email/password accounts additionally store account-security metadata: a
+            salted hash of your password (never the password itself), hashed one-time
+            verification/reset tokens while a link is outstanding, and a failed
+            sign-in counter for the lockout. It is all stored in the operator's AWS
+            account (DynamoDB and a private
             S3 bucket). The app also sends the occasional account email to the
             address on file: verification and password-reset links for
             email/password accounts, and — whichever way you sign in — a short

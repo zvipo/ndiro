@@ -8,6 +8,7 @@ root so the Google redirect URI and root-absolute template paths never change.
 """
 import calendar
 import hashlib
+import queue
 import re
 import secrets
 import threading
@@ -421,8 +422,15 @@ _LOGIN_ERROR = 'Wrong email or password.'
 #     spraying /forgot.
 # Queued work that a container stop discards is retryable by design (the
 # uniform pages promise nothing, and a lost counter write only under-counts
-# one guess). Tests flip ASYNC_AUTH_WORK off to run everything inline.
+# one guess). Queues are BOUNDED: with SES down, the mail lane drains as
+# slowly as one send-timeout per task, and an unbounded backlog would retain
+# captured addresses in memory and later deliver long-obsolete links —
+# overflow drops the task with one AUTH_TASK_DROPPED log line instead (a
+# dropped mail is a user-visible retry; a dropped state write under- or
+# over-counts a single guess, both harmless). Tests flip ASYNC_AUTH_WORK
+# off to run everything inline.
 ASYNC_AUTH_WORK = True
+_AUTH_QUEUE_LIMITS = {'state': 1000, 'mail': 100}
 _auth_queues = {}
 _auth_queue_lock = threading.Lock()
 
@@ -447,12 +455,14 @@ def _defer(fn, lane='mail'):
         with _auth_queue_lock:
             q = _auth_queues.get(lane)
             if q is None:
-                import queue as _queue
-                q = _queue.Queue()
+                q = queue.Queue(maxsize=_AUTH_QUEUE_LIMITS.get(lane, 100))
                 threading.Thread(target=_auth_worker, args=(q,),
                                  daemon=True).start()
                 _auth_queues[lane] = q
-    q.put(fn)
+    try:
+        q.put_nowait(fn)
+    except queue.Full:
+        print(f"AUTH_TASK_DROPPED {lane}")
 
 
 def _establish_session(user_id, status):
@@ -603,7 +613,11 @@ def signup_submit():
 
         # MAX_USERS before the duplicate check and before any invite logic
         # (invariant #9): a full instance never consumes an invite and
-        # answers every signup identically.
+        # answers every signup identically. Read-then-create, like the
+        # Google path in /callback and the invite cap: concurrent signups
+        # can overshoot by at most the thread count, which the rate limit
+        # bounds — accepted at PoC scale, a transactional counter is
+        # machinery this app deliberately avoids (see CLAUDE.md).
         if len(rows) >= config.MAX_USERS:
             return render_template('full.html'), 403
 
@@ -992,10 +1006,14 @@ def admin_set_status(user_id, action):
         return jsonify({'error': 'Admins cannot be modified here'}), 400
     status = 'approved' if action == 'approve' else 'rejected'
     try:
-        db.set_user_status(user_id, status)
+        ok = db.set_user_status(user_id, status)
     except Exception as e:
         print(f"Error setting user status: {type(e).__name__}")
         return jsonify({'error': 'Failed to update user'}), 500
+    if not ok:
+        # The row vanished between the read above and the conditional write
+        # (self-deletion, or a signup purge) — say so, don't claim success.
+        return jsonify({'error': 'User not found'}), 404
     return jsonify({'user_id': user_id, 'status': status})
 
 

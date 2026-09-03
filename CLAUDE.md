@@ -299,6 +299,10 @@ delete_photo/delete_user_photos purge the LRU.
     clear) runs off the response path via `_defer` — lazily-started FIFO
     workers in TWO lanes ('state' orders the counter and its clear; 'mail'
     carries SES sends, so a slow SES can never delay lockout bookkeeping;
+    both queues are bounded — overflow drops the task with an
+    AUTH_TASK_DROPPED log line; the 10-guess bound is exact up to the
+    requests already in flight when the lockout lands — the price of
+    keeping the write off the response path;
     tests set `app.ASYNC_AUTH_WORK=False` to run it all inline). The
     settings password change participates in the SAME account lockout (its
     current-password check is an oracle like sign-in). Credential/token/
