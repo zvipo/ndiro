@@ -1,0 +1,49 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p><strong>Dzidza</strong> ("learn" in Shona) is a field guide to this
+        site's own source code. It teaches web development — the whole stack,
+        not just the browser half — using Ndiro itself as the textbook. Every
+        example is real code from the
+        {% if repo_url %}<a href="{{ repo_url }}">public repository</a>{% else %}public repository{% endif %},
+        and every chapter tells you which file to open next.</p>
+
+        <p>It is written for an engineer who already builds serious systems —
+        distributed storage, query engines, RPC services — but has never had a
+        reason to care what a <code>&lt;div&gt;</code> is or why cookies exist.
+        You will find your own world referenced constantly: a web app is a
+        client-server system with an unusually hostile client, and most of what
+        looks foreign here is a renamed version of something you already know.</p>
+
+        <h2>How to read it</h2>
+        <ul>
+            <li><strong>Read with the repo open.</strong> Chapters quote short
+            excerpts, but the point is always the real file. When a chapter says
+            "open <code>templates/base.html</code>", do it.</li>
+            <li><strong>Use the browser's developer tools.</strong> Press
+            <kbd>F12</kbd> on any page of this site. The Elements, Network, and
+            Console tabs are your <code>jstack</code>, <code>tcpdump</code>, and
+            REPL for the frontend. Several chapters have exercises in them.</li>
+            <li>The book runs in four movements: <strong>the mental
+            model</strong> (anatomy, HTTP, the backend), <strong>the browser
+            languages</strong> (HTML, CSS, Jinja, JavaScript), <strong>the two
+            halves joined</strong> (the API, identity, storage, the capstone
+            pipeline), and finally <strong>security and practice</strong>, which
+            make you a reviewer.</li>
+        </ul>
+
+        <h2>Contents</h2>
+        <ol class="toc">
+            {% for slug, title, _ in chapters %}
+            <li><a href="/dzidza/{{ slug }}"><span class="num">{{ loop.index }}</span> {{ title }}</a></li>
+            {% endfor %}
+        </ol>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>Boxes like this one appear throughout: they map a web concept to
+            something from large-scale systems engineering — HDFS, Hive, RPC,
+            caches, queues. Green boxes are hands-on exercises; red boxes are
+            classic mistakes to watch for in review.</p>
+        </div>
+{% endblock %}

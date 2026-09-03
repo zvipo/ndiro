@@ -1,0 +1,124 @@
+{% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
+
+{% block guide %}
+        <p>Jinja is the template language Flask uses to produce HTML on the
+        server. A template is HTML with holes; <code>render_template()</code>
+        fills the holes from the keyword arguments the route passes and returns
+        the finished string. By the time the browser sees anything, every trace
+        of Jinja is gone — which is why "view source" on this site shows plain
+        HTML.</p>
+
+        <h2>The three delimiters</h2>
+{% raw %}<pre><code>{{ nutrient.label }}        ← expression: evaluate and insert
+{% if ai_enabled %} … {% endif %}   ← statement: control flow
+{# never reaches the browser #}     ← comment (unlike &lt;!-- HTML comments --&gt;, which do)</code></pre>{% endraw %}
+        <p>The values come from the route. Here's the pair — server side and
+        template side — for the log page:</p>
+        {{ code_file('app.py') }}
+        <pre><code>return render_template('log.html', user=g.user,
+                       nutrient=config.resolve_nutrient(g.user),
+                       fiber_guide=config.FIBER_GUIDE,
+                       ai_enabled=bool(config.OPENAI_API_KEY),
+                       photos_enabled=bool(config.S3_BUCKET))</code></pre>
+        {{ code_file('templates/log.html') }}
+{% raw %}<pre><code>{% if ai_enabled %}
+&lt;div class="ai-row"&gt;
+    &lt;button type="button" class="btn subtle" id="estimateBtn"&gt;…&lt;/button&gt;
+&lt;/div&gt;
+{% endif %}</code></pre>{% endraw %}
+        <p>Note what that conditional achieves: when the operator hasn't
+        configured an OpenAI key, the AI buttons don't render <em>at all</em>.
+        Not hidden with CSS — absent from the HTML. The server knows things at
+        render time that the browser shouldn't have to discover (or shouldn't
+        be told), and this is the mechanism.</p>
+
+        <h2>Inheritance: one skin, many pages</h2>
+        <p>Templates form a class-like hierarchy. <code>base.html</code> defines
+        the skeleton and marks the variation points as named blocks; each page
+        extends it and overrides only what it needs:</p>
+        {{ code_file('templates/log.html') }}
+{% raw %}<pre><code>{% extends "base.html" %}
+{% block title %}Ndiro — Log{% endblock %}
+{% block styles %} …page-specific CSS… {% endblock %}
+{% block content %} …the page body… {% endblock %}
+{% block scripts %} …the page's JS… {% endblock %}</code></pre>{% endraw %}
+        <p>That's why every page shares the theme tokens, the corner menu, and
+        the brand pill without repeating a line of them. There's also
+        composition via <code>include</code>, and Ndiro uses it for something
+        subtle: the review page and the public share view render the
+        <em>same</em> chart-and-feed partial,
+        <code>_review_core.html</code>, with different data URLs. The share
+        view has no edit buttons and no AI affordances not because someone
+        remembered to strip them, but because the shared partial never had them
+        — reuse as a security guarantee.</p>
+        <p>One more supporting piece: a <em>context processor</em> in
+        <code>app.py</code> (<code>inject_build</code>) adds
+        <code>build_commit_short</code> to every template's context
+        automatically — that's how the running commit shows up in the menu on
+        all pages without every route passing it.</p>
+
+        <h2>Autoescaping: the invisible bodyguard</h2>
+        <p>The most important Jinja fact for a reviewer. When
+        {% raw %}<code>{{ meal.description }}</code>{% endraw %} inserts a value, Jinja
+        HTML-escapes it: <code>&lt;</code> becomes <code>&amp;lt;</code>,
+        <code>"</code> becomes <code>&amp;quot;</code>. So a meal named
+        <code>&lt;script&gt;alert(1)&lt;/script&gt;</code> renders as those
+        literal characters instead of executing — the cross-site-scripting
+        (XSS) attack dies by default. The repo's tests exercise exactly this:
+        <code>tests/test_m9_status.py</code> injects a script tag through the
+        commit title and asserts it comes out inert.</p>
+        <p>The escape hatch, a <code>|safe</code> filter, marks a value as
+        trusted markup and skips escaping. This codebase never uses it on user
+        data — treat any new <code>|safe</code> in a diff as a finding until
+        proven otherwise.</p>
+
+        <h2><code>tojson</code>: the one sanctioned bridge to JavaScript</h2>
+        <p>Sometimes the server needs to hand a data structure to the page's
+        JavaScript. Interpolating into a script with plain
+        {% raw %}<code>{{ … }}</code>{% endraw %} is wrong (HTML escaping isn't JS escaping);
+        building JSON by string concatenation is worse. The right tool:</p>
+        {{ code_file('templates/log.html') }}
+{% raw %}<pre><code>&lt;script&gt;
+    const FIBER_GUIDE = {{ fiber_guide|tojson }};
+    const NUTRIENT = {{ nutrient|tojson }};   // {key, label, unit, goal, …}
+&lt;/script&gt;</code></pre>{% endraw %}
+        <p><code>|tojson</code> serializes the Python value as JSON <em>and</em>
+        escapes it safely for a script context. The rendered page simply
+        contains <code>const NUTRIENT = {"key": "fiber_g", …};</code> — server
+        state becomes a JS constant. This is the seam from the
+        <a href="/dzidza/anatomy">anatomy chapter</a> made concrete: config crosses the boundary once, at render time, through
+        this filter.</p>
+
+        <h2>Server-side or client-side?</h2>
+        <p>With two places to compute things, the split rule in this codebase
+        is: <strong>identity, configuration, and anything security-relevant
+        render server-side; anything derived from fetched data or local time
+        renders client-side.</strong> The nutrient label is Jinja (the server
+        resolved it); the "Today — Thu, Sep 3" heading is JavaScript (only the
+        browser knows the user's timezone — the server clock is deliberately
+        never trusted for user-local dates, a rule you'll find as invariant #10
+        in CLAUDE.md).</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>A template is a prepared statement for HTML. Autoescaping is
+            parameter binding: values can never be confused for syntax. String
+            concatenation into HTML is exactly SQL-injection-by-concatenation,
+            same failure mode, same fix. And <code>|safe</code> is the raw-query
+            escape hatch every ORM has — legitimate, rare, and where the
+            audits go.</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>Log a meal whose description is
+            <code>&lt;b&gt;bold?&lt;/b&gt;</code>. It displays as literal text
+            with the angle brackets visible. Then find it in devtools → Elements
+            and note the text node — the markup arrived escaped. (This
+            particular render happens in JavaScript via
+            <code>textContent</code>, the DOM-side twin of autoescaping —
+            the <a href="/dzidza/js">JavaScript chapter</a> picks up that
+            thread.)</p>
+        </div>
+{% endblock %}

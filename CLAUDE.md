@@ -38,6 +38,7 @@ python tests/test_m9_status.py       # /status build stamp (public page leaks no
 python tests/test_m10_monitor.py     # /admin/monitor instance stats (counts only)
 python tests/test_m11_autolog.py     # async auto-log spool (queue, cap, dead-letter)
 python tests/test_m12_native.py      # native accounts (signup/verify/reset, no-oracle)
+python tests/test_m12_dzidza.py      # /dzidza guide (public, closed registry, leak check)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -139,6 +140,15 @@ raises without it (tests set their own).
   tokens on it). `_review_core.html`/`_review_styles.html` are shared by
   `review.html` and `share_view.html` — the share view differs only in data URL
   and chrome, and has no edit/AI affordances by construction.
+  `_dzidza.html` + `dzidza_index.html` + `dzidza_ch*.html` are **Dzidza**
+  (`/dzidza`, public like `/privacy`): the built-in web-development guide that
+  teaches the whole stack from this repo's own code. Chapters come from the
+  closed `DZIDZA_CHAPTERS` registry in app.py — the URL slug selects from that
+  tuple and is NEVER used to build a template path. As public pages they must
+  show no config values (invariant #11); `tests/test_m12_dzidza.py` runs the
+  same leak check `/status` gets, so keep chapter code excerpts free of real
+  env values. When the architecture changes, update the affected chapter — a
+  guide that misdescribes the code is worse than none.
 
 ## Data model (DynamoDB, on-demand, auto-created, deliberately NO GSIs — four tables)
 
@@ -189,7 +199,9 @@ keys built **server-side only** in db.py; served THROUGH the app (never
 presigned): `/photo/<date>/<meal_id>` (owner session) and
 `/s/<token>/photo/...` (token-scoped), both 120/min, backed by a
 byte-budgeted in-process LRU (`PHOTO_CACHE_MB`, default 64 — valid because
-of the single gunicorn worker) with `?v=sha1(updated_at)` versioned URLs +
+of the single gunicorn worker) with `?v=sha1(photo_v)` versioned URLs (a
+timestamp bumped only when the photo bytes change — text edits never bust
+photo caches) +
 ETag/304 so browsers cache too (`Cache-Control: private`; owner max-age 1y
 immutable, share max-age 1 day so revoked recipients' caches age out).
 `get_photo_bytes` refuses keys outside the owner's prefix; replacement
@@ -281,8 +293,9 @@ delete_photo/delete_user_photos purge the LRU.
 11. `/status` is PUBLIC (like `/privacy` and `/health`): it shows the build
     stamp, uptime, and BOOLEANS for the optional integrations (AI, photos,
     email) — never a configuration value (no bucket, model, host, or email).
-    A new field there needs a matching entry in `tests/test_m9_status.py`'s
-    leak check.
+    A new field there needs a matching entry in `tests/testkit.py`'s
+    `CONFIG_VALUES` leak list (the shared check `test_m9_status.py` and
+    `test_m12_dzidza.py` both run).
 12. Native credentials: passwords exist ONLY as werkzeug scrypt hashes;
     emailed verify/reset tokens are 256-bit random, stored ONLY as SHA-256
     hashes, single-use via conditional writes, and expiring (verify 24h,

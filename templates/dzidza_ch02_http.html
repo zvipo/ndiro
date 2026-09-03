@@ -1,0 +1,122 @@
+{% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
+
+{% block guide %}
+        <p>Every arrow in the <a href="/dzidza/anatomy">anatomy chapter</a>'s diagram is an HTTP exchange. In its
+        classic form — HTTP/1.1, which the proxy speaks to this app — it is a
+        plain-text request/response protocol over TCP (wrapped in TLS as
+        HTTPS), refreshingly simple to read with your eyes. Newer versions
+        change the transport (HTTP/2 multiplexes binary frames, HTTP/3 rides
+        QUIC over UDP) but keep exactly the same request/response model, so
+        everything below transfers.</p>
+
+        <h2>Anatomy of an exchange</h2>
+        <p>Here is (roughly) what the browser sends when the log page fetches
+        meals, and what Ndiro answers:</p>
+        <pre><code>GET /api/meals?days=7&amp;anchor=2026-09-03 HTTP/1.1
+Host: your.domain.example               ← wherever the instance is deployed
+Cookie: session=eyJ1c2VyX2lkIjoi…       ← who you are (the identity chapter)
+Accept: */*
+
+HTTP/1.1 200 OK
+Content-Type: application/json           ← headers: metadata about the body
+                                         ← blank line, then the body:
+{"days": [{"date": "2026-09-03", "meals": [...], "totals": {"fiber_g": 12.5}}], …}</code></pre>
+        <p>A request is: <strong>method</strong> + <strong>path</strong> (with
+        optional <code>?query=params</code>) + <strong>headers</strong> +
+        optional <strong>body</strong>. A response is: <strong>status
+        code</strong> + headers + body. That's the whole protocol surface this
+        app uses.</p>
+
+        <h2>Methods: the verb is part of the contract</h2>
+        <table>
+            <tr><th>Method</th><th>Meaning</th><th>In Ndiro</th></tr>
+            <tr><td><code>GET</code></td><td>Read. Must never change state — browsers prefetch and retry GETs freely.</td><td>Pages, <code>/api/meals</code>, photos</td></tr>
+            <tr><td><code>POST</code></td><td>Create / act.</td><td>Add a meal, create a share link, run an AI estimate</td></tr>
+            <tr><td><code>PUT</code></td><td>Replace something that has an address.</td><td>Edit a meal: <code>PUT /api/meals/&lt;date&gt;/&lt;meal_id&gt;</code></td></tr>
+            <tr><td><code>DELETE</code></td><td>Remove it.</td><td>Delete a meal, revoke a share</td></tr>
+        </table>
+        <p>The "GET never writes" rule is load-bearing security here, not
+        etiquette: Ndiro's CSRF defence (the <a href="/dzidza/security">security
+        chapter</a>) assumes <em>application data</em> never changes on a GET.
+        The auth flow holds the two deliberate exceptions:
+        <code>/logout</code> clears the session, and <code>/callback</code> —
+        forced to be a GET by the OAuth redirect — really writes (it can create
+        your account and claim an invite), which is why it carries its own
+        guard; that chapter explains both.</p>
+
+        <h2>Status codes this app actually returns</h2>
+        <p>Status codes are the API's error model. Grep <code>app.py</code> for
+        any of these and you'll land on the policy that produces it:</p>
+        <table>
+            <tr><th>Code</th><th>Meaning</th><th>Where you'll meet it in Ndiro</th></tr>
+            <tr><td><code>200</code></td><td>OK</td><td>Everything that worked</td></tr>
+            <tr><td><code>302</code></td><td>Redirect: "go here instead"</td><td>The whole OAuth dance; guards bouncing you to <code>/login</code></td></tr>
+            <tr><td><code>304</code></td><td>Not Modified — cached copy still good</td><td>Photo proxy when the browser's ETag matches (the <a href="/dzidza/data">storage chapter</a>)</td></tr>
+            <tr><td><code>400</code></td><td>Your request is malformed</td><td>Missing meal description, invalid date</td></tr>
+            <tr><td><code>401</code></td><td>Not signed in</td><td>API calls with a dead session — the JS reacts by redirecting to login</td></tr>
+            <tr><td><code>403</code></td><td>Signed in, but not allowed</td><td>Pending accounts hitting the API; non-admins hitting admin APIs</td></tr>
+            <tr><td><code>404</code></td><td>No such thing</td><td>Dead share/invite links — deliberately indistinguishable from each other (the <a href="/dzidza/security">security chapter</a>)</td></tr>
+            <tr><td><code>413</code></td><td>Body too large</td><td>Uploads past <code>MAX_CONTENT_LENGTH</code> (16&nbsp;MB)</td></tr>
+            <tr><td><code>429</code></td><td>Slow down</td><td>Rate limits — see <code>@limiter.limit(…)</code> decorators</td></tr>
+            <tr><td><code>500</code></td><td>Server bug</td><td>Hopefully nowhere; anything unhandled</td></tr>
+            <tr><td><code>503</code></td><td>Not configured / unavailable</td><td><code>/login</code> when no Google client ID is set</td></tr>
+        </table>
+
+        <h2>Statelessness and cookies</h2>
+        <p>HTTP has no connections in the session sense: every request stands
+        alone, and the server keeps no per-client channel state. Continuity is
+        faked with <strong>cookies</strong> — the server sets one
+        (<code>Set-Cookie: session=…</code>) and the browser automatically
+        attaches it to every subsequent request to that site. Ndiro's session
+        cookie contains a signed <code>{'user_id': …}</code> and nothing else;
+        the <a href="/dzidza/auth">identity chapter</a> unpacks it byte by byte.</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>Think of HTTP like a stateless RPC protocol where the auth token
+            (the cookie) is attached by the client library on every call —
+            except the "client library" is the browser, and it attaches the
+            cookie for <em>any</em> page that triggers a request to your domain,
+            including a malicious one. That over-eagerness is the entire CSRF
+            problem, and why the cookie carries a <code>SameSite</code>
+            attribute (the <a href="/dzidza/security">security chapter</a>).</p>
+        </div>
+
+        <h2>The proxy in front, and trusting headers</h2>
+        <p>The app never speaks TLS itself. A reverse proxy (Caddy on a
+        Raspberry Pi, or Render's load balancer) terminates HTTPS and forwards
+        plain HTTP to gunicorn, adding headers like
+        <code>X-Forwarded-For</code> (the real client IP) and
+        <code>X-Forwarded-Proto</code> (that the original request was HTTPS).
+        Flask must be told these headers are trustworthy:</p>
+        {{ code_file('app.py') }}
+        <pre><code># Behind EXACTLY ONE trusted reverse proxy (Caddy on the Pi / Render's LB).
+# x_for=1 makes request.remote_addr the real client so the rate limiter
+# isolates clients instead of collapsing everyone into the proxy's IP.
+# Do NOT keep x_for=1 if the container is ever exposed without a proxy —
+# clients could then spoof X-Forwarded-For to dodge rate limits.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)</code></pre>
+        <p>Anyone can put any header on a request, so
+        <code>X-Forwarded-For</code> is only meaningful for the hops you
+        control. <code>x_for=1</code> says "exactly one proxy I trust appended
+        to this list; believe one entry deep, no more". Misconfigure this and
+        clients can impersonate arbitrary IPs to the rate limiter — a classic
+        review catch.</p>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>From any terminal, no login needed (substitute the domain you're
+            reading this on):
+            <code>curl -i https://your.domain.example/health</code> — read the
+            status line, headers, and JSON body. Then
+            <code>curl -i https://your.domain.example/api/meals</code> and watch
+            the <code>401</code> come back: no cookie, no identity. Add
+            <code>-H "X-Forwarded-For: 203.0.113.7"</code> to the first and
+            confirm nothing changes — behind the trusted proxy your header is
+            superseded by the proxy's own entry. (That protection is exactly the
+            topology assumption in the comment above: expose the container
+            without the proxy and the same header <em>would</em> be
+            believed.)</p>
+        </div>
+{% endblock %}

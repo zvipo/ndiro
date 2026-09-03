@@ -1,0 +1,136 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p>A public web app's threat model is brutal in a specific way: the
+        client is anyone, the requests are arbitrary, and your own UI is the
+        least interesting way to talk to your server. This chapter names the
+        classic attack families, shows Ndiro's counter to each, and turns them
+        into the questions you'll ask in review. CLAUDE.md's "security
+        invariants" section is the same material in checklist form — the app's
+        SLOs for security.</p>
+
+        <h2>XSS — injecting script into pages</h2>
+        <p><strong>Attack:</strong> get your text rendered as markup in someone
+        else's browser; your <code>&lt;script&gt;</code> then runs with their
+        session on your victim's screen.
+        <strong>Counter:</strong> escaping at every insertion point — Jinja
+        autoescaping server-side (<a href="/dzidza/jinja">Jinja</a>),
+        <code>textContent</code>-only for dynamic data client-side
+        (<a href="/dzidza/js">JavaScript</a>), <code>|tojson</code> at the
+        script bridge. <strong>Review question:</strong> does the diff add
+        <code>innerHTML</code> with anything non-literal, or a
+        <code>|safe</code>?</p>
+
+        <h2>CSRF — riding someone else's cookie</h2>
+        <p><strong>Attack:</strong> the browser attaches your Ndiro cookie to
+        any request aimed at your instance's domain — including a form
+        auto-submitted by a page on <code>evil.example</code> that you merely
+        visited. The attacker can't read responses, but state-changing requests
+        fire with your identity. <strong>Counter:</strong>
+        <code>SameSite=Lax</code> on the session cookie — the browser withholds
+        it on cross-site requests except top-level GET navigations. That's
+        sufficient <em>only because</em> of a second discipline: no GET ever
+        changes <em>application data</em> (the <a href="/dzidza/http">HTTP
+        chapter</a>). Be precise about the
+        residue, because Lax does send the cookie on those top-level GETs: the
+        two exceptions are covered otherwise. <code>/callback</code> is a
+        genuinely state-changing GET — it can create your account and claim an
+        invite — and is guarded by the OAuth <code>state</code> nonce instead;
+        <code>/logout</code> only clears the session, logout-CSRF being a
+        deliberately accepted nuisance-only risk. <strong>Review question:</strong> does any
+        new GET route write anything?</p>
+
+        <h2>IDOR — the missing ownership check</h2>
+        <p><strong>Attack:</strong> "insecure direct object reference" — the URL
+        or form carries an ID, the server fetches it without asking whose it
+        is. <code>/api/meals?user_id=someone_else</code>.
+        <strong>Counter:</strong> structural: identity comes only from the
+        session (<code>g.user</code>), and no meal route accepts a user ID at
+        all — the request can't even express the attack (the
+        <a href="/dzidza/api">API chapter</a>). Every storage
+        call keys on <code>session['user_id']</code>.
+        <code>tests/probe_cross_user.py</code> — the repo calls it THE security
+        test — signs in as two users and probes every route cross-tenant.
+        <strong>Review question:</strong> can any new parameter influence
+        <em>whose</em> data is touched?</p>
+
+        <h2>Open redirect &amp; token leaks</h2>
+        <p>Two quieter ones from the <a href="/dzidza/auth">identity chapter</a>'s neighborhood.
+        <code>_safe_next</code> stops <code>/login?next=…</code> from
+        laundering redirects to attacker sites through a trusted domain. And
+        share URLs (<code>/s/&lt;token&gt;</code>) are capability URLs — the
+        token <em>is</em> the access — so keeping it out of side channels
+        matters: <code>base.html</code> sets
+        <code>&lt;meta name="referrer" content="strict-origin"&gt;</code> so a
+        recipient clicking an outbound link never ships the token-bearing path
+        in the <code>Referer</code> header.</p>
+
+        <h2>Enumeration oracles</h2>
+        <p>Can an attacker <em>learn</em> from your error responses? If a dead
+        share link said "revoked" vs "never existed", token-guessing gains a
+        probe. Ndiro's rule: every dead state of a share link (missing,
+        revoked, expired) or invite link (those three plus already-used)
+        returns a <strong>byte-identical 404</strong>. Combined with 192-bit
+        random tokens and a 30/min rate limit, guessing is hopeless and
+        unmeasurable. The same thinking prices timing and wording of every
+        error path: failure responses should be as uniform as truth allows.</p>
+
+        <h2>Trust boundaries inside the house</h2>
+        <p>Less classic, more instructive — two boundaries this app draws
+        <em>tighter</em> than most:</p>
+        <ul>
+            <li><strong>Admins are not omniscient.</strong> Admin surfaces show
+            account metadata and instance-wide aggregates only; no route or
+            template lets an admin view anyone's meals or photos. It's enforced
+            mechanically: the stats scan projects only
+            <code>user_id, date</code> so meal content never even enters the
+            process, and nothing keyed by user may be serialized into the stats
+            payload (invariant #7, asserted by <code>test_m10</code>).</li>
+            <li><strong>Logs are metadata-only.</strong> User IDs and error
+            types, never descriptions or photo bytes; the AI error records log
+            lengths and key <em>names</em> in place of content. The log
+            pipeline is an exfiltration channel like any other.</li>
+        </ul>
+
+        <h2>Secrets and the public repo</h2>
+        <p>The repo is public, so configuration <em>is</em> the secret
+        perimeter: everything sensitive arrives as environment variables;
+        <code>.env</code> is git- and docker-ignored;
+        <code>config.py</code> hard-fails without <code>SECRET_KEY</code>
+        (leaking would let anyone mint session cookies — the
+        <a href="/dzidza/auth">identity chapter</a>). Public pages
+        like <code>/status</code> show booleans ("photos: on"), never values —
+        and <code>test_m9</code> literally greps the rendered page for every
+        config value in the test environment. This guide is a public page too,
+        and had to obey the same rule.</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>The mindset transfers directly from multi-tenant infrastructure:
+            XSS is untrusted code reaching a trusted execution context; CSRF is
+            ambient authority (a delegation-token store that attaches tokens to
+            requests you didn't intend); IDOR is a missing ACL check after
+            authentication succeeded — authn without authz. The novelty is only
+            <em>where</em> the boundaries run: through the browser, the cookie
+            jar, and the log files.</p>
+        </div>
+
+        <div class="box pitfall">
+            <div class="box-title">⚠️ The reviewer's short list</div>
+            <p>For any diff: ① <code>innerHTML</code>/<code>|safe</code> near
+            data ② a user/object ID readable from URL, query, or form
+            ③ a state-changing GET ④ a config value reaching a public page or a
+            log line ⑤ an error path that says more than its siblings ⑥ a new
+            route missing its guard or rate limit. Six greps, most of the audit.</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>Create a share link, then revoke it, and fetch it with
+            <code>curl -i</code> both times after revoking and with a mangled
+            token — compare the two 404s byte for byte. Then read
+            <code>probe_cross_user.py</code> end to end: it's the most readable
+            statement of the app's actual security contract, better than any
+            prose (this chapter included).</p>
+        </div>
+{% endblock %}
