@@ -400,10 +400,27 @@ def set_verify_token(user_id, token_hash, expires_at):
         {':h': token_hash, ':e': int(expires_at)})
 
 
-def set_reset_token(user_id, token_hash, expires_at):
-    _update_if_exists(
-        user_id, 'SET reset_token_hash = :h, reset_expires_at = :e',
-        {':h': token_hash, ':e': int(expires_at)})
+def set_reset_token(user_id, token_hash, expires_at, observed_hash):
+    """Install a reset token, BOUND to the password hash the caller's forgot
+    task observed: a password change completing after the /forgot request
+    was queued swaps the hash (and clears tokens), and the stale task must
+    not install a fresh token capable of overwriting the new password.
+    True when the write landed — mail the link only then."""
+    try:
+        users_table().update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET reset_token_hash = :h, reset_expires_at = :e',
+            ConditionExpression=('attribute_exists(user_id) '
+                                 'AND password_hash = :p'),
+            ExpressionAttributeValues={':h': token_hash,
+                                       ':e': int(expires_at),
+                                       ':p': observed_hash},
+        )
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return False
 
 
 def complete_password_reset(user_id, password_hash, token_hash):

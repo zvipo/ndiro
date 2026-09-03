@@ -311,8 +311,13 @@ delete_photo/delete_user_photos purge the LRU.
     (`db.list_users(consistent=True)`) — an eventual read could serve a
     pre-lockout counter or miss a just-written token. A
     completed password change or reset atomically invalidates any
-    outstanding reset token, and the signed-in change is a compare-and-set
-    on the verified hash (a stale request can't clobber a newer password).
+    outstanding reset token, the signed-in change is a compare-and-set
+    on the verified hash (a stale request can't clobber a newer password),
+    and deferred counter/reset-token writes are bound to the password hash
+    their request observed — work queued before a completed change/reset
+    dies instead of applying to the fresh credential. The deferred signup
+    create re-checks MAX_USERS on its single FIFO worker, so creates queued
+    while the instance filled are dropped, not applied late.
     Emailed GET links never mutate (scanners prefetch) — consumption is
     POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
     or a completed reset; the counter is an atomic DynamoDB ADD (concurrent

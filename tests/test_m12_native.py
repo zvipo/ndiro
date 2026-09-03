@@ -449,7 +449,7 @@ db.delete_user(first['user_id'])
 # native-account update is conditional on the row still existing.
 rows_before = len(tk.FIXTURES.users.items)
 db.set_verify_token('nat-ghost', 'h', 123)
-db.set_reset_token('nat-ghost', 'h', 123)
+db.set_reset_token('nat-ghost', 'h', 123, 'ph')
 db.set_password_hash('nat-ghost', 'h', 'old-h')
 db.record_login_failure('nat-ghost', 'h', 10, 900)
 db.clear_login_failures('nat-ghost')
@@ -463,6 +463,23 @@ tk.check('updates on a deleted row are dropped, never upserted',
 db.record_login_failure(alice['user_id'], 'hash-from-before-a-reset', 10, 900)
 tk.check('stale-hash failure write is dropped',
          'failed_logins' not in db.get_user(alice['user_id']))
+
+# (b4) A queued forgot task from before a password change must not install
+# a reset token able to overwrite the fresh password.
+tk.check('stale-hash reset-token write is dropped',
+         db.set_reset_token(alice['user_id'], 'th', 9999999999,
+                            'hash-from-before-a-change') is False
+         and 'reset_token_hash' not in db.get_user(alice['user_id']))
+
+# (b5) A queued signup create re-checks capacity on the worker: creates
+# enqueued while the instance filled are dropped, not applied late.
+saved_max = config.MAX_USERS
+config.MAX_USERS = db.count_users()
+tk.app_module._signup_create_work('late@example.test', '', 'ph', None,
+                                  'https://ndiro.test')
+tk.check('queued create dropped once the instance is full',
+         db.find_user_by_email('late@example.test') is None)
+config.MAX_USERS = saved_max
 
 # (b2) Password change is a compare-and-set on the verified hash: a stale
 # request that validated an old password can't clobber a newer one.

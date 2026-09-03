@@ -650,6 +650,14 @@ def _signup_create_work(email, name, password_hash, invite, base):
     Failures log only — the uniform page has already answered, and resend
     or a fresh signup recovers (same contract as /forgot)."""
     try:
+        # Re-check capacity HERE, not just at enqueue time: while a slow SES
+        # send blocks this lane, many requests could pass the request-path
+        # gate and queue creates that would land after the instance filled.
+        # This lane is ONE FIFO worker, so creates are serialized and this
+        # recheck immediately before each put keeps the cap tight.
+        if db.count_users() >= config.MAX_USERS:
+            print("Signup dropped: instance filled while queued")
+            return
         if invite and not _valid_invite_for_redemption(invite):
             invite = None  # dead invite: normal pending signup, never an error
         raw_token, token_hash = native_auth.mint_token()
@@ -877,9 +885,14 @@ def _forgot_work(email, base):
             _send_verify_email(email, raw_token, base)
         else:
             raw_token, token_hash = native_auth.mint_token()
-            db.set_reset_token(user['user_id'], token_hash,
-                               int(time.time()) + native_auth.RESET_TTL_S)
-            _send_reset_email(email, raw_token, base)
+            # Bound to the hash this task observed: if a password change
+            # completed while this sat in the queue, the write loses and no
+            # link goes out (the owner just chose a password — a stale
+            # reset link able to overwrite it must not exist).
+            if db.set_reset_token(user['user_id'], token_hash,
+                                  int(time.time()) + native_auth.RESET_TTL_S,
+                                  user.get('password_hash', '')):
+                _send_reset_email(email, raw_token, base)
     except Exception as e:
         print(f"Password-reset request failed: {type(e).__name__}")
 
