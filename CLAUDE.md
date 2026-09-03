@@ -36,6 +36,7 @@ python tests/test_m8_photos.py       # photo proxy + cache (scoping, 304s, LRU)
 python tests/test_m9_status.py       # /status build stamp (public page leaks no config)
 python tests/test_m10_monitor.py     # /admin/monitor instance stats (counts only)
 python tests/test_m11_autolog.py     # async auto-log spool (queue, cap, dead-letter)
+python tests/test_m12_dzidza.py      # /dzidza guide (public, closed registry, leak check)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -117,6 +118,15 @@ raises without it (tests set their own).
   tokens on it). `_review_core.html`/`_review_styles.html` are shared by
   `review.html` and `share_view.html` — the share view differs only in data URL
   and chrome, and has no edit/AI affordances by construction.
+  `_dzidza.html` + `dzidza_index.html` + `dzidza_ch*.html` are **Dzidza**
+  (`/dzidza`, public like `/privacy`): the built-in web-development guide that
+  teaches the whole stack from this repo's own code. Chapters come from the
+  closed `DZIDZA_CHAPTERS` registry in app.py — the URL slug selects from that
+  tuple and is NEVER used to build a template path. As public pages they must
+  show no config values (invariant #11); `tests/test_m12_dzidza.py` runs the
+  same leak check `/status` gets, so keep chapter code excerpts free of real
+  env values. When the architecture changes, update the affected chapter — a
+  guide that misdescribes the code is worse than none.
 
 ## Data model (DynamoDB, on-demand, auto-created, deliberately NO GSIs — four tables)
 

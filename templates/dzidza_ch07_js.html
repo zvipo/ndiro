@@ -1,0 +1,145 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p>JavaScript is the only language browsers execute, so it's where all
+        behavior lives. As a language it will feel familiar — dynamically typed
+        like Python, C-family syntax like Java. This chapter covers the handful
+        of language features Ndiro's code leans on, then the two ideas that are
+        genuinely new: the event loop and the DOM.</p>
+
+        <h2>The language, in the dialect this repo speaks</h2>
+        <pre><code>const GOAL = 20;              // binding can't be reassigned (use by default)
+let daysShown = 7;            // mutable binding
+var icon = …                  // legacy 'let' — you'll see it in older-style blocks
+
+const f = (x) =&gt; x * 2;       // arrow function; also plain `function name() {}`
+const matches = FIBER_GUIDE   // first-class functions everywhere:
+    .filter(f =&gt; f.name.toLowerCase().includes(q))
+    .slice(0, 8);
+
+if (!query) { … }             // falsy: '', 0, null, undefined, NaN
+a === b                       // always ===; == does type coercion, avoid it</code></pre>
+        <p>Objects are untyped bags (<code>meal.description</code>,
+        <code>day.totals[NUTRIENT.key]</code> — bracket syntax for computed
+        keys), arrays are lists, and there's no compile step: the browser parses
+        source directly, and errors surface at runtime in the console
+        (<kbd>F12</kbd> → Console — check it first whenever a page misbehaves).</p>
+
+        <h2>One thread and an event loop</h2>
+        <p>Each page runs JavaScript on a <strong>single thread</strong> driven
+        by an event queue. Your code runs only in short bursts: an event fires
+        (click, keypress, network response), its handler runs to completion, the
+        loop takes the next event. Block that thread — a long loop, a
+        synchronous wait — and the entire UI freezes: no scrolling, no clicks.
+        So all I/O is asynchronous by construction, and slowness must be pushed
+        to the server (as Ndiro does with the photo pipeline, chapter 11).</p>
+        <p><code>async/await</code> is the ergonomic layer over that. Here is
+        the app's core data fetch, trimmed:</p>
+        <div class="code-file">templates/log.html</div>
+        <pre><code>async function loadMeals(opts) {
+    const resp = await fetch('/api/meals?days=' + daysShown +
+                             '&amp;anchor=' + currentDateLocal());
+    …
+    const data = await resp.json();
+    renderDays(data);
+}</code></pre>
+        <p><code>fetch()</code> returns a <em>promise</em> — a handle to a value
+        that doesn't exist yet. <code>await</code> suspends this function until
+        it resolves, <em>without blocking the thread</em>: other events keep
+        being handled, and the function resumes later with the value.</p>
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>A promise is a <code>Future</code>/<code>ListenableFuture</code>;
+            <code>await</code> is a non-blocking <code>get()</code> — the
+            runtime parks the coroutine instead of the thread. The event loop is
+            a single-threaded executor (Netty's event loop is the exact same
+            architecture). The cardinal sin is also the same: never do blocking
+            work on the event thread.</p>
+        </div>
+
+        <h2>The DOM: reading and building the tree</h2>
+        <p>The DOM from chapter 4 is exposed to JavaScript as objects. Ndiro's
+        entire UI-update strategy is three verbs:</p>
+        <pre><code>const el = document.getElementById('todayFiber');   // find
+el.textContent = '12.5';                            // change
+container.appendChild(card);                        // add</code></pre>
+        <p>Watch the pattern that renders one meal card (trimmed from
+        <code>log.html</code>):</p>
+        <div class="code-file">templates/log.html</div>
+        <pre><code>function mealCard(meal) {
+    const card = document.createElement('div');
+    card.className = 'meal-card card';
+
+    const desc = document.createElement('div');
+    desc.className = 'meal-desc';
+    desc.textContent = meal.description;      // ← data goes in as TEXT, always
+    …
+    const editBtn = document.createElement('button');
+    editBtn.textContent = '✎';
+    editBtn.addEventListener('click', () =&gt; startEdit(meal));
+    …
+    return card;
+}</code></pre>
+        <p>Two things deserve attention. First, <code>textContent</code> versus
+        <code>innerHTML</code>: assigning <code>innerHTML</code> parses the
+        string <em>as HTML</em>, so feeding it user data is an XSS hole —
+        the DOM-side version of skipping Jinja's autoescaping. The repo has an
+        explicit law about it, stated where it's bent:</p>
+        <div class="code-file">templates/log.html</div>
+        <pre><code>// innerHTML only ever receives these fixed string literals.
+function setBusy(btn, label) {
+    btn.innerHTML = '&lt;span class="spin"&gt;🥦&lt;/span&gt; ' + label;</code></pre>
+        <p>Static literals from the source are fine; anything that ever touched
+        a user or the network goes through <code>textContent</code>. In review,
+        grep the diff for <code>innerHTML</code> and check which side of that
+        line it's on.</p>
+        <p>Second, the closure: <code>() =&gt; startEdit(meal)</code> captures
+        <code>meal</code>, so each card's button remembers its own meal with no
+        registry or lookup table. Closures are the idiomatic way UI code binds
+        data to handlers.</p>
+
+        <h2>Events: bubbling and the menu</h2>
+        <p>Events fire on an element, then <em>bubble</em> up through its
+        ancestors to <code>document</code>. The corner menu uses the whole
+        mechanism in eight lines — open on toggle click, close on any click
+        elsewhere, close on <kbd>Esc</kbd>:</p>
+        <div class="code-file">templates/base.html</div>
+        <pre><code>menuToggle.addEventListener('click', function (e) {
+    e.stopPropagation();          // don't let this click reach document…
+    setOpen(panel.hidden);
+});
+document.addEventListener('click', function (e) {
+    // …because any click that DOES bubble to document, from outside
+    // the menu subtree, means "clicked elsewhere": close.
+    if (!panel.hidden &amp;&amp; !menu.contains(e.target)) setOpen(false);
+});
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') setOpen(false);
+});</code></pre>
+
+        <h2>State: module variables and localStorage</h2>
+        <p>Where does client state live? Mostly in plain top-level variables in
+        the page's script — <code>daysShown</code>, <code>editing</code> (null,
+        or the meal being edited), <code>estimating</code> (a re-entrancy
+        latch). This state is per-tab and vanishes on reload, which is fine
+        because the server is the source of truth: after every successful save,
+        the code just refetches the list rather than surgically patching the
+        DOM. Less clever, always consistent.</p>
+        <p>The one durable piece of client state is the theme:
+        <code>localStorage.setItem('theme', 'light')</code> — a tiny per-origin
+        key-value store that survives restarts. Note every access is wrapped in
+        try/catch: in private browsing, storage may throw, and a theme
+        preference is never worth an error page.</p>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>On the log page, open the Console and run:
+            <code>document.getElementById('todayFiber').textContent = '999'</code>.
+            Then run <code>FIBER_GUIDE.length</code> and
+            <code>NUTRIENT</code> — the constants Jinja injected in chapter 6
+            are just sitting there. Finally paste
+            <code>document.querySelectorAll('.meal-card').length</code> to count
+            rendered cards. The console is a REPL over the live page — the
+            fastest way to learn the DOM API there is.</p>
+        </div>
+{% endblock %}

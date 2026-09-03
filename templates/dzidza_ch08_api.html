@@ -1,0 +1,124 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p>Chapters 3 and 7 covered the two halves; this one is about the
+        contract between them. Ndiro's API is a dozen JSON endpoints under
+        <code>/api/…</code>, designed by one rule: <strong>the URL names the
+        resource, the method names the action, the status code names the
+        outcome, and errors are always <code>{"error": "human message"}</code>
+        with a 4xx/5xx status.</strong></p>
+
+        <h2>The surface</h2>
+        <table>
+            <tr><th>Endpoint</th><th>Methods</th><th>Does</th></tr>
+            <tr><td><code>/api/meals</code></td><td>GET, POST</td><td>List a window of days (query params) / add a meal (form data + optional photo)</td></tr>
+            <tr><td><code>/api/meals/&lt;date&gt;/&lt;meal_id&gt;</code></td><td>PUT, DELETE</td><td>Edit / delete one meal</td></tr>
+            <tr><td><code>/api/estimate-fiber</code>, <code>/api/estimate-photo</code></td><td>POST</td><td>AI estimates (JSON body / multipart photo)</td></tr>
+            <tr><td><code>/api/shares</code>, <code>/api/invites</code></td><td>GET, POST, DELETE</td><td>Manage share links and invites</td></tr>
+            <tr><td><code>/api/settings/nutrient</code>, <code>/api/account/delete</code></td><td>POST</td><td>Settings; full account deletion</td></tr>
+            <tr><td><code>/s/&lt;token&gt;/meals</code></td><td>GET</td><td>The same meals payload, scoped by share token instead of session</td></tr>
+        </table>
+        <p>Notice there is no <code>user_id</code> anywhere in that table.
+        Identity comes exclusively from the session cookie (or the share
+        token's owner); the client cannot even <em>express</em> "give me user
+        X's meals". That absence is the tenant-isolation design, and
+        <code>tests/probe_cross_user.py</code> exists to keep it true.</p>
+
+        <h2>The client side of a call</h2>
+        <p>The text estimator shows the full JSON-request pattern in one
+        screen:</p>
+        <div class="code-file">templates/log.html</div>
+        <pre><code>const resp = await fetch('/api/estimate-fiber', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: description })
+});
+if (resp.status === 401) {               // session died: go sign in
+    window.location.href = '/login?next=/log';
+    return;
+}
+const result = await resp.json().catch(() =&gt; ({}));
+if (!resp.ok) {                           // any 4xx/5xx: show the server's message
+    showAiError(result.error || 'Estimate failed.');
+    return;
+}
+renderEstimate(result);</code></pre>
+        <p>Read the error ladder carefully, because every fetch in the app
+        climbs the same one:</p>
+        <ul>
+            <li><strong>401</strong> — not an error to display; the user's
+            session is gone, so navigate to login (with <code>next</code> so
+            they come back).</li>
+            <li><strong>Other non-2xx</strong> — <code>resp.ok</code> is false;
+            surface the server's <code>error</code> string. The
+            <code>.catch(() =&gt; ({}))</code> guards against a non-JSON error
+            body.</li>
+            <li><strong>The request never completed</strong> — fetch itself
+            rejects (offline, DNS, timeout); the surrounding
+            <code>try/catch</code> shows a generic network message. Note fetch
+            does <em>not</em> reject on 4xx/5xx — an answered request is a
+            resolved promise; you must check the status yourself. This
+            surprises everyone once.</li>
+        </ul>
+        <p>Uploads use the other body type: <code>FormData</code> (multipart)
+        instead of JSON, because photos are binary — see
+        <code>estimateFromPhoto</code> and <code>saveMeal</code>. The browser
+        sets the content type, boundary and encoding automatically.</p>
+
+        <h2>The server side: parse, validate, refuse</h2>
+        <p>Every handler treats its input as hostile, and the validation is
+        strict in ways worth studying. The date validator is a lesson in
+        itself:</p>
+        <div class="code-file">app.py</div>
+        <pre><code>def _valid_date(date_str):
+    """Return the string if it is a strictly canonical YYYY-MM-DD date, else None.
+
+    strptime alone is lenient ('2026-8-5' parses), which would produce a sort
+    key that zero-padded month queries never match (silent data loss) and 500
+    when fed to date.fromisoformat as an anchor. Require the round trip.
+    """</code></pre>
+        <p>A merely-parseable date isn't enough: <code>2026-8-5</code> would
+        happily become a DynamoDB sort key that the zero-padded month query
+        (<code>begins_with('2026-08-')</code>) never finds again — accepted
+        input, silently invisible data. So the rule is canonical form or 400.
+        The same spirit shows in <code>_nutrients_from_form</code>: reject
+        <code>NaN</code> and <code>Infinity</code> (they parse as Decimals but
+        detonate downstream) and cap values at a sanity bound so a
+        <code>1e999</code> can't 500 the storage layer. Validation isn't about
+        the honest user's typos; it's about keeping every reachable state
+        legal.</p>
+
+        <h2>Where's the schema?</h2>
+        <p>Coming from Thrift/Avro/protobuf, you'll notice: there is no IDL. The
+        contract lives in convention (<code>{"error": …}</code>, the payload
+        shapes) and is enforced by the stub tests, which drive the real routes
+        and assert on real payloads. At two-people-and-one-repo scale where both
+        halves deploy atomically — the HTML and the API always ship together —
+        that's a reasonable trade. The one place a version skew <em>can</em>
+        happen is a stale open tab, and the API handles it explicitly: the meal
+        form posts a hidden <code>nutrient_key</code>, and the server rejects a
+        mismatch with a "reload this page" 400 rather than silently dropping the
+        typed amount (<code>_stale_nutrient_form</code>).</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>Rate limiting (the <code>429</code>s) is admission control, and
+            the AI cap is a quota system with a two-phase charge: the counter is
+            incremented <em>before</em> the OpenAI call with a conditional
+            write, and refunded only on upstream failure — so a race can't
+            overspend the quota. It's optimistic concurrency with compensation,
+            the same shape as a reservation system. The code is
+            <code>try_consume_ai_use</code>/<code>refund_ai_use</code> in
+            <code>db.py</code>.</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>On the log page, open Network, add a meal, and inspect the
+            <code>POST /api/meals</code> entry: the form-data body, the 200, the
+            JSON reply. Then use the Console:
+            <code>await (await fetch('/api/meals?days=2&amp;anchor=2026-09-03')).json()</code>
+            — you just called your own API by hand with your session riding
+            along. Try <code>days=999</code> and read the 400.</p>
+        </div>
+{% endblock %}

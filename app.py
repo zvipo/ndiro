@@ -171,6 +171,52 @@ def status_page():
         photos_enabled=bool(config.S3_BUCKET))
 
 
+# --- Dzidza ("learn" in Shona): the built-in web-development guide -----------
+
+# Closed chapter registry: the slug from the URL is matched against THIS tuple
+# and never used to build a template path (same rule as NUTRIENT_CATALOG keys:
+# user input selects from a closed set; it never becomes a key or a path).
+DZIDZA_CHAPTERS = (
+    ('anatomy',  'One page load, end to end',           'dzidza_ch01_anatomy.html'),
+    ('http',     'HTTP: the protocol under everything', 'dzidza_ch02_http.html'),
+    ('flask',    'The backend: Flask on one worker',    'dzidza_ch03_flask.html'),
+    ('html',     'HTML: the document',                  'dzidza_ch04_html.html'),
+    ('css',      'CSS: style, layout, theming',         'dzidza_ch05_css.html'),
+    ('jinja',    'Server-side rendering with Jinja',    'dzidza_ch06_jinja.html'),
+    ('js',       'JavaScript and the DOM',              'dzidza_ch07_js.html'),
+    ('api',      'The JSON API: both sides of fetch',   'dzidza_ch08_api.html'),
+    ('auth',     'Identity: OAuth, sessions, guards',   'dzidza_ch09_auth.html'),
+    ('data',     'Storage: DynamoDB, S3, and caches',   'dzidza_ch10_data.html'),
+    ('pipeline', 'Capstone: the auto-log pipeline',     'dzidza_ch11_pipeline.html'),
+    ('security', 'Security: thinking like an attacker', 'dzidza_ch12_security.html'),
+    ('practice', 'Changing the site: a working method', 'dzidza_ch13_practice.html'),
+)
+
+
+@app.route('/dzidza')
+def dzidza_index():
+    """Table of contents for the guide. Public like /privacy: pure teaching
+    material about code that is already public — it renders NO config values
+    (invariant #11 applies; tests/test_m12_dzidza.py holds it to that)."""
+    return render_template('dzidza_index.html', user=auth.current_user(),
+                           chapters=DZIDZA_CHAPTERS)
+
+
+@app.route('/dzidza/<slug>')
+def dzidza_chapter(slug):
+    for i, (chapter_slug, title, template) in enumerate(DZIDZA_CHAPTERS):
+        if chapter_slug == slug:
+            return render_template(
+                template,
+                user=auth.current_user(),
+                chapter_num=i + 1,
+                chapter_title=title,
+                total_chapters=len(DZIDZA_CHAPTERS),
+                prev_ch=DZIDZA_CHAPTERS[i - 1] if i > 0 else None,
+                next_ch=DZIDZA_CHAPTERS[i + 1] if i + 1 < len(DZIDZA_CHAPTERS) else None)
+    return 'No such chapter — the table of contents is at /dzidza.', 404
+
+
 # --- OAuth flow --------------------------------------------------------------
 
 @app.route('/login')

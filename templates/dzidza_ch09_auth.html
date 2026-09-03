@@ -1,0 +1,117 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p>Ndiro never sees a password. Sign-in is delegated to Google via
+        OAuth 2.0, identity is carried in a signed cookie, and authorization is
+        re-checked from the database on every request. This chapter walks the
+        whole chain, because it's the part of web development with the least
+        room for improvisation.</p>
+
+        <h2>The OAuth dance</h2>
+        <pre><code>browser                          ndiro.org                      Google
+   │ GET /login ────────────────────▶ │
+   │                                  │ session['oauth_state'] = random
+   │ ◀─ 302 to accounts.google.com ── │   (and login_next = where to land after)
+   │ ──────────────────────────────────────────────────────────────▶ │
+   │            user picks their Google account, consents            │
+   │ ◀─ 302 back to /callback?code=…&amp;state=… ──────────────────────  │
+   │ GET /callback?code=…&amp;state=… ──▶ │
+   │                                  │ 1. state == session.pop('oauth_state')?
+   │                                  │ 2. POST the code + client_secret ────▶ │
+   │                                  │ ◀─────────── access token ─────────── │
+   │                                  │ 3. GET userinfo (sub, email, name) ──▶ │
+   │                                  │ 4. upsert users row; session['user_id']=sub
+   │ ◀─ 302 to /log, Set-Cookie ───── │</code></pre>
+        <p>Three details carry the security weight. The <strong>code exchange
+        happens server-to-server</strong> (step 2, in
+        <code>auth.fetch_userinfo</code>) — the browser only ever sees the
+        one-time <code>code</code>, never the client secret or the token. The
+        <strong><code>state</code> parameter</strong> is a random nonce stored
+        in the session and compared with <code>session.pop</code> on return; a
+        forged or replayed callback fails the comparison. And the account key is
+        Google's <strong><code>sub</code></strong> (a stable numeric ID), not
+        the email — emails change; primary keys shouldn't.</p>
+        <p>One more guard hides in plain sight: <code>_safe_next</code>. The
+        <code>?next=</code> destination that rides through login is validated to
+        be a same-site relative path — starts with <code>/</code>, not
+        <code>//</code>, no backslashes — otherwise
+        <code>/login?next=https://evil.example</code> turns your trusted domain
+        into an open redirect for phishing.</p>
+
+        <h2>The session cookie: signed, not encrypted</h2>
+        <p>Flask's default session is a cookie containing your data as base64
+        JSON plus an HMAC signature keyed by <code>SECRET_KEY</code>. Anyone can
+        <em>read</em> it (decode yours — it's just
+        <code>{"user_id": "…"}</code>); nobody can <em>modify</em> it without
+        the signature check failing. Forge-proof, not secret. Which is exactly
+        why the rule exists:</p>
+        <div class="code-file">auth.py</div>
+        <pre><code># Session stores ONLY user_id (the Google sub) plus transient oauth_state /
+# login_next. Status is NEVER cached in the cookie: every guarded request does
+# a fresh users-table read (~$0.25/million) so a rejected user's live session
+# dies immediately.</code></pre>
+        <p>A cookie is a cache you cannot invalidate — it lives on someone
+        else's machine for 30 days. Cache <code>status: approved</code> in it
+        and a banned user stays approved until expiry. So the cookie holds only
+        the identity pointer, and authorization data is read fresh per request.
+        Revocation latency: zero. Cost: one cheap key lookup.</p>
+        <p>The cookie's attributes are set once in <code>app.py</code> and each
+        earns its place:</p>
+        <table>
+            <tr><th>Flag</th><th>Protects against</th></tr>
+            <tr><td><code>Secure</code></td><td>Transmission over plain HTTP (only sent on HTTPS)</td></tr>
+            <tr><td><code>HttpOnly</code></td><td>JavaScript reading it — even injected script can't exfiltrate the session</td></tr>
+            <tr><td><code>SameSite=Lax</code></td><td>Other sites triggering authenticated writes (the CSRF defence — chapter 12)</td></tr>
+        </table>
+
+        <h2>Guards and the status machine</h2>
+        <p>A users row has <code>status ∈ pending | approved | rejected |
+        admin</code>. New sign-ups land <code>pending</code> (the waiting page)
+        until an admin approves them — or they arrived through an invite link,
+        which auto-approves. The two decorators from chapter 3 enforce it all;
+        the branchy middle of <code>approved_required</code> is the actual
+        policy: approved/admin → proceed with <code>g.user</code> set; pending →
+        the waiting page (or 403 for API calls); rejected or deleted →
+        <code>session.clear()</code> and goodbye. API paths get JSON errors,
+        page paths get redirects — <code>_wants_json()</code> switches on the
+        <code>/api/</code> prefix so both callers get an answer they can
+        handle.</p>
+        <p><code>ADMIN_EMAILS</code> is only a bootstrap: it decides the status
+        written at <em>first sign-in</em>. After that the table is the truth —
+        an admin is whoever's row says <code>admin</code>, and the env var is
+        never consulted at request time.</p>
+
+        <h2>Invites: an auth flow with CAS semantics</h2>
+        <p>Invite links (<code>/i/&lt;token&gt;</code>) are single-use,
+        expiring, auto-approving. The interesting part is the redemption:
+        marking an invite used must be race-safe (two people clicking the same
+        link at once), so <code>db.claim_invite</code> is a DynamoDB
+        <em>conditional write</em> — "set <code>used_by</code>, if
+        <code>used_by</code> doesn't exist and it isn't revoked or expired" —
+        an atomic compare-and-set at the storage layer, not a read-check-write
+        in Python. The <code>MAX_USERS</code> capacity check runs
+        <em>before</em> invite logic, so a full instance never burns someone's
+        invite.</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>The cookie is a Kerberos-ish ticket: self-contained proof of
+            identity, honored without a round trip. The fresh status read is
+            the deliberate opposite — a per-request ACL check against the
+            authority — because for a 100-user app, "revocation is instant" is
+            worth a millisecond per request. Recognize the trade: tickets scale
+            reads, authority lookups scale trust.</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>Devtools → Application → Cookies. Find the
+            <code>session</code> cookie, copy its value, and decode the first
+            segment (it's URL-safe base64 of JSON — in a terminal:
+            <code>echo 'PASTE' | cut -d. -f1 | base64 -d</code>). There's your
+            <code>user_id</code>, readable but untamperable. Note
+            <code>HttpOnly</code> is checked — now try
+            <code>document.cookie</code> in the Console and see the session
+            cookie refuse to appear.</p>
+        </div>
+{% endblock %}

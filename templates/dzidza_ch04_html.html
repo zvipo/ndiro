@@ -1,0 +1,113 @@
+{% extends "_dzidza.html" %}
+
+{% block guide %}
+        <p>HTML is not a programming language; it's a serialization format for a
+        tree. The browser parses it into the <strong>DOM</strong> (Document
+        Object Model) — a live tree of element objects that CSS styles and
+        JavaScript manipulates. Learn to see the tree and HTML becomes
+        trivial.</p>
+
+        <h2>Elements, attributes, nesting</h2>
+        <pre><code>&lt;div class="card meal-form" id="mealForm"&gt;          ← element with attributes
+    &lt;textarea id="descInput" maxlength="500"
+              placeholder="What did you eat?"&gt;&lt;/textarea&gt;
+    &lt;button type="button" class="btn primary" id="saveBtn"&gt;Add meal&lt;/button&gt;
+&lt;/div&gt;                                               ← closing tag ends the subtree</code></pre>
+        <p>That's a simplified slice of the real meal form in
+        <code>templates/log.html</code>. The grammar: a tag names the element
+        type, attributes are key="value" metadata, children nest inside until
+        the closing tag. Two attributes matter constantly:</p>
+        <ul>
+            <li><code>id</code> — a unique handle. Ndiro's JavaScript finds
+            elements almost exclusively by it:
+            <code>document.getElementById('saveBtn')</code>.</li>
+            <li><code>class</code> — non-unique labels for styling. An element
+            can carry several (<code>class="card meal-form"</code> has two), and
+            CSS selects on them.</li>
+        </ul>
+
+        <h2>Meaning, not appearance</h2>
+        <p>Tags carry <em>semantics</em>. <code>&lt;button&gt;</code>,
+        <code>&lt;nav&gt;</code>, <code>&lt;label&gt;</code>,
+        <code>&lt;h1&gt;</code> tell the browser (and screen readers, and
+        keyboard navigation) what a thing <em>is</em>; CSS separately decides
+        what it looks like. <code>&lt;div&gt;</code> and
+        <code>&lt;span&gt;</code> are the semantic-free containers (block and
+        inline respectively) you use when nothing more specific fits — layout
+        scaffolding like <code>.card</code>.</p>
+        <p>Ndiro's fiber guide dropdown is a nice case study: each result row is
+        a real <code>&lt;button&gt;</code>, not a styled <code>div</code> with a
+        click handler:</p>
+        <div class="code-file">templates/log.html</div>
+        <pre><code>// A real &lt;button&gt; gives keyboard/AT users click + Enter/Space for free.
+const row = document.createElement('button');
+row.type = 'button';
+row.className = 'guide-row';</code></pre>
+        <p>A <code>div</code> with a click listener works for mouse users only.
+        The native element brings focusability, keyboard activation, and
+        assistive-technology announcements at zero cost. Rule of thumb: if it
+        acts like a button, make it a <code>&lt;button&gt;</code>; if it
+        navigates, make it an <code>&lt;a href&gt;</code>.</p>
+
+        <h2>Forms and inputs</h2>
+        <p>The meal form uses half the input catalog — each
+        <code>type</code> changes keyboard, validation, and picker UI,
+        especially on phones:</p>
+        <table>
+            <tr><th>Element</th><th>In the meal form</th><th>Notes</th></tr>
+            <tr><td><code>&lt;textarea&gt;</code></td><td>description, context</td><td>Multi-line text; <code>maxlength</code> is client-side UX — the server re-checks the 500 limit</td></tr>
+            <tr><td><code>&lt;input type="number"&gt;</code></td><td>grams</td><td><code>min</code>/<code>step</code> constrain the spinner, not the API</td></tr>
+            <tr><td><code>&lt;input type="date"&gt;</code> / <code>"time"</code></td><td>meal date/time</td><td>Native pickers; values are <code>YYYY-MM-DD</code> / <code>HH:MM</code> strings</td></tr>
+            <tr><td><code>&lt;input type="file" accept="image/*"&gt;</code></td><td>photo</td><td>Hidden; a styled button forwards clicks to it — a standard trick, see <code>photoBtn</code></td></tr>
+            <tr><td><code>&lt;input type="search"&gt;</code></td><td>fiber guide lookup</td><td>Like text, plus a clear affordance</td></tr>
+            <tr><td><code>&lt;label for="fiberInput"&gt;</code></td><td>every field</td><td>Clicking the label focuses the input; screen readers announce it</td></tr>
+        </table>
+        <p>One subtlety worth stealing: every button in the form says
+        <code>type="button"</code>. Inside a form, a button's default type is
+        <code>submit</code>, which triggers the browser's own form submission
+        (a full-page POST + reload). Ndiro handles saving in JavaScript, so each
+        button opts out. Forgetting this is a classic "why does the page reload
+        when I click?" bug.</p>
+
+        <h2>The document skeleton</h2>
+        <p><code>templates/base.html</code> holds the one skeleton every page
+        shares:</p>
+        <pre><code>&lt;!DOCTYPE html&gt;                 ← "parse me as modern HTML"
+&lt;html lang="en"&gt;
+&lt;head&gt;                          ← metadata, not visible content:
+    &lt;meta charset="UTF-8"&gt;
+    &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
+    &lt;title&gt;Ndiro&lt;/title&gt;        ← the browser tab
+    &lt;style&gt;…&lt;/style&gt;            ← all CSS (chapter 5)
+&lt;/head&gt;
+&lt;body&gt;                          ← everything you see
+    …
+    &lt;script&gt;…&lt;/script&gt;          ← JS at the end, so the DOM above exists when it runs
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+        <p>The <code>viewport</code> meta is why the site isn't a zoomed-out
+        desktop page on a phone. And script placement is ordering, not style:
+        scripts execute where the parser meets them, so code at the bottom of
+        <code>&lt;body&gt;</code> can safely call
+        <code>getElementById</code> on anything above it.</p>
+
+        <div class="box analogy">
+            <div class="box-title">🐘 From your world</div>
+            <p>HTML is to the page what a Hive table schema is to a query: pure
+            structure declaration. The browser's parser is famously forgiving —
+            unclosed tags get auto-repaired rather than rejected, like a lenient
+            SerDe. That forgiveness is why validation can't live in the markup
+            and why the server re-checks everything.</p>
+        </div>
+
+        <div class="box tryit">
+            <div class="box-title">🔬 Try it</div>
+            <p>On the log page, press <kbd>F12</kbd> → <strong>Elements</strong>.
+            Expand the tree to <code>#mealForm</code>. Click elements and watch
+            them highlight on the page. Now double-click the "Add meal" button's
+            text in the panel and rename it — you're editing the live DOM
+            (reload to undo). Compare with <kbd>Ctrl+U</kbd>: view-source shows
+            the HTML as served; Elements shows the tree as it is <em>now</em>,
+            including everything JavaScript added.</p>
+        </div>
+{% endblock %}
