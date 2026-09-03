@@ -216,7 +216,11 @@ def dzidza_chapter(slug):
                 chapter_title=title,
                 total_chapters=len(DZIDZA_CHAPTERS),
                 prev_ch=DZIDZA_CHAPTERS[i - 1] if i > 0 else None,
-                next_ch=DZIDZA_CHAPTERS[i + 1] if i + 1 < len(DZIDZA_CHAPTERS) else None)
+                next_ch=DZIDZA_CHAPTERS[i + 1] if i + 1 < len(DZIDZA_CHAPTERS) else None,
+                # The code_file macro links excerpts to the repo at the RUNNING
+                # commit, so the guide always shows the code that is deployed.
+                repo_url=config.GITHUB_REPO_URL,
+                code_ref=config.GIT_COMMIT or 'main')
     # Themed dead state like share_404/invite_404 (unlike those, the four-way
     # indistinguishability doesn't apply — there's nothing to enumerate here).
     return render_template('dzidza_404.html', user=auth.current_user()), 404

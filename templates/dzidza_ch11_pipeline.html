@@ -9,8 +9,10 @@
         user can close the tab the moment the upload finishes.</p>
 
         <h2>Why async at all</h2>
-        <p>An AI vision call takes up to ~25 seconds. Chapter 7's event loop
-        says the browser can't block, and chapter 3's gunicorn config says a
+        <p>An AI vision call takes up to ~25 seconds. The
+        <a href="/dzidza/js">JavaScript chapter</a>'s event loop says the
+        browser can't block, and the <a href="/dzidza/flask">backend
+        chapter</a>'s gunicorn config says a
         request thread shouldn't sit occupied for a 20-photo batch either
         (8 threads total, 60s timeout). Classic answer: make the upload cheap
         and synchronous, move the slow work to a background consumer, let the
@@ -74,9 +76,10 @@
         per-photo status rows, then polling <code>/api/auto-log/pending</code>
         so a user who <em>does</em> keep the tab open watches photos flip from
         "queued" to done. Everything you learned lands here at once: file
-        inputs (ch 4), status colors from theme tokens (ch 5),
-        <code>createElement</code> rendering (ch 7), fetch with the standard
-        error ladder (ch 8).</p>
+        inputs (<a href="/dzidza/html">HTML</a>), status colors from theme
+        tokens (<a href="/dzidza/css">CSS</a>), <code>createElement</code>
+        rendering (<a href="/dzidza/js">JavaScript</a>), fetch with the
+        standard error ladder (<a href="/dzidza/api">the API chapter</a>).</p>
 
         <h2>And the tests</h2>
         <p>How do you test a background thread deterministically? You don't —

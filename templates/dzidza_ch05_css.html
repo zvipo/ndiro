@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>CSS is a rule engine: each rule is a <strong>selector</strong> (which
@@ -28,7 +29,7 @@
         <code>margin</code>. Ndiro opts the whole page into the sane sizing mode
         where <code>width</code> means the visible box, border and padding
         included:</p>
-        <div class="code-file">templates/base.html</div>
+        {{ code_file('templates/base.html') }}
         <pre><code>* {
     margin: 0;
     padding: 0;
@@ -44,7 +45,7 @@
             cards, the corner controls are all
             <code>display: flex</code>.</li>
         </ul>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
         <pre><code>.form-row {
     display: flex;      /* children become flex items in a row  */
     gap: 10px;          /* space between them                   */
@@ -57,8 +58,8 @@
         <p>Those five lines are also the entire "responsive design" of the
         form: on a phone the three fields wrap into a column, on a laptop they
         sit in a row, with no phone-specific code. Add the viewport meta from
-        chapter 4 and a fluid max-width container, and small screens mostly
-        take care of themselves.</p>
+        the <a href="/dzidza/html">HTML chapter</a> and a fluid max-width
+        container, and small screens mostly take care of themselves.</p>
         <p>The third tool, <strong>positioning</strong>, is used sparingly:
         <code>position: fixed</code> pins the menu hamburger to the viewport
         (<code>.corner-controls</code>) and stretches the photo lightbox over
@@ -68,7 +69,7 @@
         <h2>Design tokens: custom properties</h2>
         <p>The gem of this stylesheet. CSS variables ("custom properties") are
         defined once on the root element and referenced everywhere:</p>
-        <div class="code-file">templates/base.html</div>
+        {{ code_file('templates/base.html') }}
         <pre><code>:root {                        /* dark theme — the default */
     --bg-0: #282828;  --card: #3c3836;  --border: #504945;
     --muted: #a89984; --text: #ebdbb2;  --gold: #fabd2f;
@@ -105,7 +106,7 @@
         change: <code>.brand { transition: border-color .2s, transform .2s
         }</code> makes the hover lift smooth. Keyframe animations run on their
         own — the loading indicator is a broccoli spinning forever:</p>
-        <div class="code-file">templates/base.html</div>
+        {{ code_file('templates/base.html') }}
         <pre><code>.spin { display: inline-block; animation: spin 1.1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }</code></pre>
 

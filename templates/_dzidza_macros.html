@@ -1,0 +1,12 @@
+{# Macros for the Dzidza guide. Import WITH CONTEXT — code_file reads
+   repo_url/code_ref from the render context (passed by the chapter route).
+   code_file(path): the "where this lives" chip above an excerpt, linking the
+   real file on GitHub at the running commit (code_ref falls back to 'main';
+   no repo_url configured = a plain, unlinked chip). #}
+{% macro code_file(path) -%}
+{%- if repo_url -%}
+<a class="code-file" href="{{ repo_url }}/blob/{{ code_ref or 'main' }}/{{ path }}" target="_blank" rel="noopener">{{ path }} ↗</a>
+{%- else -%}
+<div class="code-file">{{ path }}</div>
+{%- endif -%}
+{%- endmacro %}

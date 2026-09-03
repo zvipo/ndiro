@@ -53,13 +53,13 @@
         strictly separated jobs:</p>
         <table>
             <tr><th>Language</th><th>Job</th><th>Chapter</th></tr>
-            <tr><td><strong>HTML</strong></td><td>Structure and meaning — "there is a form here, with a text area and a save button"</td><td>4</td></tr>
-            <tr><td><strong>CSS</strong></td><td>Appearance and layout — "cards have rounded corners; in light mode the background is cream"</td><td>5</td></tr>
-            <tr><td><strong>JavaScript</strong></td><td>Behavior — "when the save button is clicked, POST the form to /api/meals and reload the list"</td><td>7</td></tr>
+            <tr><td><strong>HTML</strong></td><td>Structure and meaning — "there is a form here, with a text area and a save button"</td><td><a href="/dzidza/html">HTML</a></td></tr>
+            <tr><td><strong>CSS</strong></td><td>Appearance and layout — "cards have rounded corners; in light mode the background is cream"</td><td><a href="/dzidza/css">CSS</a></td></tr>
+            <tr><td><strong>JavaScript</strong></td><td>Behavior — "when the save button is clicked, POST the form to /api/meals and reload the list"</td><td><a href="/dzidza/js">JavaScript</a></td></tr>
         </table>
         <p>There is a fourth language in this repo that never reaches the
         browser: <strong>Jinja</strong>, the server-side template language that
-        generates the HTML (chapter 6). View the source of any page
+        generates the HTML (the <a href="/dzidza/jinja">Jinja chapter</a>). View the source of any page
         (<kbd>Ctrl+U</kbd>) and you will find no Jinja in it — only its
         output.</p>
 
@@ -70,7 +70,7 @@
             <tr><td><code>config.py</code></td><td>backend</td><td>Environment loading, constants, the nutrient catalog, the fiber guide.</td></tr>
             <tr><td><code>auth.py</code></td><td>backend</td><td>Google OAuth, session → user resolution, the access guards.</td></tr>
             <tr><td><code>db.py</code></td><td>backend</td><td>All DynamoDB and S3 access, plus the photo cache.</td></tr>
-            <tr><td><code>ai.py</code>, <code>autolog.py</code></td><td>backend</td><td>OpenAI estimators; the async photo pipeline (chapter 11).</td></tr>
+            <tr><td><code>ai.py</code>, <code>autolog.py</code></td><td>backend</td><td>OpenAI estimators; the async photo pipeline (the <a href="/dzidza/pipeline">capstone chapter</a>).</td></tr>
             <tr><td><code>templates/base.html</code></td><td>both</td><td>The shared page skin: theme tokens, menu, the blocks pages fill in.</td></tr>
             <tr><td><code>templates/log.html</code> etc.</td><td>frontend</td><td>One template per page: its HTML, its page-specific CSS, its JavaScript.</td></tr>
             <tr><td><code>tests/</code></td><td>both</td><td>Plain-script stub tests that run the real app against fakes — no AWS, no network.</td></tr>

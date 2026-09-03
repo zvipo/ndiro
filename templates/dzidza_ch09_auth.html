@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>Ndiro never sees a password. Sign-in is delegated to Google via
@@ -46,7 +47,7 @@
         <code>{"user_id": "…"}</code>); nobody can <em>modify</em> it without
         the signature check failing. Forge-proof, not secret. Which is exactly
         why the rule exists:</p>
-        <div class="code-file">auth.py</div>
+        {{ code_file('auth.py') }}
         <pre><code># Session stores ONLY user_id (the Google sub) plus transient oauth_state /
 # login_next. Status is NEVER cached in the cookie: every guarded request does
 # a fresh users-table read (~$0.25/million) so a rejected user's live session
@@ -66,14 +67,15 @@
             <tr><th>Flag</th><th>Protects against</th></tr>
             <tr><td><code>Secure</code></td><td>Transmission over plain HTTP (only sent on HTTPS)</td></tr>
             <tr><td><code>HttpOnly</code></td><td>JavaScript reading it — even injected script can't exfiltrate the session</td></tr>
-            <tr><td><code>SameSite=Lax</code></td><td>Other sites triggering authenticated writes (the CSRF defence — chapter 12)</td></tr>
+            <tr><td><code>SameSite=Lax</code></td><td>Other sites triggering authenticated writes (the CSRF defence — the <a href="/dzidza/security">security chapter</a>)</td></tr>
         </table>
 
         <h2>Guards and the status machine</h2>
         <p>A users row has <code>status ∈ pending | approved | rejected |
         admin</code>. New sign-ups land <code>pending</code> (the waiting page)
         until an admin approves them — or they arrived through an invite link,
-        which auto-approves. The two decorators from chapter 3 enforce it all;
+        which auto-approves. The two decorators from the
+        <a href="/dzidza/flask">backend chapter</a> enforce it all;
         the branchy middle of <code>approved_required</code> is the actual
         policy: approved/admin → proceed with <code>g.user</code> set; pending →
         the waiting page (or 403 for API calls); rejected or deleted →

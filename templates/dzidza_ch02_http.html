@@ -1,7 +1,8 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
-        <p>Every arrow in chapter 1's diagram is an HTTP exchange. In its
+        <p>Every arrow in the <a href="/dzidza/anatomy">anatomy chapter</a>'s diagram is an HTTP exchange. In its
         classic form — HTTP/1.1, which the proxy speaks to this app — it is a
         plain-text request/response protocol over TCP (wrapped in TLS as
         HTTPS), refreshingly simple to read with your eyes. Newer versions
@@ -14,7 +15,7 @@
         meals, and what Ndiro answers:</p>
         <pre><code>GET /api/meals?days=7&amp;anchor=2026-09-03 HTTP/1.1
 Host: your.domain.example               ← wherever the instance is deployed
-Cookie: session=eyJ1c2VyX2lkIjoi…       ← who you are (chapter 9)
+Cookie: session=eyJ1c2VyX2lkIjoi…       ← who you are (the identity chapter)
 Accept: */*
 
 HTTP/1.1 200 OK
@@ -36,10 +37,11 @@ Content-Type: application/json           ← headers: metadata about the body
             <tr><td><code>DELETE</code></td><td>Remove it.</td><td>Delete a meal, revoke a share</td></tr>
         </table>
         <p>The "GET never writes" rule is load-bearing security here, not
-        etiquette: Ndiro's CSRF defence (chapter 12) assumes <em>application
-        data</em> never changes on a GET. Two auth-flow GETs do touch session
-        state — <code>/logout</code> clears it, <code>/callback</code> finishes
-        sign-in — and chapter 12 covers why those are guarded differently.</p>
+        etiquette: Ndiro's CSRF defence (the <a href="/dzidza/security">security
+        chapter</a>) assumes <em>application data</em> never changes on a GET.
+        Two auth-flow GETs do touch session state — <code>/logout</code> clears
+        it, <code>/callback</code> finishes sign-in — and that chapter covers
+        why those are guarded differently.</p>
 
         <h2>Status codes this app actually returns</h2>
         <p>Status codes are the API's error model. Grep <code>app.py</code> for
@@ -48,11 +50,11 @@ Content-Type: application/json           ← headers: metadata about the body
             <tr><th>Code</th><th>Meaning</th><th>Where you'll meet it in Ndiro</th></tr>
             <tr><td><code>200</code></td><td>OK</td><td>Everything that worked</td></tr>
             <tr><td><code>302</code></td><td>Redirect: "go here instead"</td><td>The whole OAuth dance; guards bouncing you to <code>/login</code></td></tr>
-            <tr><td><code>304</code></td><td>Not Modified — cached copy still good</td><td>Photo proxy when the browser's ETag matches (chapter 10)</td></tr>
+            <tr><td><code>304</code></td><td>Not Modified — cached copy still good</td><td>Photo proxy when the browser's ETag matches (the <a href="/dzidza/data">storage chapter</a>)</td></tr>
             <tr><td><code>400</code></td><td>Your request is malformed</td><td>Missing meal description, invalid date</td></tr>
             <tr><td><code>401</code></td><td>Not signed in</td><td>API calls with a dead session — the JS reacts by redirecting to login</td></tr>
             <tr><td><code>403</code></td><td>Signed in, but not allowed</td><td>Pending accounts hitting the API; non-admins hitting admin APIs</td></tr>
-            <tr><td><code>404</code></td><td>No such thing</td><td>Dead share/invite links — deliberately indistinguishable from each other (chapter 12)</td></tr>
+            <tr><td><code>404</code></td><td>No such thing</td><td>Dead share/invite links — deliberately indistinguishable from each other (the <a href="/dzidza/security">security chapter</a>)</td></tr>
             <tr><td><code>413</code></td><td>Body too large</td><td>Uploads past <code>MAX_CONTENT_LENGTH</code> (16&nbsp;MB)</td></tr>
             <tr><td><code>429</code></td><td>Slow down</td><td>Rate limits — see <code>@limiter.limit(…)</code> decorators</td></tr>
             <tr><td><code>500</code></td><td>Server bug</td><td>Hopefully nowhere; anything unhandled</td></tr>
@@ -66,7 +68,7 @@ Content-Type: application/json           ← headers: metadata about the body
         (<code>Set-Cookie: session=…</code>) and the browser automatically
         attaches it to every subsequent request to that site. Ndiro's session
         cookie contains a signed <code>{'user_id': …}</code> and nothing else;
-        chapter 9 unpacks it byte by byte.</p>
+        the <a href="/dzidza/auth">identity chapter</a> unpacks it byte by byte.</p>
 
         <div class="box analogy">
             <div class="box-title">🐘 From your world</div>
@@ -76,7 +78,7 @@ Content-Type: application/json           ← headers: metadata about the body
             cookie for <em>any</em> page that triggers a request to your domain,
             including a malicious one. That over-eagerness is the entire CSRF
             problem, and why the cookie carries a <code>SameSite</code>
-            attribute (chapter 12).</p>
+            attribute (the <a href="/dzidza/security">security chapter</a>).</p>
         </div>
 
         <h2>The proxy in front, and trusting headers</h2>
@@ -86,7 +88,7 @@ Content-Type: application/json           ← headers: metadata about the body
         <code>X-Forwarded-For</code> (the real client IP) and
         <code>X-Forwarded-Proto</code> (that the original request was HTTPS).
         Flask must be told these headers are trustworthy:</p>
-        <div class="code-file">app.py</div>
+        {{ code_file('app.py') }}
         <pre><code># Behind EXACTLY ONE trusted reverse proxy (Caddy on the Pi / Render's LB).
 # x_for=1 makes request.remote_addr the real client so the rate limiter
 # isolates clients instead of collapsing everyone into the proxy's IP.

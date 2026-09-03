@@ -7,7 +7,11 @@ the same no-config-values leak check /status gets.
 
 Run:  python tests/test_m12_dzidza.py
 """
+import re
+
 import testkit as tk
+
+import config
 
 app_module = tk.app_module
 anon = tk.client()
@@ -44,6 +48,23 @@ for i in range(len(chapters)):
     if not (prev_ok and next_ok):
         bad_nav.append(chapters[i][0])
 tk.check(f'every chapter has correct prev/next nav (bad: {bad_nav})', not bad_nav)
+
+# Cross-references between chapters are slug links — every internal /dzidza/
+# href on every page must name a slug that exists in the registry, so a
+# renamed or removed chapter breaks the build here instead of 404ing readers.
+slugs = {slug for slug, _, _ in chapters}
+bad_links = sorted({target
+                    for page in bodies + [body]
+                    for target in re.findall(r'href="/dzidza/([^"#?]+)"', page)
+                    if target not in slugs})
+tk.check(f'all chapter cross-links name real slugs (bad: {bad_links})',
+         not bad_links)
+
+# Code-excerpt chips are GitHub links to the file at the running ref (the
+# code_file macro; plain chips only when no repo URL is configured).
+flask_body = bodies[[s for s, _, _ in chapters].index('flask')]
+tk.check('excerpt chips link the repo',
+         f'{config.GITHUB_REPO_URL}/blob/' in flask_body)
 
 # --- 3. The registry is closed: unknown slugs are 404s, never templates -------
 # 'dzidza_ch01_anatomy.html' and '..' reach the handler and prove a template

@@ -65,9 +65,11 @@
             font-size: inherit;
         }
 
-        /* "where this lives" chip above a code excerpt */
+        /* "where this lives" chip above a code excerpt (a GitHub link when
+           the repo URL is configured, hence the anchor resets) */
         .code-file {
             display: inline-block;
+            text-decoration: none;
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.72rem;
             color: var(--purple);
@@ -78,6 +80,10 @@
             padding: 3px 10px;
             margin: 12px 0 0;
         }
+
+        .guide a.code-file { color: var(--purple); }
+
+        a.code-file:hover { border-color: var(--gold); color: var(--gold); }
 
         .code-file + pre { margin-top: 0; border-top-left-radius: 0; }
 

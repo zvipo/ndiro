@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>This is the chapter closest to your home turf, so it moves fast and
@@ -22,7 +23,7 @@
         <code>2026-09-03#183042-a1b2c3</code> — date, then a meal ID whose
         prefix is the <em>client-supplied</em> time of day. Lexicographic order
         of the SK <em>is</em> chronological order, so:</p>
-        <div class="code-file">db.py</div>
+        {{ code_file('db.py') }}
         <pre><code>begins_with(sk, '2026-09-')            # one month  = ONE Query
 between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code></pre>
         <p>(The <code>#~</code> trick: <code>~</code> sorts after the digits, so
@@ -86,7 +87,8 @@ between(sk, '2026-08-28#', '2026-09-03#~')   # any day window = ONE Query</code>
             <li><strong>The LRU</strong> (<code>db.py</code>'s
             <code>_PhotoCache</code>) is a byte-budgeted in-process cache
             (default 64&nbsp;MB) — valid only because there's exactly one
-            worker process (chapter 3's bet, called in).</li>
+            worker process (the <a href="/dzidza/flask">backend chapter</a>'s
+            bet, called in).</li>
             <li><strong>Share links get <code>max-age=1&nbsp;day</code></strong>
             instead of a year — so a revoked recipient's browser cache ages out
             in bounded time. Cache policy as access policy.</li>

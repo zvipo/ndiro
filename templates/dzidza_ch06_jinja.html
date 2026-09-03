@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>Jinja is the template language Flask uses to produce HTML on the
@@ -14,13 +15,13 @@
 {# never reaches the browser #}     ← comment (unlike &lt;!-- HTML comments --&gt;, which do)</code></pre>{% endraw %}
         <p>The values come from the route. Here's the pair — server side and
         template side — for the log page:</p>
-        <div class="code-file">app.py</div>
+        {{ code_file('app.py') }}
         <pre><code>return render_template('log.html', user=g.user,
                        nutrient=config.resolve_nutrient(g.user),
                        fiber_guide=config.FIBER_GUIDE,
                        ai_enabled=bool(config.OPENAI_API_KEY),
                        photos_enabled=bool(config.S3_BUCKET))</code></pre>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
 {% raw %}<pre><code>{% if ai_enabled %}
 &lt;div class="ai-row"&gt;
     &lt;button type="button" class="btn subtle" id="estimateBtn"&gt;…&lt;/button&gt;
@@ -36,7 +37,7 @@
         <p>Templates form a class-like hierarchy. <code>base.html</code> defines
         the skeleton and marks the variation points as named blocks; each page
         extends it and overrides only what it needs:</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
 {% raw %}<pre><code>{% extends "base.html" %}
 {% block title %}Ndiro — Log{% endblock %}
 {% block styles %} …page-specific CSS… {% endblock %}
@@ -77,7 +78,7 @@
         JavaScript. Interpolating into a script with plain
         {% raw %}<code>{{ … }}</code>{% endraw %} is wrong (HTML escaping isn't JS escaping);
         building JSON by string concatenation is worse. The right tool:</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
 {% raw %}<pre><code>&lt;script&gt;
     const FIBER_GUIDE = {{ fiber_guide|tojson }};
     const NUTRIENT = {{ nutrient|tojson }};   // {key, label, unit, goal, …}
@@ -85,8 +86,8 @@
         <p><code>|tojson</code> serializes the Python value as JSON <em>and</em>
         escapes it safely for a script context. The rendered page simply
         contains <code>const NUTRIENT = {"key": "fiber_g", …};</code> — server
-        state becomes a JS constant. This is the seam from chapter 1 made
-        concrete: config crosses the boundary once, at render time, through
+        state becomes a JS constant. This is the seam from the
+        <a href="/dzidza/anatomy">anatomy chapter</a> made concrete: config crosses the boundary once, at render time, through
         this filter.</p>
 
         <h2>Server-side or client-side?</h2>
@@ -117,6 +118,7 @@
             and note the text node — the markup arrived escaped. (This
             particular render happens in JavaScript via
             <code>textContent</code>, the DOM-side twin of autoescaping —
-            chapter 7 picks up that thread.)</p>
+            the <a href="/dzidza/js">JavaScript chapter</a> picks up that
+            thread.)</p>
         </div>
 {% endblock %}

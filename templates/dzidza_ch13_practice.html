@@ -25,7 +25,7 @@
             miniature. <code>tests/testkit.py</code> must be imported first in
             any new test; it installs the fakes before the app imports.</li>
             <li><strong>Check both themes and a phone width</strong> for any UI
-            change — devtools has a device-width toggle, and chapter 5 showed
+            change — devtools has a device-width toggle, and the <a href="/dzidza/css">CSS chapter</a> showed
             the one-attribute theme flip.</li>
         </ol>
 
@@ -34,15 +34,15 @@
         automatically a rejection — it's where to spend your attention:</p>
         <table>
             <tr><th>Ask</th><th>Because (chapter)</th></tr>
-            <tr><td>Does <code>innerHTML</code> or <code>|safe</code> get anything that isn't a source literal?</td><td>XSS (6, 7, 12)</td></tr>
-            <tr><td>Does any identifier in a URL, query, or form decide <em>whose</em> data is read or written?</td><td>Tenant isolation (8, 12)</td></tr>
-            <tr><td>Does a new GET change application data? Is a new write route missing its guard decorator or rate limit?</td><td>CSRF, auth (2, 3, 9)</td></tr>
-            <tr><td>Does a public page or a log line gain a config value or user content?</td><td>Invariants #8, #11 (12)</td></tr>
-            <tr><td>New in-process state (cache, counter, thread) — does it survive the "what if <code>--workers 2</code>?" question, and is the bet commented?</td><td>Single-worker design (3)</td></tr>
-            <tr><td>Numbers crossing the DynamoDB edge: <code>Decimal(str(x))</code> in, <code>float()</code> out?</td><td>Decimal discipline (10)</td></tr>
-            <tr><td>New fetch call: does it handle 401, non-OK, and network failure — the three-rung ladder?</td><td>The error contract (8)</td></tr>
-            <tr><td>New input: validated to canonical form server-side, not just constrained in the HTML?</td><td>Validation (4, 8)</td></tr>
-            <tr><td>Hard-coded color instead of a <code>var(--token)</code>? A button that's a styled div?</td><td>Theming, a11y (4, 5)</td></tr>
+            <tr><td>Does <code>innerHTML</code> or <code>|safe</code> get anything that isn't a source literal?</td><td>XSS (<a href="/dzidza/jinja">Jinja</a>, <a href="/dzidza/js">JS</a>, <a href="/dzidza/security">security</a>)</td></tr>
+            <tr><td>Does any identifier in a URL, query, or form decide <em>whose</em> data is read or written?</td><td>Tenant isolation (<a href="/dzidza/api">API</a>, <a href="/dzidza/security">security</a>)</td></tr>
+            <tr><td>Does a new GET change application data? Is a new write route missing its guard decorator or rate limit?</td><td>CSRF, auth (<a href="/dzidza/http">HTTP</a>, <a href="/dzidza/flask">backend</a>, <a href="/dzidza/auth">identity</a>)</td></tr>
+            <tr><td>Does a public page or a log line gain a config value or user content?</td><td>Invariants #8, #11 (<a href="/dzidza/security">security</a>)</td></tr>
+            <tr><td>New in-process state (cache, counter, thread) — does it survive the "what if <code>--workers 2</code>?" question, and is the bet commented?</td><td>Single-worker design (<a href="/dzidza/flask">backend</a>)</td></tr>
+            <tr><td>Numbers crossing the DynamoDB edge: <code>Decimal(str(x))</code> in, <code>float()</code> out?</td><td>Decimal discipline (<a href="/dzidza/data">storage</a>)</td></tr>
+            <tr><td>New fetch call: does it handle 401, non-OK, and network failure — the three-rung ladder?</td><td>The error contract (<a href="/dzidza/api">API</a>)</td></tr>
+            <tr><td>New input: validated to canonical form server-side, not just constrained in the HTML?</td><td>Validation (<a href="/dzidza/html">HTML</a>, <a href="/dzidza/api">API</a>)</td></tr>
+            <tr><td>Hard-coded color instead of a <code>var(--token)</code>? A button that's a styled div?</td><td>Theming, a11y (<a href="/dzidza/html">HTML</a>, <a href="/dzidza/css">CSS</a>)</td></tr>
             <tr><td>Does the diff update the matching stub test — or need a new one?</td><td>The tests are the spec</td></tr>
         </table>
 
@@ -95,7 +95,7 @@
             javadoc of the web platform.</li>
             <li><strong>Flask</strong> and <strong>Jinja</strong> official docs
             — short, readable, and this app uses maybe a third of each.</li>
-            <li><strong>OWASP Top 10</strong> — chapter 12's families,
+            <li><strong>OWASP Top 10</strong> — the <a href="/dzidza/security">security chapter</a>'s families,
             catalogued with case studies.</li>
             <li><strong>web.dev/learn</strong> — Google's structured HTML/CSS/JS
             courses, good for filling gaps in order.</li>

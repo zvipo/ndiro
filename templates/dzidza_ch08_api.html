@@ -1,8 +1,10 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
-        <p>Chapters 3 and 7 covered the two halves; this one is about the
-        contract between them. Ndiro's API is a dozen JSON endpoints under
+        <p>The <a href="/dzidza/flask">backend</a> and
+        <a href="/dzidza/js">JavaScript</a> chapters covered the two halves;
+        this one is about the contract between them. Ndiro's API is a dozen JSON endpoints under
         <code>/api/…</code>, designed by one rule: <strong>the URL names the
         resource, the method names the action, the status code names the
         outcome, and errors are always <code>{"error": "human message"}</code>
@@ -27,7 +29,7 @@
         <h2>The client side of a call</h2>
         <p>The text estimator shows the full JSON-request pattern in one
         screen:</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
         <pre><code>const resp = await fetch('/api/estimate-fiber', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,7 +71,7 @@ renderEstimate(result);</code></pre>
         <p>Every handler treats its input as hostile, and the validation is
         strict in ways worth studying. The date validator is a lesson in
         itself:</p>
-        <div class="code-file">app.py</div>
+        {{ code_file('app.py') }}
         <pre><code>def _valid_date(date_str):
     """Return the string if it is a strictly canonical YYYY-MM-DD date, else None.
 

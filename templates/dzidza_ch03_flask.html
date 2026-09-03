@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>The backend is one Python process. Flask's job is small and precise:
@@ -7,7 +8,7 @@
         else — storage, auth, templates — is libraries and your own code.</p>
 
         <h2>Routes: URL → function</h2>
-        <div class="code-file">app.py</div>
+        {{ code_file('app.py') }}
         <pre><code>@app.route('/privacy')
 def privacy():
     return render_template('privacy.html', user=auth.current_user())
@@ -24,7 +25,7 @@ def update_meal(date_str, meal_id):
         <code>YYYY-MM-DD</code>). <code>methods=['PUT']</code> means the same
         path can route to different functions by verb.</p>
         <p>Decorators stack, and each has its own enforcement point:</p>
-        <div class="code-file">app.py</div>
+        {{ code_file('app.py') }}
         <pre><code>@app.route('/api/estimate-fiber', methods=['POST'])
 @limiter.limit('6 per minute')     # enforced in a before-request hook —
                                    # runs FIRST, before any auth check
@@ -69,12 +70,12 @@ def estimate_fiber():
         boot, not limp), <code>db.ensure_tables()</code> creates any missing
         DynamoDB tables, and the route table is built. Per-request work stays
         out of import time; the auto-log worker thread is even started lazily on
-        first use because gunicorn forks after preload (chapter 11).</p>
+        first use because gunicorn forks after preload (the <a href="/dzidza/pipeline">capstone chapter</a>).</p>
 
         <h2>The single-worker design</h2>
         <p>This is the part of the backend written specifically for someone with
         your instincts, because it looks wrong until you read why:</p>
-        <div class="code-file">Dockerfile</div>
+        {{ code_file('Dockerfile') }}
         <pre><code># SINGLE worker is load-bearing: the rate limiter is in-memory (memory://),
 # so a second worker would hold a divergent limit state. Threads provide the
 # concurrency; the 60s timeout leaves room for the AI calls' 20-25s reads.

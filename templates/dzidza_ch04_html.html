@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>HTML is not a programming language; it's a serialization format for a
@@ -38,7 +39,7 @@
         <p>Ndiro's fiber guide dropdown is a nice case study: each result row is
         a real <code>&lt;button&gt;</code>, not a styled <code>div</code> with a
         click handler:</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
         <pre><code>// A real &lt;button&gt; gives keyboard/AT users click + Enter/Space for free.
 const row = document.createElement('button');
 row.type = 'button';
@@ -78,7 +79,7 @@ row.className = 'guide-row';</code></pre>
     &lt;meta charset="UTF-8"&gt;
     &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
     &lt;title&gt;Ndiro&lt;/title&gt;        ← the browser tab
-    &lt;style&gt;…&lt;/style&gt;            ← all CSS (chapter 5)
+    &lt;style&gt;…&lt;/style&gt;            ← all CSS (the CSS chapter)
 &lt;/head&gt;
 &lt;body&gt;                          ← everything you see
     …

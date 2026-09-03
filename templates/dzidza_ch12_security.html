@@ -14,8 +14,9 @@
         else's browser; your <code>&lt;script&gt;</code> then runs with their
         session on your victim's screen.
         <strong>Counter:</strong> escaping at every insertion point — Jinja
-        autoescaping server-side (ch 6), <code>textContent</code>-only for
-        dynamic data client-side (ch 7), <code>|tojson</code> at the
+        autoescaping server-side (<a href="/dzidza/jinja">Jinja</a>),
+        <code>textContent</code>-only for dynamic data client-side
+        (<a href="/dzidza/js">JavaScript</a>), <code>|tojson</code> at the
         script bridge. <strong>Review question:</strong> does the diff add
         <code>innerHTML</code> with anything non-literal, or a
         <code>|safe</code>?</p>
@@ -29,7 +30,8 @@
         <code>SameSite=Lax</code> on the session cookie — the browser withholds
         it on cross-site requests except top-level GET navigations. That's
         sufficient <em>only because</em> of a second discipline: no GET ever
-        changes <em>application data</em> (ch 2). Be precise about the
+        changes <em>application data</em> (the <a href="/dzidza/http">HTTP
+        chapter</a>). Be precise about the
         residue, because Lax does send the cookie on those top-level GETs: the
         two GETs that touch session state are covered otherwise —
         <code>/callback</code> by the OAuth <code>state</code> nonce, and
@@ -43,7 +45,8 @@
         is. <code>/api/meals?user_id=someone_else</code>.
         <strong>Counter:</strong> structural: identity comes only from the
         session (<code>g.user</code>), and no meal route accepts a user ID at
-        all — the request can't even express the attack (ch 8). Every storage
+        all — the request can't even express the attack (the
+        <a href="/dzidza/api">API chapter</a>). Every storage
         call keys on <code>session['user_id']</code>.
         <code>tests/probe_cross_user.py</code> — the repo calls it THE security
         test — signs in as two users and probes every route cross-tenant.
@@ -51,7 +54,7 @@
         <em>whose</em> data is touched?</p>
 
         <h2>Open redirect &amp; token leaks</h2>
-        <p>Two quieter ones from chapter 9's neighborhood.
+        <p>Two quieter ones from the <a href="/dzidza/auth">identity chapter</a>'s neighborhood.
         <code>_safe_next</code> stops <code>/login?next=…</code> from
         laundering redirects to attacker sites through a trusted domain. And
         share URLs (<code>/s/&lt;token&gt;</code>) are capability URLs — the
@@ -92,7 +95,8 @@
         perimeter: everything sensitive arrives as environment variables;
         <code>.env</code> is git- and docker-ignored;
         <code>config.py</code> hard-fails without <code>SECRET_KEY</code>
-        (leaking would let anyone mint session cookies — ch 9). Public pages
+        (leaking would let anyone mint session cookies — the
+        <a href="/dzidza/auth">identity chapter</a>). Public pages
         like <code>/status</code> show booleans ("photos: on"), never values —
         and <code>test_m9</code> literally greps the rendered page for every
         config value in the test environment. This guide is a public page too,

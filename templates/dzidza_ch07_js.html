@@ -1,4 +1,5 @@
 {% extends "_dzidza.html" %}
+{% from "_dzidza_macros.html" import code_file with context %}
 
 {% block guide %}
         <p>JavaScript is the only language browsers execute, so it's where all
@@ -32,10 +33,11 @@ a === b                       // always ===; == does type coercion, avoid it</co
         loop takes the next event. Block that thread — a long loop, a
         synchronous wait — and the entire UI freezes: no scrolling, no clicks.
         So all I/O is asynchronous by construction, and slowness must be pushed
-        to the server (as Ndiro does with the photo pipeline, chapter 11).</p>
+        to the server (as Ndiro does with the photo pipeline — the
+        <a href="/dzidza/pipeline">capstone chapter</a>).</p>
         <p><code>async/await</code> is the ergonomic layer over that. Here is
         the app's core data fetch, trimmed:</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
         <pre><code>async function loadMeals(opts) {
     const resp = await fetch('/api/meals?days=' + daysShown +
                              '&amp;anchor=' + currentDateLocal());
@@ -58,14 +60,14 @@ a === b                       // always ===; == does type coercion, avoid it</co
         </div>
 
         <h2>The DOM: reading and building the tree</h2>
-        <p>The DOM from chapter 4 is exposed to JavaScript as objects. Ndiro's
+        <p>The DOM from the <a href="/dzidza/html">HTML chapter</a> is exposed to JavaScript as objects. Ndiro's
         entire UI-update strategy is three verbs:</p>
         <pre><code>const el = document.getElementById('todayFiber');   // find
 el.textContent = '12.5';                            // change
 container.appendChild(card);                        // add</code></pre>
         <p>Watch the pattern that renders one meal card (trimmed from
         <code>log.html</code>):</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
         <pre><code>function mealCard(meal) {
     const card = document.createElement('div');
     card.className = 'meal-card card';
@@ -85,7 +87,7 @@ container.appendChild(card);                        // add</code></pre>
         string <em>as HTML</em>, so feeding it user data is an XSS hole —
         the DOM-side version of skipping Jinja's autoescaping. The repo has an
         explicit law about it, stated where it's bent:</p>
-        <div class="code-file">templates/log.html</div>
+        {{ code_file('templates/log.html') }}
         <pre><code>// innerHTML only ever receives these fixed string literals.
 function setBusy(btn, label) {
     btn.innerHTML = '&lt;span class="spin"&gt;🥦&lt;/span&gt; ' + label;</code></pre>
@@ -103,7 +105,7 @@ function setBusy(btn, label) {
         ancestors to <code>document</code>. The corner menu uses the whole
         mechanism in eight lines — open on toggle click, close on any click
         elsewhere, close on <kbd>Esc</kbd>:</p>
-        <div class="code-file">templates/base.html</div>
+        {{ code_file('templates/base.html') }}
         <pre><code>menuToggle.addEventListener('click', function (e) {
     e.stopPropagation();          // don't let this click reach document…
     setOpen(panel.hidden);
@@ -136,8 +138,8 @@ document.addEventListener('keydown', function (e) {
             <p>On the log page, open the Console and run:
             <code>document.getElementById('todayFiber').textContent = '999'</code>.
             Then run <code>FIBER_GUIDE.length</code> and
-            <code>NUTRIENT</code> — the constants Jinja injected in chapter 6
-            are just sitting there. Finally paste
+            <code>NUTRIENT</code> — the constants Jinja injected in the
+            <a href="/dzidza/jinja">Jinja chapter</a> are just sitting there. Finally paste
             <code>document.querySelectorAll('.meal-card').length</code> to count
             rendered cards. The console is a REPL over the live page — the
             fastest way to learn the DOM API there is.</p>
