@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Ndiro — Verify your email{% endblock %}
+{% block favicon %}📬{% endblock %}
+
+{# GET never consumes the token — email scanners prefetch links — so this page
+   exists to put a deliberate POST between the click and the verification. #}
+
+{% block content %}
+        <div class="page-header">
+            <h1>📬 Verify your email</h1>
+        </div>
+
+        <div class="card">
+            <p>One click to confirm this email address belongs to you and open
+            your Ndiro account.</p>
+            <form method="post" action="/verify-email/{{ token }}" style="margin-top:14px;">
+                <button type="submit" class="btn primary">Verify my email</button>
+            </form>
+        </div>
+{% endblock %}

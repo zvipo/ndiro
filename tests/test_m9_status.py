@@ -22,7 +22,7 @@ tk.check('status page links the commit on the repo',
          config.commit_url() is None or config.commit_url() in body)
 tk.check('status page links the source repo', config.GITHUB_REPO_URL in body)
 tk.check('status page reports feature state, not config',
-         'Meal photos' in body and 'AI estimates' in body)
+         'Meal photos' in body and 'AI estimates' in body and 'Email' in body)
 
 # The commit title renders as escaped text — never as markup.
 saved_title = config.GIT_COMMIT_TITLE
@@ -67,6 +67,12 @@ tk.check('javascript: repo url rejected',
 tk.check('http repo url rejected', config._REPO_RE.match('http://example.com/x') is None)
 tk.check('https repo url accepted',
          bool(config._REPO_RE.match('https://github.com/example/ndiro')))
+tk.check('http APP_BASE_URL rejected (fails closed)',
+         config._BASE_URL_RE.match('http://ndiro.example') is None)
+tk.check('garbage APP_BASE_URL rejected',
+         config._BASE_URL_RE.match('ndiro.example/path"><x>') is None)
+tk.check('https APP_BASE_URL accepted',
+         bool(config._BASE_URL_RE.match('https://ndiro.example:8443')))
 tk.check('branch with a quote rejected', config._clean('main"><script>', config._REF_RE) is None)
 tk.check('plain commit title accepted',
          config._clean_title('Add /status page') == 'Add /status page')

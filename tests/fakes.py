@@ -5,6 +5,7 @@ db.py uses, including boto3 Key/Attr condition evaluation and the string
 ConditionExpressions used by the AI counter and share revocation. No AWS
 credentials or network access required.
 """
+import re
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -98,15 +99,33 @@ class FakeTable:
     def load(self):
         pass
 
-    def get_item(self, Key):
+    def get_item(self, Key, ConsistentRead=None):
         item = self.items.get(self._kt(Key))
         return {'Item': deepcopy(item)} if item is not None else {}
 
-    def put_item(self, Item):
+    def put_item(self, Item, ConditionExpression=None,
+                 ExpressionAttributeValues=None, ExpressionAttributeNames=None):
+        if ConditionExpression is not None:
+            existing = self.items.get(self._kt(Item))
+            cond_item = existing if existing is not None else {}
+            names = ExpressionAttributeNames or {}
+            if not _eval_str_condition(ConditionExpression, cond_item,
+                                       ExpressionAttributeValues or {},
+                                       lambda n: names.get(n, n)):
+                raise _ccf_error()
         self.items[self._kt(Item)] = deepcopy(Item)
         return {}
 
-    def delete_item(self, Key):
+    def delete_item(self, Key, ConditionExpression=None,
+                    ExpressionAttributeValues=None, ExpressionAttributeNames=None):
+        if ConditionExpression is not None:
+            existing = self.items.get(self._kt(Key))
+            cond_item = existing if existing is not None else {}
+            names = ExpressionAttributeNames or {}
+            if not _eval_str_condition(ConditionExpression, cond_item,
+                                       ExpressionAttributeValues or {},
+                                       lambda n: names.get(n, n)):
+                raise _ccf_error()
         self.items.pop(self._kt(Key), None)
         return {}
 
@@ -137,7 +156,8 @@ class FakeTable:
         return {'Items': items}
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None,
-                    ConditionExpression=None, ExpressionAttributeNames=None):
+                    ConditionExpression=None, ExpressionAttributeNames=None,
+                    ReturnValues=None):
         kt = self._kt(Key)
         existing = self.items.get(kt)
         target = existing if existing is not None else dict(Key)
@@ -156,22 +176,47 @@ class FakeTable:
                 not _eval_str_condition(ConditionExpression, cond_item, values, resolve_name):
             raise _ccf_error()
 
+        # Clause parsing: SET / REMOVE / ADD in any combination and order
+        # (db.py mixes them, e.g. 'SET email_verified = :t REMOVE ...').
         expr = UpdateExpression.strip()
-        if expr.startswith('SET '):
-            for part in expr[4:].split(','):
-                name, val = part.split('=', 1)
-                target[resolve_name(name.strip())] = values[val.strip()]
-        elif expr.startswith('ADD '):
-            name, val = expr[4:].split()
-            name = resolve_name(name)
-            target[name] = target.get(name, 0) + values[val]
-        else:
+        parts = [p for p in re.split(r'\b(SET|REMOVE|ADD)\b', expr) if p.strip()]
+        if not parts or parts[0] not in ('SET', 'REMOVE', 'ADD'):
             raise NotImplementedError(f'update expression: {expr}')
+        for keyword, body in zip(parts[0::2], parts[1::2]):
+            if keyword == 'SET':
+                for part in body.split(','):
+                    name, val = part.split('=', 1)
+                    target[resolve_name(name.strip())] = values[val.strip()]
+            elif keyword == 'REMOVE':
+                for name in body.split(','):
+                    target.pop(resolve_name(name.strip()), None)
+            elif keyword == 'ADD':
+                name, val = body.split()
+                name = resolve_name(name)
+                target[name] = target.get(name, 0) + values[val]
+            else:
+                raise NotImplementedError(f'update expression: {expr}')
         self.items[kt] = target
+        if ReturnValues == 'ALL_NEW':
+            return {'Attributes': deepcopy(target)}
         return {}
 
     def batch_writer(self):
         return FakeBatchWriter(self)
+
+
+class FakeMailer:
+    """Stands in for mailer.send: captures every message so tests can pull
+    verification/reset links out of the bodies. Set .ok = False to simulate
+    an SES outage."""
+
+    def __init__(self):
+        self.sent = []  # (to_addr, subject, body) tuples, oldest first
+        self.ok = True
+
+    def send(self, to_addr, subject, body):
+        self.sent.append((to_addr, subject, body))
+        return self.ok
 
 
 class FakeS3:
