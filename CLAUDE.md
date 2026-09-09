@@ -108,7 +108,9 @@ raises without it (tests set their own).
   (mail kept for the `/dev` console and echoed as `DEV_MAIL` — the one place
   raw emailed links are meant to be readable), a fake Google account chooser
   (`/dev/google`; only `auth.build_auth_url`/`auth.fetch_userinfo` are
-  replaced, so the REAL `/login/google` → `/callback` flow runs), and canned
+  replaced, so the REAL `/login/google` → `/callback` flow runs; the
+  console's per-persona `/dev/login/<key>` sets the same session state and
+  jumps straight into `/callback` — one click, same callback), and canned
   `estimate_text`/`estimate_photo` (guide values for recognized foods,
   `[fail]`/`[garbage]`/`[slow]` tags for the failure paths). `seed()` loads
   personas in every account state (`PERSONAS` + one native account), a month
@@ -165,6 +167,12 @@ raises without it (tests set their own).
   tokens on it). `_review_core.html`/`_review_styles.html` are shared by
   `review.html` and `share_view.html` — the share view differs only in data URL
   and chrome, and has no edit/AI affordances by construction.
+  `_auth_card.html`/`_auth_styles.html` are the ONE sign-in card (Google
+  button + password form + links), rendered by `login.html` AND inline on
+  the anonymous `landing.html` — the home page is the sign-in page for a
+  visitor (no hop to /login); `/login` stays for guard redirects, invite
+  links, and the verified/reset notices, and `index()` passes the card the
+  same context `_render_login` does.
   `dev_console.html`/`dev_google.html` are the local-dev-mode surfaces
   (rendered only by `localdev.py`'s blueprint); base.html's `dev-banner`
   renders on every page in that mode from the `local_dev` context value.

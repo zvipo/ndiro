@@ -106,7 +106,14 @@ def too_large(e):
 
 @app.route('/')
 def index():
-    return render_template('landing.html', user=auth.current_user())
+    """Home. For a visitor the page carries the sign-in card itself (the one
+    /login renders), so signing in is a single step from here."""
+    return render_template('landing.html', user=auth.current_user(),
+                           google_enabled=bool(config.GOOGLE_CLIENT_ID),
+                           email_enabled=mailer.enabled(),
+                           next_target='/log', invite=None, invite_valid=False,
+                           form_token=_form_token(), error=None, email='',
+                           notice=None)
 
 
 @app.route('/waiting')

@@ -51,14 +51,10 @@
             margin-top: 28px;
         }
 
-        .signin .consent {
-            margin-top: 12px;
-            font-size: 0.78rem;
-            color: var(--dim);
-        }
-
-        .signin .consent a {
-            color: var(--muted);
+{% include '_auth_styles.html' %}
+        /* The hero is the heading; the card sits right under it. */
+        .hero + .auth-wrap {
+            margin-top: 0;
         }
 {% endblock %}
 
@@ -85,9 +81,11 @@
             <a class="btn" href="/waiting">Your account is waiting for approval →</a>
         </div>
         {% else %}
-        <div class="signin">
-            <a class="btn primary" href="/login?next=/log">Sign in</a>
-            <div class="consent">By signing in you agree to the <a href="/privacy">privacy&nbsp;&amp;&nbsp;terms</a>.</div>
+        {# Sign in right here: the same card /login renders, so the home page IS
+           the sign-in page for a visitor (no extra hop). /login stays for
+           guarded-route redirects, invite links, and the post-reset notices. #}
+        <div class="auth-wrap">
+{% include '_auth_card.html' %}
         </div>
         {% endif %}
 {% endblock %}
