@@ -1053,6 +1053,21 @@ def _render_chooser(state, error=None, email='', name=''):
                            state=state, error=error, email=email, name=name)
 
 
+@bp.route('/dev/login/<key>')
+def dev_login(key):
+    """One-click sign-in from the console: the same three session writes
+    /login/google makes, then straight into the REAL /callback with the
+    persona's code — the chooser page is for the /login-button path, where
+    it stands in for Google's own account picker."""
+    if not any(persona['key'] == key for persona in PERSONAS):
+        return 'Unknown persona', 404
+    session['login_next'] = auth._safe_next(request.args.get('next'), default='/log')
+    session.pop('invite_token', None)
+    state = secrets.token_urlsafe(16)
+    session['oauth_state'] = state
+    return redirect(f'/callback?state={quote(state, safe="")}&code=p.{key}')
+
+
 @bp.route('/dev/google')
 def dev_google():
     """Where the fake 'Sign in with Google' lands: an account chooser. Each

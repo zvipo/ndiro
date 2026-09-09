@@ -41,6 +41,17 @@
             min-width: 0;
         }
 
+        .acct .btn {
+            padding: 6px 12px;
+            white-space: nowrap;
+        }
+
+        @media (max-width: 560px) {
+            .acct { flex-wrap: wrap; }
+            .acct .who { flex-basis: calc(100% - 48px); }
+            .acct .badge, .acct .btn { margin-left: 48px; }
+        }
+
         .acct .email {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.78rem;
@@ -132,17 +143,19 @@
                 <span class="muted">({{ user.email }} · {{ user.status }})</span>
                 — <a href="/logout?next=/dev">sign out</a></p>
             {% else %}
-            <p><a class="btn primary" href="/login?next=/log">Sign in</a>
-                <span class="muted" style="font-size:0.85rem">— the Google button opens a fake account chooser;
-                the email form takes the password account below.</span></p>
+            <p>Not signed in — pick an account below, or use the real
+                <a href="/login?next=/log">sign-in page</a> (its Google button opens a fake account
+                chooser; its email form takes the password account).</p>
             {% endif %}
         </div>
 
         <div class="card">
             <h2>Accounts</h2>
-            <p class="lead">Pick one on the fake Google chooser. Statuses are live — approve or reject
-            at <a href="/admin">/admin</a> as the admin. Any other email typed into the chooser
-            becomes a new pending account (approved right away when you arrive through an invite link).</p>
+            <p class="lead">One click signs you in (the real <code>/callback</code> runs, so pending and
+            rejected behave exactly as in production). Statuses are live — approve or reject at
+            <a href="/admin">/admin</a> as the admin. Any other email typed into the fake Google chooser
+            behind the sign-in page becomes a new pending account (approved right away when you arrive
+            through an invite link).</p>
             <div class="dev-grid">
                 {% for a in accounts %}
                 <div class="acct">
@@ -152,6 +165,7 @@
                         <div class="blurb">{{ a.blurb }}</div>
                     </div>
                     <span class="badge {{ a.status or '' }}">{{ a.status or 'not signed up' }}</span>
+                    <a class="btn" href="/dev/login/{{ a.key }}?next=/log">Sign in</a>
                 </div>
                 {% endfor %}
                 <div class="acct">
@@ -161,6 +175,7 @@
                         <div class="blurb">{{ native.blurb }} Password: <code>{{ native.password }}</code></div>
                     </div>
                     <span class="badge {{ native.status or '' }}">{{ native.status or 'not signed up' }}</span>
+                    <a class="btn" href="/login?next=/log">Sign in</a>
                 </div>
             </div>
         </div>

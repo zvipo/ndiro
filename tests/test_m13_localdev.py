@@ -238,6 +238,23 @@ check('an unknown sign-in code is a 400, not an account', resp.status_code == 40
 resp = app.test_client().get('/callback?state=forged&code=p.admin')
 check('the real state check still guards the callback', resp.status_code == 400)
 
+quick = app.test_client()
+resp = quick.get('/dev/login/tendai?next=/review')
+check('console one-click sign-in redirects into the real callback',
+      resp.status_code == 302 and '/callback?state=' in resp.headers['Location']
+      and 'code=p.tendai' in resp.headers['Location'])
+resp = quick.get(resp.headers['Location'])
+check('...which signs in and honors next=',
+      resp.status_code == 302 and resp.headers['Location'].endswith('/review')
+      and quick.get('/review').status_code == 200)
+with quick.session_transaction() as sess:
+    check('...leaving only user_id in the session', set(sess.keys()) <= {'user_id', '_permanent'})
+check('one-click sign-in rejects an unknown persona and an unsafe next',
+      app.test_client().get('/dev/login/nobody').status_code == 404
+      and '/callback' in app.test_client().get('/dev/login/admin?next=//evil').headers.get('Location', ''))
+check('the console offers one-click sign-in per persona',
+      all(f'/dev/login/{p["key"]}' in anon.get('/dev').get_data(as_text=True) for p in localdev.PERSONAS))
+
 # --- 5. The AI stub --------------------------------------------------------------
 limiter.reset()
 resp = tendai.post('/api/estimate-fiber',

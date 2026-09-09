@@ -52,7 +52,7 @@ see `localdev.py`), where every cloud service is replaced by a stand-in:
 | SES email | a mailbox on `/dev` with the verification / reset links clickable |
 | OpenAI | canned estimates; `[fail]`, `[garbage]`, `[slow]` in a description exercise the failure paths |
 
-`/dev` is the console: sign in as the seeded admin, an approved user with a
+`/dev` is the console: one click signs you in as the seeded admin, an approved user with a
 month of meals and photos (plus a share link and an invite), one tracking
 protein instead of fiber, a pending and a rejected account, or the
 email/password account whose password it shows. Everything else is the real
