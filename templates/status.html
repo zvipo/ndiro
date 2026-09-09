@@ -109,6 +109,11 @@
                 <dt>Email</dt>
                 <dd><span class="dot {{ 'on' if email_enabled else 'off' }}">●</span>
                     {{ 'enabled' if email_enabled else 'disabled' }}</dd>
+                {% if local_dev %}
+                <dt>Mode</dt>
+                <dd><span class="dot on">●</span> local dev — fake sign-in, stub AI, local storage
+                    (<a href="/dev" class="muted">/dev</a>)</dd>
+                {% endif %}
             </dl>
         </div>
 

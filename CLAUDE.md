@@ -24,6 +24,8 @@ gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60 --no-control-s
 
 ./build.sh                           # docker build + the GIT_COMMIT/GIT_BRANCH/BUILD_TIME
                                      # stamp /status needs (.git never enters the image)
+docker compose up --build            # LOCAL DEV MODE: the image with every cloud service swapped
+                                     # for a local stand-in — http://localhost:8000/dev (localdev.py)
 
 # Stub tests — no credentials or network needed; run ALL of these after changes:
 python tests/test_m1_auth.py         # auth/approval/MAX_USERS
@@ -39,6 +41,7 @@ python tests/test_m10_monitor.py     # /admin/monitor instance stats (counts onl
 python tests/test_m11_autolog.py     # async auto-log spool (queue, cap, dead-letter)
 python tests/test_m12_native.py      # native accounts (signup/verify/reset, no-oracle)
 python tests/test_m12_dzidza.py      # /dzidza guide (public, closed registry, leak check)
+python tests/test_m13_localdev.py    # NDIRO_LOCAL_DEV=1 mode (guards, seed, fake Google, stubs)
 ```
 
 There is no linter or build step. `SECRET_KEY` is required at import — config.py
@@ -93,6 +96,30 @@ raises without it (tests set their own).
   poisoning); disabled ⇒ signup/forgot/resend 503 while password SIGN-IN
   keeps working. Failures log `MAIL_ERROR <type> <ses-code>` only — never
   the address, body, or token. Tests monkeypatch `mailer.send`.
+- **`localdev.py`** — LOCAL DEV MODE (`NDIRO_LOCAL_DEV=1`; `docker-compose.yml`
+  sets it): the whole site with no cloud account. `install(app)` — called
+  from app.py BEFORE the first backend touch — swaps every external service
+  for a stand-in through the same seams the tests use: `MemoryTable`
+  (the DynamoDB emulation; `tests/fakes.py` IMPORTS it, so the dev backend
+  and the test fakes are one implementation — extend the condition grammar
+  here, never in a copy; with `LOCAL_DATA_DIR` each table persists as one
+  JSON document via atomic replace, Decimals tagged), `LocalS3` (photo files
+  under the data dir, traversal-checked; in memory without one), `Mailbox`
+  (mail kept for the `/dev` console and echoed as `DEV_MAIL` — the one place
+  raw emailed links are meant to be readable), a fake Google account chooser
+  (`/dev/google`; only `auth.build_auth_url`/`auth.fetch_userinfo` are
+  replaced, so the REAL `/login/google` → `/callback` flow runs; the
+  console's per-persona `/dev/login/<key>` sets the same session state and
+  jumps straight into `/callback` — one click, same callback), and canned
+  `estimate_text`/`estimate_photo` (guide values for recognized foods,
+  `[fail]`/`[garbage]`/`[slow]` tags for the failure paths). `seed()` loads
+  personas in every account state (`PERSONAS` + one native account), a month
+  of meals with generated photos, share and invite links — only into an
+  EMPTY store; the console's reset wipes and reseeds. The `/dev` blueprint
+  is registered ONLY in this mode (see invariant #13). config.py owns the
+  mode's guards and overrides (`LOCAL_DEV`, `LOCAL_DATA_DIR`, `LOCAL_DEV_AI`
+  stub|off|real, `LOCAL_DEV_PHOTOS/EMAIL/SEED`, a derived `SECRET_KEY` kept
+  in the data dir, the seeded admin address added to `ADMIN_EMAILS`).
 - **`ai.py`** — estimator prompts/schema, `_openai_estimate` (plain requests,
   strict json_schema, timeouts (5,20) text / (5,25) vision under gunicorn's 60s).
   Every entry point takes the resolved nutrient config: the fiber default keeps
@@ -140,6 +167,15 @@ raises without it (tests set their own).
   tokens on it). `_review_core.html`/`_review_styles.html` are shared by
   `review.html` and `share_view.html` — the share view differs only in data URL
   and chrome, and has no edit/AI affordances by construction.
+  `_auth_card.html`/`_auth_styles.html` are the ONE sign-in card (Google
+  button + password form + links), rendered by `login.html` AND inline on
+  the anonymous `landing.html` — the home page is the sign-in page for a
+  visitor (no hop to /login); `/login` stays for guard redirects, invite
+  links, and the verified/reset notices, and `index()` passes the card the
+  same context `_render_login` does.
+  `dev_console.html`/`dev_google.html` are the local-dev-mode surfaces
+  (rendered only by `localdev.py`'s blueprint); base.html's `dev-banner`
+  renders on every page in that mode from the `local_dev` context value.
   `_dzidza.html` + `dzidza_index.html` + `dzidza_ch*.html` are **Dzidza**
   (`/dzidza`, public like `/privacy`): the built-in web-development guide that
   teaches the whole stack from this repo's own code. Chapters come from the
@@ -332,13 +368,28 @@ delete_photo/delete_user_photos purge the LRU.
     create re-checks MAX_USERS on its single FIFO worker, so creates queued
     while the instance filled are dropped, not applied late.
     Emailed GET links never mutate (scanners prefetch) — consumption is
-    POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
+    POST-only; the verify page auto-submits that POST from a script on
+    load (scanners fetch without running scripts, so the token survives
+    them; a person's one click in the email is enough; the button stays
+    as the no-JS fallback). Lockout: 10 consecutive failures → 15 min, cleared by success
     or a completed reset; the counter is an atomic DynamoDB ADD (concurrent
     guesses can't lose an update). Every native users-table update is
     conditional on the row still existing — a write racing account deletion
     must never resurrect a row (DynamoDB updates upsert by default). The
     admin payload's `unverified` boolean is derived
     — hashes/tokens/providers never enter `_user_to_json`'s allowlist.
+13. LOCAL DEV MODE never reaches a deployment. `NDIRO_LOCAL_DEV=1` opens every
+    account to whoever reaches the port (the fake chooser signs in as anyone),
+    so: config.py raises when it is set alongside `RENDER` or an explicit
+    `COOKIE_SECURE=1`; the `/dev` routes are REGISTERED only in that mode
+    (not merely guarded — `tests/test_m5_checklist.py` asserts they 404
+    otherwise); every page carries the banner and `/status` shows the mode
+    as a boolean; the compose file binds to loopback only. The stubs replace
+    functions through the same seams the tests use (`db.*_table`,
+    `db._s3_client`, `mailer.send`, `auth.build_auth_url`/`fetch_userinfo`,
+    `ai.estimate_*`) — never by branching inside app.py routes, so the
+    production code path has no dev-mode conditionals beyond the install
+    hook and the banner flag.
 
 ## Gotchas
 
@@ -347,10 +398,13 @@ delete_photo/delete_user_photos purge the LRU.
 - `GOAL_G` in the review JS comes from config via the template — keep
   `VISCOUS_FIBER_GOAL_G` the only definition.
 - The tests are plain scripts (no pytest); `tests/testkit.py` must be imported
-  first — it sets env vars and installs the fakes before app import. Fakes
-  implement the exact boto3 surface db.py uses (update expressions may mix
-  SET/REMOVE/ADD clauses); if you add a new condition
-  expression shape, extend `tests/fakes.py`. `mailer.send` is replaced by
+  first — it sets env vars and installs the fakes before app import. The
+  fakes are `localdev.MemoryTable`/`LocalS3` (tests/fakes.py imports them);
+  they implement the exact boto3 surface db.py uses (update expressions may
+  mix SET/REMOVE/ADD clauses); if you add a new condition expression shape,
+  extend the evaluator in `localdev.py` — the dev mode and the tests share
+  it. `tests/test_m13_localdev.py` bootstraps WITHOUT testkit (the mode must
+  be on before config imports) and drives `localdev.install()` itself. `mailer.send` is replaced by
   `tk.MAILER` — pull emailed links back out with `tk.extract_link`.
 - Changing a native account's password does NOT invalidate its other live
   sessions (the cookie holds only `user_id`; there is no session-versioning

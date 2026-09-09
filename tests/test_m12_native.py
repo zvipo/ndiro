@@ -105,6 +105,12 @@ tk.check('verify GET shows a confirm page (non-consuming)',
          resp.status_code == 200 and b'Verify my email' in resp.data)
 resp = tk.get(c, verify_path)
 tk.check('verify GET repeatable (still not consumed)', resp.status_code == 200)
+# The page submits the POST itself on load (one click from the email is
+# enough for a person); scanners fetch without running scripts, so the GET
+# above stayed non-consuming — both halves of the design, asserted.
+tk.check('verify page auto-submits its own POST form',
+         b'requestSubmit' in resp.data
+         and f'action="{verify_path}"'.encode() in resp.data)
 
 resp = tk.post(c, verify_path)
 tk.check('verify POST completes and sends the user to sign in',

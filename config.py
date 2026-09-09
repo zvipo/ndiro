@@ -8,6 +8,7 @@ literal URL — and it too is env-overridable).
 import math
 import os
 import re
+import secrets
 import time
 import zlib
 
@@ -17,8 +18,67 @@ from dotenv import load_dotenv
 # directories and could pick up an unrelated file). Real env vars still win.
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
+# --- Local development mode (NDIRO_LOCAL_DEV=1) ------------------------------
+# The whole site on one machine with no cloud accounts: DynamoDB, S3, Google
+# sign-in, SES, and OpenAI are swapped for local stand-ins (localdev.py), and
+# the /dev console lets a developer sign in as any seeded account. That is a
+# different trust model — whoever reaches the port owns every account — so
+# the mode refuses to coexist with any production signal, and every override
+# below is explicit about what it replaces. Off (the default), none of this
+# has any effect: the flags exist, the values are untouched.
+LOCAL_DEV = os.getenv('NDIRO_LOCAL_DEV') == '1'
+LOCAL_DATA_DIR = None
+LOCAL_DEV_AI = 'off'
+LOCAL_DEV_PHOTOS = LOCAL_DEV_EMAIL = LOCAL_DEV_SEED = False
+LOCAL_DEV_ADMIN_EMAIL = 'admin@example.com'  # RFC 2606 example address; the seeded admin
+if LOCAL_DEV:
+    if os.getenv('RENDER'):
+        raise RuntimeError('NDIRO_LOCAL_DEV=1 on Render: local dev mode must never '
+                           'run on a deployment (every account is open there).')
+    if os.getenv('COOKIE_SECURE', '0') != '0':
+        raise RuntimeError('NDIRO_LOCAL_DEV=1 with COOKIE_SECURE=1: local dev mode '
+                           'is plain-http localhost only — unset one of them.')
+    LOCAL_DATA_DIR = os.path.abspath(os.getenv('LOCAL_DATA_DIR')) \
+        if os.getenv('LOCAL_DATA_DIR') else None
+    LOCAL_DEV_AI = os.getenv('LOCAL_DEV_AI', 'stub')
+    if LOCAL_DEV_AI not in ('stub', 'off', 'real'):
+        raise RuntimeError('LOCAL_DEV_AI must be stub, off, or real')
+    LOCAL_DEV_PHOTOS = os.getenv('LOCAL_DEV_PHOTOS', '1') != '0'
+    LOCAL_DEV_EMAIL = os.getenv('LOCAL_DEV_EMAIL', '1') != '0'
+    LOCAL_DEV_SEED = os.getenv('LOCAL_DEV_SEED', '1') != '0'
+
+
+def _local_dev_secret_key():
+    """A SECRET_KEY for local dev mode when none is set: minted once and kept
+    in LOCAL_DATA_DIR (so sessions — and the native-account ids derived from
+    it — survive restarts), or per-process when there is no data dir (the
+    data is in memory and gone on restart anyway, so nothing is lost)."""
+    if not LOCAL_DATA_DIR:
+        return secrets.token_urlsafe(48)
+    path = os.path.join(LOCAL_DATA_DIR, 'secret_key')
+    try:
+        with open(path) as f:
+            key = f.read().strip()
+        if key:
+            return key
+    except OSError:
+        pass
+    key = secrets.token_urlsafe(48)
+    try:
+        os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
+        with open(path, 'w', opener=lambda p, flags: os.open(p, flags, 0o600)) as f:
+            f.write(key + '\n')
+    except OSError as e:
+        raise RuntimeError(f'LOCAL_DATA_DIR {LOCAL_DATA_DIR!r} is not writable '
+                           f'({type(e).__name__}) — point it somewhere the app '
+                           'user can write, or unset it to run in memory.') from e
+    return key
+
+
 # --- Flask session signing key (REQUIRED — no insecure fallback) -------------
 SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY and LOCAL_DEV:
+    SECRET_KEY = _local_dev_secret_key()
 if not SECRET_KEY:
     raise RuntimeError(
         'SECRET_KEY is not set. Ndiro is a multi-user app and refuses to boot '
@@ -40,6 +100,10 @@ INVITES_TABLE = os.getenv('INVITES_TABLE', 'ndiro-invites')
 # Private bucket for meal photos. Optional: unset => photo endpoints 400 with a
 # clear message and text-only meals still work.
 S3_BUCKET = os.getenv('S3_BUCKET')
+if LOCAL_DEV:
+    # Photos live on local disk (localdev.LocalS3); the name only needs to be
+    # truthy, because `bool(S3_BUCKET)` is the photo-feature switch everywhere.
+    S3_BUCKET = 'local-dev-photos' if LOCAL_DEV_PHOTOS else None
 # In-process LRU for proxied photo bytes (single gunicorn worker — see the
 # rate limiter's memory:// rationale). Shrink on RAM-tight hosts.
 PHOTO_CACHE_MB = int(os.getenv('PHOTO_CACHE_MB', '64'))
@@ -51,12 +115,19 @@ MAX_CONTENT_LENGTH = 16 * 1024 * 1024
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/callback')
+if LOCAL_DEV:
+    # The fake chooser (localdev.build_auth_url) replaces Google; a client id
+    # is still needed because `bool(GOOGLE_CLIENT_ID)` is the sign-in switch.
+    GOOGLE_CLIENT_ID = 'local-dev'
+    GOOGLE_CLIENT_SECRET = None
 
 # Dev-only escape hatch: COOKIE_SECURE=0 lets the session cookie work over
 # plain-http localhost (Safari rejects Secure cookies there). NEVER set in
 # production — TLS-only cookies are assumed by the whole auth design. (Defined
 # up here because EMAIL_ENABLED below keys off it too.)
 COOKIE_SECURE = os.getenv('COOKIE_SECURE', '1') != '0'
+if LOCAL_DEV:
+    COOKIE_SECURE = False  # plain-http localhost; an explicit 1 was refused above
 
 # --- Email (Amazon SES; optional) --------------------------------------------
 # Native (email/password) signup, email verification, and password reset need
@@ -78,6 +149,12 @@ _BASE_URL_RE = re.compile(r'^https://[\w.-]+(?::\d+)?$')
 APP_BASE_URL = (os.getenv('APP_BASE_URL') or '').strip().rstrip('/')
 if APP_BASE_URL and not _BASE_URL_RE.match(APP_BASE_URL):
     APP_BASE_URL = ''
+if LOCAL_DEV:
+    # Mail lands in the /dev mailbox (localdev.Mailbox), never SES. Links use
+    # the request host — whatever the developer's browser is pointed at — so
+    # a production APP_BASE_URL left in .env can't send them elsewhere.
+    MAIL_FROM = 'Ndiro <no-reply@localhost>' if LOCAL_DEV_EMAIL else None
+    APP_BASE_URL = ''
 EMAIL_ENABLED = bool(MAIL_FROM and (APP_BASE_URL or not COOKIE_SECURE))
 
 # Keys the deterministic native-account user_id (HMAC(secret, email) — see
@@ -95,6 +172,8 @@ NATIVE_ID_SECRET = os.getenv('NATIVE_ID_SECRET') or SECRET_KEY
 ADMIN_EMAILS = {
     e.strip().lower() for e in os.getenv('ADMIN_EMAILS', '').split(',') if e.strip()
 }
+if LOCAL_DEV:
+    ADMIN_EMAILS.add(LOCAL_DEV_ADMIN_EMAIL)  # the seeded admin persona, always
 MAX_USERS = int(os.getenv('MAX_USERS', '100'))
 
 # Active share links allowed per user (revoked/expired links don't count).
@@ -107,6 +186,16 @@ MAX_ACTIVE_INVITES = 10
 # --- AI estimator (optional) -------------------------------------------------
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-5-mini')
+if LOCAL_DEV:
+    if LOCAL_DEV_AI == 'stub':
+        # `bool(OPENAI_API_KEY)` is the AI-feature switch; the stub estimators
+        # (localdev.estimate_*) never send this placeholder anywhere.
+        OPENAI_API_KEY = 'local-dev-stub'
+        OPENAI_MODEL = 'local-stub'
+    elif LOCAL_DEV_AI == 'off':
+        OPENAI_API_KEY = None
+    elif not OPENAI_API_KEY:
+        raise RuntimeError('LOCAL_DEV_AI=real needs OPENAI_API_KEY')
 OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions'
 AI_DAILY_LIMIT = int(os.getenv('AI_DAILY_LIMIT', '10'))  # per user per UTC day
 
@@ -116,7 +205,9 @@ AI_DAILY_LIMIT = int(os.getenv('AI_DAILY_LIMIT', '10'))  # per user per UTC day
 # loses only not-yet-committed photos — point it at a mounted volume to make
 # the queue survive restarts. The directory holds users' private photos, so
 # it must never be web-served or world-readable.
-AUTOLOG_DIR = os.getenv('AUTOLOG_DIR', '/tmp/ndiro-autolog')
+AUTOLOG_DIR = os.getenv('AUTOLOG_DIR') or (
+    os.path.join(LOCAL_DATA_DIR, 'autolog') if LOCAL_DEV and LOCAL_DATA_DIR
+    else '/tmp/ndiro-autolog')
 # Per-user bound on queued photos: caps local disk use (~400KB each) and how
 # much AI backlog one user can park.
 AUTOLOG_MAX_PENDING = int(os.getenv('AUTOLOG_MAX_PENDING', '50'))

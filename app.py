@@ -65,6 +65,14 @@ limiter = Limiter(
     default_limits=['300 per minute'],
 )
 
+# Local dev mode (NDIRO_LOCAL_DEV=1): swap every cloud backend for a local
+# stand-in, mount the /dev console, and seed sample data — BEFORE the first
+# backend touch below (it replaces ensure_tables). See localdev.py.
+if config.LOCAL_DEV:
+    import localdev
+    localdev.install(app)
+    app.config['TEMPLATES_AUTO_RELOAD'] = True  # edit a template, refresh
+
 # Auto-create missing tables at boot (logs, never crashes).
 db.ensure_tables()
 
@@ -72,8 +80,10 @@ db.ensure_tables()
 @app.context_processor
 def inject_build():
     """Running commit for base.html's menu — the version is visible from any
-    page, and /status has the detail."""
-    return {'build_commit_short': config.GIT_COMMIT_SHORT}
+    page, and /status has the detail. local_dev drives the dev-mode banner
+    (a boolean: it says the mode is on, never what it is configured with)."""
+    return {'build_commit_short': config.GIT_COMMIT_SHORT,
+            'local_dev': config.LOCAL_DEV}
 
 
 def _utc_today_str():
@@ -96,7 +106,14 @@ def too_large(e):
 
 @app.route('/')
 def index():
-    return render_template('landing.html', user=auth.current_user())
+    """Home. For a visitor the page carries the sign-in card itself (the one
+    /login renders), so signing in is a single step from here."""
+    return render_template('landing.html', user=auth.current_user(),
+                           google_enabled=bool(config.GOOGLE_CLIENT_ID),
+                           email_enabled=mailer.enabled(),
+                           next_target='/log', invite=None, invite_valid=False,
+                           form_token=_form_token(), error=None, email='',
+                           notice=None)
 
 
 @app.route('/waiting')
@@ -173,7 +190,8 @@ def status_page():
         server_time=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
         ai_enabled=bool(config.OPENAI_API_KEY),
         photos_enabled=bool(config.S3_BUCKET),
-        email_enabled=bool(config.EMAIL_ENABLED))
+        email_enabled=bool(config.EMAIL_ENABLED),
+        local_dev=config.LOCAL_DEV)
 
 
 # --- Dzidza ("learn" in Shona): the built-in web-development guide -----------

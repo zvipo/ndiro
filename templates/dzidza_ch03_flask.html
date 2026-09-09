@@ -127,5 +127,11 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 60 \
             <code>/privacy</code>, and this guide all work, because they touch
             no storage. Mapping "which routes need which backing services" is a
             good first exercise in reading <code>app.py</code>.</p>
+            <p>Then run <code>docker compose up --build</code>: the same image in
+            <em>local dev mode</em>, where <code>localdev.py</code> swaps every
+            backing service for a stand-in on your own disk and
+            <code>/dev</code> signs you in as any seeded account. Read its
+            <code>install()</code> — the handful of functions it replaces are
+            exactly the seams between this app and the cloud.</p>
         </div>
 {% endblock %}

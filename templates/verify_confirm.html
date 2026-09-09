@@ -2,8 +2,11 @@
 {% block title %}Ndiro — Verify your email{% endblock %}
 {% block favicon %}📬{% endblock %}
 
-{# GET never consumes the token — email scanners prefetch links — so this page
-   exists to put a deliberate POST between the click and the verification. #}
+{# GET never consumes the token — email scanners prefetch links — so the
+   verification itself is the POST below. The page submits it on load, so for
+   a person the link just works (one click in the email); scanners, which
+   fetch but do not run scripts, still never burn the token. Without JS the
+   button remains, and the copy explains what to do. #}
 
 {% block content %}
         <div class="page-header">
@@ -11,10 +14,25 @@
         </div>
 
         <div class="card">
-            <p>One click to confirm this email address belongs to you and open
-            your Ndiro account.</p>
-            <form method="post" action="/verify-email/{{ token }}" style="margin-top:14px;">
-                <button type="submit" class="btn primary">Verify my email</button>
+            <p id="verifyStatus">Confirming this email address belongs to you…
+                <span class="spin">🥦</span></p>
+            <form method="post" action="/verify-email/{{ token }}" id="verifyForm" style="margin-top:14px;">
+                <button type="submit" class="btn primary" id="verifyBtn">Verify my email</button>
             </form>
+            <noscript><p class="muted" style="margin-top:10px; font-size:0.85rem;">Tap the
+                button to confirm.</p></noscript>
         </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // One click from the email is enough: submit the confirmation now. The
+        // button stays visible only as a fallback if the submit never happens.
+        (function () {
+            var form = document.getElementById('verifyForm');
+            if (!form || !form.requestSubmit) return;
+            document.getElementById('verifyBtn').style.display = 'none';
+            form.requestSubmit();
+        })();
+    </script>
 {% endblock %}

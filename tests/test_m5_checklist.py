@@ -10,6 +10,7 @@ from datetime import timedelta
 import testkit as tk
 
 import auth
+import config
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -97,6 +98,19 @@ tk.check('admin payload is metadata-only (no meal/photo/share fields)',
 # /admin/monitor instead, where it names nobody.
 tk.check('admin payload carries no per-account usage figures',
          not (user_keys & {'ai_uses_date', 'ai_uses_today', 'meals', 'photos'}))
+
+# --- Local dev mode is OFF, and its surfaces do not exist -----------------------
+# NDIRO_LOCAL_DEV=1 (localdev.py) opens every account to whoever reaches the
+# port; outside that mode the /dev routes must not merely be guarded — they
+# must not be registered at all.
+tk.check('local dev mode is off under the test environment', config.LOCAL_DEV is False)
+plain = tk.client()
+tk.check('/dev console does not exist outside local dev mode',
+         tk.get(plain, '/dev').status_code == 404
+         and tk.get(plain, '/dev/google').status_code == 404
+         and tk.post(plain, '/dev/reset').status_code == 404)
+tk.check('no template renders the dev banner outside local dev mode',
+         'Local dev mode' not in tk.get(plain, '/').get_data(as_text=True))
 
 # --- 429 responses are JSON with a clear message ------------------------------
 tk.limiter.reset()

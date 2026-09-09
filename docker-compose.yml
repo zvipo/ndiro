@@ -1,0 +1,43 @@
+# Local development stack: the production image with every cloud service
+# swapped for a local stand-in (NDIRO_LOCAL_DEV=1 — see localdev.py). No AWS,
+# Google, OpenAI, or SES account needed.
+#
+#   docker compose up --build     # then open http://localhost:8000/dev
+#   docker compose down -v        # stop AND wipe the seeded data volume
+#
+# The checkout is bind-mounted read-only over /app, so edits on the host show
+# up on refresh: gunicorn --reload restarts the worker on .py changes, Jinja
+# reloads templates on its own. Data (tables, photos, the auto-log spool, the
+# derived SECRET_KEY) lives in the named volume, so it survives restarts and
+# reloads; "Reset to seed data" on /dev starts over.
+#
+# Personal tweaks (another port, LOCAL_DEV_AI=real with a real key) belong in
+# a gitignored docker-compose.override.yml, never here.
+services:
+  ndiro:
+    build:
+      context: .
+    image: ndiro-localdev
+    # Loopback only. In local dev mode anyone who can reach the port can sign
+    # in as any account — never publish it on a LAN interface.
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      NDIRO_LOCAL_DEV: "1"
+      LOCAL_DATA_DIR: /data
+      # Knobs (defaults shown; every one is documented in env_template.txt):
+      # LOCAL_DEV_AI: stub        # stub | off | real (real needs OPENAI_API_KEY)
+      # LOCAL_DEV_PHOTOS: "1"
+      # LOCAL_DEV_EMAIL: "1"
+      # LOCAL_DEV_SEED: "1"
+      # AI_DAILY_LIMIT: "10"      # set to 2 to reach the daily-cap state quickly
+      # MAX_USERS: "100"          # set to 6 to see the instance-full page
+    volumes:
+      - .:/app:ro
+      - ndiro-localdev:/data
+    command: >
+      gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 8 --timeout 60
+      --no-control-socket --reload --reload-engine poll app:app
+
+volumes:
+  ndiro-localdev:

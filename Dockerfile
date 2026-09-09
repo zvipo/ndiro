@@ -53,8 +53,11 @@ COPY --from=builder /install /usr/local
 # injected at run time (docker run --env-file / Render dashboard env vars).
 COPY . .
 
-# Run as an unprivileged user.
-RUN useradd --no-create-home --user-group ndiro
+# Run as an unprivileged user. /data is the mount point for local dev mode's
+# data volume (docker-compose.yml): created here and owned by that user so
+# the named volume inherits writable ownership. Empty and unused in production.
+RUN useradd --no-create-home --user-group ndiro \
+    && mkdir -p /data && chown ndiro:ndiro /data
 USER ndiro
 
 # Which commit this image contains, for /status. .git is dockerignored, so the

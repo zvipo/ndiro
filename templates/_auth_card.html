@@ -1,0 +1,45 @@
+{# The ONE sign-in card: Google button + email/password form + links. Shared by
+   /login (login.html: next/invite/notice/error all flow through it) and the
+   anonymous landing page (landing.html), so signing in from the home page is
+   one step — no hop to a second, near-identical page. Expects: google_enabled,
+   email_enabled, next_target, invite, invite_valid, form_token, error, email,
+   notice. #}
+            <div class="card auth-card">
+                {% if google_enabled %}
+                <a class="btn primary" style="margin-top:0;"
+                   href="/login/google?next={{ next_target|urlencode }}{% if invite %}&invite={{ invite|urlencode }}{% endif %}">Sign in with Google</a>
+                <div class="auth-divider">or with email</div>
+                {% endif %}
+
+                <form method="post" action="/login/password">
+                    <input type="hidden" name="form_token" value="{{ form_token }}">
+                    <input type="hidden" name="next" value="{{ next_target }}">
+                    {% if invite %}<input type="hidden" name="invite" value="{{ invite }}">{% endif %}
+                    <div class="field">
+                        <label class="form-label" for="email">Email</label>
+                        <input type="email" id="email" name="email" required
+                               autocomplete="email" value="{{ email }}">
+                    </div>
+                    <div class="field">
+                        <label class="form-label" for="password">Password</label>
+                        <input type="password" id="password" name="password" required
+                               autocomplete="current-password">
+                    </div>
+                    {% if notice %}<div class="auth-notice">{{ notice }}</div>{% endif %}
+                    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+                    <button type="submit" class="btn">Sign in</button>
+                </form>
+
+                {% if email_enabled %}
+                <div class="auth-links">
+                    <a href="/signup?next={{ next_target|urlencode }}{% if invite %}&invite={{ invite|urlencode }}{% endif %}">Create an account</a>
+                    <a href="/forgot">Forgot password?</a>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if invite and invite_valid %}
+            <div class="invite-note">✉️ You're signing in through an invite link —
+                your account will be approved right away.</div>
+            {% endif %}
+            <div class="consent">By signing in you agree to the <a href="/privacy">privacy&nbsp;&amp;&nbsp;terms</a>.</div>
