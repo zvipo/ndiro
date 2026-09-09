@@ -368,7 +368,10 @@ delete_photo/delete_user_photos purge the LRU.
     create re-checks MAX_USERS on its single FIFO worker, so creates queued
     while the instance filled are dropped, not applied late.
     Emailed GET links never mutate (scanners prefetch) — consumption is
-    POST-only. Lockout: 10 consecutive failures → 15 min, cleared by success
+    POST-only; the verify page auto-submits that POST from a script on
+    load (scanners fetch without running scripts, so the token survives
+    them; a person's one click in the email is enough; the button stays
+    as the no-JS fallback). Lockout: 10 consecutive failures → 15 min, cleared by success
     or a completed reset; the counter is an atomic DynamoDB ADD (concurrent
     guesses can't lose an update). Every native users-table update is
     conditional on the row still existing — a write racing account deletion
