@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Choose an account — fake Google{% endblock %}
+{% block favicon %}🔐{% endblock %}
+
+{# No corner menu: this stands in for a foreign page (Google's account picker). #}
+{% block chrome %}{% endblock %}
+
+{% block styles %}
+        .auth-wrap {
+            max-width: 420px;
+            margin: 36px auto 0;
+        }
+
+        .auth-hero {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .auth-hero .mark { font-size: 2.6rem; }
+
+        .auth-hero h1 {
+            margin-top: 8px;
+            font-size: 1.35rem;
+        }
+
+        .auth-hero .sub {
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-top: 4px;
+        }
+
+        .card h2 {
+            font-size: 1rem;
+            margin-bottom: 8px;
+        }
+
+        .dev-grid {
+            display: grid;
+            gap: 8px;
+        }
+
+        a.acct {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-soft);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        a.acct:hover { border-color: var(--gold); }
+
+        .acct img {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            flex: none;
+        }
+
+        .acct .who {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .acct .email {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.78rem;
+            color: var(--muted);
+        }
+
+        .badge {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 3px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .badge.admin { color: var(--gold); border-color: var(--gold); }
+        .badge.approved { color: var(--green); border-color: var(--green); }
+        .badge.pending { color: var(--purple); border-color: var(--purple); }
+        .badge.rejected { color: var(--red); border-color: var(--red); }
+
+        .field { margin-top: 12px; }
+
+        .field input[type="email"],
+        .field input[type="text"] {
+            width: 100%;
+            background: var(--bg-0);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            padding: 8px 10px;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        .auth-error {
+            color: var(--red);
+            font-size: 0.85rem;
+            margin-top: 12px;
+        }
+
+        .hint {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-top: 10px;
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="auth-wrap">
+            <div class="auth-hero">
+                <div class="mark">🔐</div>
+                <h1>Choose an account</h1>
+                <div class="sub">to continue to Ndiro — <strong>fake Google</strong>, local dev mode</div>
+            </div>
+
+            {% if not state %}
+            <div class="card">
+                <p class="muted" style="font-size:0.85rem">No sign-in in progress. Start from
+                <a href="/login?next=/log">/login</a> — this page is where “Sign in with Google” lands.</p>
+            </div>
+            {% endif %}
+
+            <div class="card dev-grid">
+                {% for a in accounts %}
+                <a class="acct" href="/callback?state={{ state|urlencode }}&amp;code=p.{{ a.key }}">
+                    <img src="{{ a.picture }}" alt="">
+                    <div class="who">
+                        <div><strong>{{ a.name }}</strong></div>
+                        <div class="email">{{ a.email }}</div>
+                    </div>
+                    <span class="badge {{ a.status or '' }}">{{ a.status or 'new' }}</span>
+                </a>
+                {% endfor %}
+            </div>
+
+            <div class="card">
+                <h2>Use another account</h2>
+                <form method="post" action="/dev/google">
+                    <input type="hidden" name="state" value="{{ state }}">
+                    <div class="field">
+                        <label class="form-label" for="email">Email</label>
+                        <input type="email" id="email" name="email" required value="{{ email }}">
+                    </div>
+                    <div class="field">
+                        <label class="form-label" for="name">Name</label>
+                        <input type="text" id="name" name="name" value="{{ name }}" placeholder="optional">
+                    </div>
+                    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+                    <button type="submit" class="btn primary" style="margin-top:14px">Continue</button>
+                </form>
+                <p class="hint">A new address lands in the approval queue (pending) unless you arrived
+                through an invite link; an address in ADMIN_EMAILS becomes admin.</p>
+            </div>
+        </div>
+{% endblock %}

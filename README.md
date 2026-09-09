@@ -35,6 +35,59 @@ account (and every trace of their data) themselves in Settings. See `/privacy`.
 
 ## Local development
 
+### Everything on your laptop — no AWS, Google, or OpenAI account
+
+```bash
+docker compose up --build       # then open http://localhost:8000/dev
+```
+
+That runs the production image in **local dev mode** (`NDIRO_LOCAL_DEV=1`,
+see `localdev.py`), where every cloud service is replaced by a stand-in:
+
+| Production | Local dev mode |
+| --- | --- |
+| DynamoDB | in-process tables, persisted as JSON in a Docker volume |
+| S3 photos | files in the same volume |
+| Google sign-in | a fake account chooser — pick a seeded persona or type any email |
+| SES email | a mailbox on `/dev` with the verification / reset links clickable |
+| OpenAI | canned estimates; `[fail]`, `[garbage]`, `[slow]` in a description exercise the failure paths |
+
+`/dev` is the console: sign in as the seeded admin, an approved user with a
+month of meals and photos (plus a share link and an invite), one tracking
+protein instead of fiber, a pending and a rejected account, or the
+email/password account whose password it shows. Everything else is the real
+app — approvals, invites, share links, auto-add from photos, account
+deletion, the admin monitor — running against local storage. "Reset to seed
+data" starts over.
+
+The checkout is bind-mounted read-only into the container, so editing a
+template or a Python file on the host shows up on refresh (`gunicorn
+--reload` restarts the worker; Jinja reloads templates). Data lives in the
+`ndiro-localdev` volume and survives restarts; `docker compose down -v` wipes
+it. Knobs (all optional, commented in `docker-compose.yml` and documented in
+`env_template.txt`): `LOCAL_DEV_AI=stub|off|real`, `LOCAL_DEV_PHOTOS`,
+`LOCAL_DEV_EMAIL`, `LOCAL_DEV_SEED`, plus the usual `AI_DAILY_LIMIT` and
+`MAX_USERS` to reach the cap and full states quickly. Put personal tweaks in
+a gitignored `docker-compose.override.yml`.
+
+Without Docker, the same mode runs straight from the checkout:
+
+```bash
+pip install -r requirements.txt
+NDIRO_LOCAL_DEV=1 LOCAL_DATA_DIR=.localdev python app.py   # http://localhost:5000/dev
+```
+
+(or put those two settings in `.env`; `SECRET_KEY` may stay empty — one is
+minted and kept in `LOCAL_DATA_DIR`). Leave `LOCAL_DATA_DIR` unset to keep
+everything in memory.
+
+**This mode is for one machine.** Whoever reaches the port can sign in as
+any account, so the compose file binds to loopback only, the app refuses to
+start in this mode on Render or with `COOKIE_SECURE=1`, the `/dev` routes do
+not exist outside it, and every page carries a banner.
+
+### Against the real services
+
 ```bash
 pip install -r requirements.txt
 cp env_template.txt .env        # then fill it in — see below
@@ -93,7 +146,7 @@ lengths stand in for them).
 
 ### Tests
 
-Stub-based tests (in-memory DynamoDB/S3 fakes, stubbed Google/OpenAI — no
+Stub-based tests (in-memory DynamoDB/S3 emulation, stubbed Google/OpenAI — no
 credentials or network needed) drive the real Flask app end to end:
 
 ```bash
@@ -102,9 +155,20 @@ python tests/probe_cross_user.py   # tenant isolation: cross-user probe
 python tests/test_m3_shares.py     # share links, identical 404s, account deletion
 python tests/test_m4_ai.py         # AI caps, refunds, rate limits
 python tests/test_m5_checklist.py  # security checklist: admin payload, cookie flags
+python tests/test_m6_nutrient.py   # per-user tracked micro
+python tests/test_m7_invites.py    # invite links
+python tests/test_m8_photos.py     # photo proxy + cache
 python tests/test_m9_status.py     # /status build stamp (and that it leaks no config)
 python tests/test_m10_monitor.py   # /admin/monitor stats (instance totals only)
+python tests/test_m11_autolog.py   # async auto-add from photos
+python tests/test_m12_native.py    # email/password accounts
+python tests/test_m12_dzidza.py    # the built-in guide
+python tests/test_m13_localdev.py  # local dev mode: guards, seed, fake sign-in, stubs
 ```
+
+The emulation the tests run on (`localdev.MemoryTable` / `LocalS3`) is the
+same one local dev mode runs on, so the security tests are what keep the dev
+backend faithful.
 
 ## Deploying
 

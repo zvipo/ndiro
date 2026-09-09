@@ -25,6 +25,10 @@ os.environ['INVITES_TABLE'] = 'test-invites'
 os.environ['MAIL_FROM'] = 'ndiro@test.invalid'
 os.environ['APP_BASE_URL'] = 'https://ndiro.test'
 os.environ.pop('OPENAI_API_KEY', None)
+# Never the local dev mode (a developer's shell may export it): these tests
+# assert production behavior — tests/test_m13_localdev.py covers that mode.
+os.environ.pop('NDIRO_LOCAL_DEV', None)
+os.environ.pop('LOCAL_DATA_DIR', None)
 
 # Auto-log spool: a per-run temp dir, and NO background thread — tests drive
 # autolog.process_once() synchronously so every assertion is deterministic.

@@ -97,3 +97,21 @@ AI_DAILY_LIMIT=10
 PORT=8000
 # Optional: in-process photo cache budget in MB (default 64)
 #PHOTO_CACHE_MB=64
+
+# --- Local development mode (no cloud accounts needed) ---
+# NDIRO_LOCAL_DEV=1 swaps DynamoDB/S3/Google/SES/OpenAI for local stand-ins,
+# seeds sample accounts and meals, and mounts the /dev console (localdev.py).
+# docker-compose.yml sets it for you; set it here only for `python app.py`.
+# In this mode the AWS, Google, S3, email, and OpenAI settings above are
+# ignored, SECRET_KEY may be left empty (one is derived and kept in
+# LOCAL_DATA_DIR), and the app refuses to start next to any production signal.
+#NDIRO_LOCAL_DEV=1
+# Where tables (JSON), photos, and the auto-log spool persist. Unset = in
+# memory, lost on restart. The compose file points it at a named volume.
+#LOCAL_DATA_DIR=.localdev
+# stub (default: canned answers) | off (buttons hidden) | real (OPENAI_API_KEY)
+#LOCAL_DEV_AI=stub
+#LOCAL_DEV_PHOTOS=1
+#LOCAL_DEV_EMAIL=1
+# 0 = start empty instead of loading the sample accounts and meals.
+#LOCAL_DEV_SEED=1

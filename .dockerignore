@@ -20,3 +20,6 @@ reference/
 README.md
 CLAUDE.md
 LICENSE
+.localdev/
+docker-compose.yml
+docker-compose.override.yml

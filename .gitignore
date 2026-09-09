@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ndiro local dev mode (NDIRO_LOCAL_DEV=1): on-disk data and personal compose tweaks
+.localdev/
+docker-compose.override.yml

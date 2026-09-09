@@ -342,10 +342,34 @@
             margin: 4px 6px;
         }
 
+        /* NDIRO_LOCAL_DEV=1 banner: a fixed reminder that sign-in, mail, and
+           AI are stand-ins. The element only renders in that mode. */
+        .dev-banner {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 150;
+            padding: 6px 12px;
+            text-align: center;
+            font-size: 0.78rem;
+            color: var(--muted);
+            background: var(--card);
+            border-top: 1px solid var(--gold);
+        }
+
+        .dev-banner a {
+            color: var(--gold);
+        }
+
         {% block styles %}{% endblock %}
     </style>
 </head>
 <body>
+    {% if local_dev %}
+    <div class="dev-banner">🧪 Local dev mode — fake sign-in, stub AI, local storage, no real email.
+        <a href="/dev">Dev console</a></div>
+    {% endif %}
     {% block brand %}
     <a class="brand" href="/" aria-label="Ndiro — home"><span class="brand-mark">🥦</span>Ndiro</a>
     {% endblock %}
