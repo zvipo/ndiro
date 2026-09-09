@@ -63,6 +63,23 @@ tk.limiter.reset()
 # --- 2. Signup -> verify -> session ------------------------------------------
 c = tk.client()
 mails_before = len(M.sent)
+
+# Confirm-password mismatch: re-render with the error, no row, no mail.
+resp = tk.post(c, '/signup', data={
+    'form_token': tk.form_token(c), 'email': 'alice@example.test',
+    'password': 'hunter2hunter2', 'password2': 'hunter2hunter3',
+    'name': 'Alice', 'next': '/log'})
+tk.check('mismatched confirm password re-renders the form with the error',
+         resp.status_code == 200 and b'Passwords do not match.' in resp.data)
+tk.check('mismatched confirm password creates no row, sends no mail',
+         db.find_user_by_email('alice@example.test') is None
+         and len(M.sent) == mails_before)
+tk.check('missing confirm password is a mismatch too',
+         b'Passwords do not match.' in tk.post(c, '/signup', data={
+             'form_token': tk.form_token(c), 'email': 'alice@example.test',
+             'password': 'hunter2hunter2', 'name': 'Alice',
+             'next': '/log'}).data)
+tk.limiter.reset()
 resp = tk.native_signup(c, 'alice@example.test', 'hunter2hunter2', name='Alice')
 tk.check('signup shows the check-email page',
          resp.status_code == 200 and b'Check your email' in resp.data)

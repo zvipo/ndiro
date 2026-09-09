@@ -627,6 +627,11 @@ def signup_submit():
     email, email_err = native_auth.valid_email(request.form.get('email'))
     password = request.form.get('password') or ''
     pw_err = native_auth.valid_password(password)
+    # Confirm-field mismatch is pure form validation (no account data
+    # involved), so like the checks above it may answer before the
+    # uniform-latency scrypt+scan work below.
+    if not pw_err and (request.form.get('password2') or '') != password:
+        pw_err = 'Passwords do not match.'
     name = (request.form.get('name') or '').strip()[:80]
     if email_err or pw_err:
         return render_template('signup.html', user=None,

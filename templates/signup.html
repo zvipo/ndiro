@@ -74,6 +74,45 @@
             margin-top: 4px;
         }
 
+        .strength-bar {
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+        }
+
+        .strength-bar span {
+            flex: 1;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--border);
+        }
+
+        .strength-bar.s1 span:nth-child(-n+1) { background: var(--red); }
+        .strength-bar.s2 span:nth-child(-n+2) { background: var(--gold); }
+        .strength-bar.s3 span:nth-child(-n+3) { background: var(--gold); }
+        .strength-bar.s4 span:nth-child(-n+4) { background: var(--green); }
+
+        .strength-label {
+            font-size: 0.75rem;
+            color: var(--dim);
+            margin-top: 4px;
+            min-height: 1em;
+        }
+
+        .strength-label.s1 { color: var(--red); }
+        .strength-label.s2, .strength-label.s3 { color: var(--gold); }
+        .strength-label.s4 { color: var(--green); }
+
+        .match-hint {
+            font-size: 0.75rem;
+            margin-top: 4px;
+            min-height: 1em;
+            color: var(--dim);
+        }
+
+        .match-hint.ok { color: var(--green); }
+        .match-hint.bad { color: var(--red); }
+
         .consent {
             margin-top: 14px;
             font-size: 0.78rem;
@@ -113,7 +152,17 @@
                         <label class="form-label" for="password">Password</label>
                         <input type="password" id="password" name="password" required
                                minlength="8" autocomplete="new-password">
-                        <div class="hint">At least 8 characters.</div>
+                        <div class="hint">At least 8 characters — a longer passphrase beats a complicated short one.</div>
+                        <div class="strength-bar" id="strength-bar" aria-hidden="true">
+                            <span></span><span></span><span></span><span></span>
+                        </div>
+                        <div class="strength-label" id="strength-label" role="status"></div>
+                    </div>
+                    <div class="field">
+                        <label class="form-label" for="password2">Confirm password</label>
+                        <input type="password" id="password2" name="password2" required
+                               minlength="8" autocomplete="new-password">
+                        <div class="match-hint" id="match-hint"></div>
                     </div>
                     {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
                     <button type="submit" class="btn primary">Create account</button>
@@ -130,4 +179,54 @@
             {% endif %}
             <div class="consent">By signing up you agree to the <a href="/privacy">privacy&nbsp;&amp;&nbsp;terms</a>.</div>
         </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+    (function () {
+        var pw = document.getElementById('password');
+        var pw2 = document.getElementById('password2');
+        var bar = document.getElementById('strength-bar');
+        var label = document.getElementById('strength-label');
+        var match = document.getElementById('match-hint');
+
+        // Advisory only — the server enforces length, not composition
+        // (NIST 800-63B): length dominates the score, variety nudges it.
+        function score(p) {
+            if (!p) return 0;
+            if (p.length < 8) return 1;
+            var classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z\d]/]
+                .filter(function (re) { return re.test(p); }).length;
+            var s = 1;
+            if (p.length >= 10) s++;
+            if (p.length >= 14 || (p.length >= 11 && classes >= 3)) s++;
+            if (p.length >= 18 || (p.length >= 14 && classes >= 3)) s++;
+            if (/^(.)\1+$/.test(p)) s = 1;  // one repeated character
+            return s;
+        }
+
+        var LABELS = ['', 'Too weak', 'Weak', 'Good', 'Strong'];
+
+        function update() {
+            var s = pw.value ? score(pw.value) : 0;
+            bar.className = 'strength-bar' + (s ? ' s' + s : '');
+            label.className = 'strength-label' + (s ? ' s' + s : '');
+            label.textContent = LABELS[s];
+
+            if (!pw2.value) {
+                match.className = 'match-hint';
+                match.textContent = '';
+                pw2.setCustomValidity('');
+                return;
+            }
+            var ok = pw.value === pw2.value;
+            match.className = 'match-hint ' + (ok ? 'ok' : 'bad');
+            match.textContent = ok ? 'Passwords match.' : 'Passwords do not match.';
+            pw2.setCustomValidity(ok ? '' : 'Passwords do not match.');
+        }
+
+        pw.addEventListener('input', update);
+        pw2.addEventListener('input', update);
+    })();
+    </script>
 {% endblock %}

@@ -129,7 +129,8 @@ def native_signup(c, email, password, name='', invite=None):
     """Drive POST /signup; returns the response. The verification link lands
     in MAILER.sent — pull it with extract_link(MAILER.sent[-1][2])."""
     data = {'form_token': form_token(c), 'email': email,
-            'password': password, 'name': name, 'next': '/log'}
+            'password': password, 'password2': password,
+            'name': name, 'next': '/log'}
     if invite:
         data['invite'] = invite
     return post(c, '/signup', data=data)
