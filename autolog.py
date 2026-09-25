@@ -227,9 +227,10 @@ def _process_entry(entry_id):
             _defer(entry_id, meta)
             return False
         if allowed:
-            result, err = ai.estimate_photo(jpeg_bytes, cfg,
-                                            log_context={'user': user_id,
-                                                         'route': 'auto-log'})
+            result, err = ai.estimate_photo(
+                jpeg_bytes, cfg,
+                log_context={'user': user_id, 'route': 'auto-log'},
+                history=ai.recent_history(user_id, date_str, time_str))
             if err:
                 _message, _status, refundable, _ref = err
                 if refundable:

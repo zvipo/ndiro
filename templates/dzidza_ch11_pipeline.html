@@ -29,7 +29,8 @@
    │                                    │ to the LOCAL spool dir ──────▶ │ loop:
    │ ◀── 202 {queued: …} ───────────────│                                │  re-read user row (still approved?)
    │                                    │                                │  consume 1 AI use (cap)
-   │ polls /api/auto-log/pending        │                                │  OpenAI vision estimate
+   │ polls /api/auto-log/pending        │                                │  read recent meals (history hint)
+   │                                    │                                │  OpenAI vision estimate
    │ to render per-photo status         │                                │  put_photo + put_meal
    │                                    │                                │  delete spool entry
    │                                    │                                │  (on failure: retry; then degrade

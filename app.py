@@ -1851,9 +1851,15 @@ def estimate_photo():
     today, blocked = _consume_ai_use_or_429(user_id, 'estimate-photo')
     if blocked:
         return blocked
+    # History hint: the form's date/time are optional (a hint, not a key), so
+    # an absent or malformed value just falls back — UTC day, no time bias.
+    hint_date = _valid_date(request.form.get('date', '')) or _utc_today_str()
+    hint_time = request.form.get('time', '')
+    history = ai.recent_history(user_id, hint_date, hint_time)
     result, err = ai.estimate_photo(photo_bytes, config.resolve_nutrient(g.user),
                                     log_context={'user': user_id,
-                                                 'route': 'estimate-photo'})
+                                                 'route': 'estimate-photo'},
+                                    history=history)
     if err:
         return _ai_error_response(user_id, today, err)
     return jsonify(result)

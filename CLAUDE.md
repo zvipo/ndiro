@@ -132,6 +132,16 @@ raises without it (tests set their own).
   `(message, status, refundable, ref)` — app.py shows it to the user, so a
   report maps to one log line. `stage` ∈ `request|http|parse` here, plus
   `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
+  Photo estimates carry a **history hint**: `recent_history(user_id, date,
+  time)` (ONE range Query over the caller's own last `HISTORY_DAYS`, fail-open
+  to `[]`) → `history_hint` ranks past descriptions by frequency, boosted for
+  meals logged near the photo's time of day, capped at `HISTORY_MAX_ITEMS`
+  lines / `HISTORY_MAX_CHARS` chars (~150 tokens typical) and fenced in
+  `<recent_meals>` as untrusted data used ONLY to disambiguate look-alike
+  foods (oatmeal vs rice pudding). Descriptions only — never past amounts
+  (no anchoring). The AI_ERROR record logs `history_n` (a count), never the
+  text. `/api/estimate-photo` takes optional `date`/`time` form fields for
+  it; the auto-log worker uses the sidecar's date/time.
 - **`autolog.py`** — the async "auto-add from photos" pipeline: `/api/auto-log`
   spools the (already normalized) JPEG plus a tiny sidecar
   (user_id/date/time/attempts — never meal content) on LOCAL disk

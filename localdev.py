@@ -784,7 +784,7 @@ def estimate_text(description, cfg, log_context=None):
     return _result(items, note, cfg), None
 
 
-def estimate_photo(photo_bytes, cfg, log_context=None):
+def estimate_photo(photo_bytes, cfg, log_context=None, history=None):
     """ai.estimate_photo stand-in: one of the stock meals, chosen by the photo
     bytes so the same photo always gets the same answer."""
     description, foods = STOCK_PHOTO_MEALS[

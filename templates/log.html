@@ -865,6 +865,10 @@
                 const blob = await downscaleImage(file);
                 const fd = new FormData();
                 fd.append('photo', blob, 'photo.jpg');
+                // Optional: lets the server bias its meal-history hint toward
+                // what this user usually eats at this time of day.
+                fd.append('date', document.getElementById('dateInput').value || '');
+                fd.append('time', document.getElementById('timeInput').value || '');
                 const resp = await fetch('/api/estimate-photo', { method: 'POST', body: fd });
                 if (resp.status === 401) {
                     window.location.href = '/login?next=/log';
