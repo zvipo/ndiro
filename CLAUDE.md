@@ -133,8 +133,11 @@ raises without it (tests set their own).
   report maps to one log line. `stage` ∈ `request|http|parse` here, plus
   `image`/`cap` from app.py. app.py passes `log_context={'user','route'}`.
   Photo estimates carry a **history hint**: `recent_history(user_id, date,
-  time)` (ONE range Query over the caller's own last `HISTORY_DAYS`, fail-open
-  to `[]`) → `history_hint` ranks past descriptions by frequency, boosted for
+  time)` (ONE `Limit`-ed newest-first Query — `db.query_recent_meals` — over
+  the caller's own last `HISTORY_MEALS` meals on or before the photo's day: a
+  meal count, not a date window, so logging gaps don't empty it; deliberately
+  uncached, like every meal read; fail-open to `[]`) → `history_hint` ranks
+  past descriptions by frequency, boosted for
   meals logged near the photo's time of day, capped at `HISTORY_MAX_ITEMS`
   lines / `HISTORY_MAX_CHARS` chars (~150 tokens typical) and fenced in
   `<recent_meals>` as untrusted data used ONLY to disambiguate look-alike
@@ -411,7 +414,7 @@ delete_photo/delete_user_photos purge the LRU.
   first — it sets env vars and installs the fakes before app import. The
   fakes are `localdev.MemoryTable`/`LocalS3` (tests/fakes.py imports them);
   they implement the exact boto3 surface db.py uses (update expressions may
-  mix SET/REMOVE/ADD clauses); if you add a new condition expression shape,
+  mix SET/REMOVE/ADD clauses; queries honor `ScanIndexForward` and `Limit`); if you add a new condition expression shape,
   extend the evaluator in `localdev.py` — the dev mode and the tests share
   it. `tests/test_m13_localdev.py` bootstraps WITHOUT testkit (the mode must
   be on before config imports) and drives `localdev.install()` itself. `mailer.send` is replaced by

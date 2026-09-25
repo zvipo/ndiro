@@ -19,7 +19,7 @@ import json
 import re
 import secrets
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import requests
 
@@ -328,13 +328,14 @@ def estimate_text(description, cfg, log_context=None):
 
 # --- Meal history hint (photo estimates) -------------------------------------
 # A photo of beige mush is oatmeal OR rice pudding; the user's own log usually
-# knows which. The hint is the user's most-logged descriptions over the last
-# few weeks, weighted toward meals logged near the photo's time of day, hard-
+# knows which. The hint is the user's most-logged descriptions among their
+# last HISTORY_MEALS meals (a count, not a date window, so logging gaps don't
+# empty it and heavy loggers don't inflate the read), weighted toward meals logged near the photo's time of day, hard-
 # capped in lines AND characters so the prompt grows by a few hundred chars at
 # most. Descriptions only — no amounts (the estimate must come from the photo,
 # not be anchored to past numbers). Built from the caller's own user_id only.
 
-HISTORY_DAYS = 28
+HISTORY_MEALS = 60  # ~2-3 weeks of regular logging; one bounded Query
 HISTORY_MAX_ITEMS = 8
 HISTORY_MAX_CHARS = 600
 _HISTORY_ITEM_MAX = 80
@@ -390,14 +391,15 @@ def history_hint(meals, time_str=None):
 
 
 def recent_history(user_id, date_str, time_str=None):
-    """history_hint over the HISTORY_DAYS ending at `date_str` (the client's
-    local day — invariant #10). ONE range Query; fails open to [] because a
-    hint is never worth failing an estimate over."""
+    """history_hint over the user's last HISTORY_MEALS meals on or before
+    `date_str` (the client's local day — invariant #10). ONE Limit-ed Query,
+    no cache (see CLAUDE.md: per-user Queries are cheap, and each call here
+    already sits behind the AI daily cap). Fails open to [] because a hint is
+    never worth failing an estimate over."""
     import db  # lazy: keeps ai importable without the AWS layer
     try:
-        end = datetime.strptime(date_str, '%Y-%m-%d').date()
-        start = (end - timedelta(days=HISTORY_DAYS)).isoformat()
-        meals = db.query_meals_range(user_id, start, end.isoformat())
+        datetime.strptime(date_str, '%Y-%m-%d')
+        meals = db.query_recent_meals(user_id, date_str, HISTORY_MEALS)
     except Exception as e:
         print(f"AI history read failed for user {user_id}: {type(e).__name__}")
         return []

@@ -614,6 +614,18 @@ def query_meals_range(user_id, start_date_str, end_date_str):
         & Key('sk').between(f'{start_date_str}#', f'{end_date_str}#~'))
 
 
+def query_recent_meals(user_id, end_date_str, limit):
+    """The user's `limit` most recent meals on or before end_date_str, newest
+    first — ONE Query that stops after `limit` items (no pagination: the cap
+    IS the point), so its cost is bounded however long or gappy the log is."""
+    resp = meals_table().query(
+        KeyConditionExpression=Key('user_id').eq(user_id)
+        & Key('sk').lte(f'{end_date_str}#~'),
+        ScanIndexForward=False,
+        Limit=limit)
+    return resp.get('Items', [])
+
+
 def query_meals_day(user_id, date_str):
     return _query_all_meals(
         Key('user_id').eq(user_id) & Key('sk').begins_with(f'{date_str}#'))

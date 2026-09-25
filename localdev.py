@@ -100,6 +100,11 @@ def eval_condition(cond, item):
         return isinstance(value, str) and value.startswith(vals[1])
     if op == 'BETWEEN':
         return value is not None and vals[1] <= value <= vals[2]
+    if op in ('<', '<=', '>', '>='):
+        if value is None:
+            return False
+        return {'<': value < vals[1], '<=': value <= vals[1],
+                '>': value > vals[1], '>=': value >= vals[1]}[op]
     raise NotImplementedError(f'operator {op}')
 
 
@@ -281,6 +286,12 @@ class MemoryTable:
         items.sort(key=lambda i: self._kt(i))
         if kwargs.get('ScanIndexForward') is False:
             items.reverse()
+        limit = kwargs.get('Limit')
+        if limit is not None and len(items) > limit:
+            # DynamoDB stops after Limit items and hands back where it stopped.
+            items = items[:limit]
+            return {'Items': items, 'LastEvaluatedKey': {
+                k: items[-1][k] for k in self.key_names}}
         return {'Items': items}
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None,
